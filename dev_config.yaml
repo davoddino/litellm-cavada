@@ -1,0 +1,22 @@
+model_list:
+  - model_name: Qwen3.6-35B-A3B
+    litellm_params:
+      model: openai/qwen3.6-35b
+      api_base: http://192.168.0.20:8001/v1
+      api_key: sk-no-key
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000003
+  - model_name: whisper-small
+    litellm_params:
+      model: openai/whisper-small
+      api_base: http://192.168.0.20:8000/v1
+      api_key: sk-no-key
+    model_info:
+      mode: audio_transcription
+
+general_settings:
+  master_key: sk-1234
+
+litellm_settings:
+  drop_params: True
+  telemetry: False
