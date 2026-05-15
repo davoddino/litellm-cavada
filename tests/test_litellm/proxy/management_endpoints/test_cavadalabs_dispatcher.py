@@ -53,6 +53,7 @@ def _row(**kwargs):
 def _company_row(**kwargs):
     return _row(
         company_id=kwargs.pop("company_id", "company-1"),
+        litellm_organization_id=kwargs.pop("litellm_organization_id", None),
         legal_name=kwargs.pop("legal_name", "ACME Spa"),
         billing_name=kwargs.pop("billing_name", None),
         vat_tax_id=kwargs.pop("vat_tax_id", None),
@@ -72,6 +73,7 @@ def _company_row(**kwargs):
 def _project_row(**kwargs):
     return _row(
         project_id=kwargs.pop("project_id", "project-1"),
+        litellm_team_id=kwargs.pop("litellm_team_id", None),
         company_id=kwargs.pop("company_id", "company-1"),
         name=kwargs.pop("name", "Support"),
         status=kwargs.pop("status", "production"),
@@ -264,6 +266,61 @@ def _service():
     prisma_client.db.cavadalabs_gpulocktable = MagicMock()
     prisma_client.db.cavadalabs_auditlogtable = MagicMock()
     prisma_client.db.cavadalabs_auditlogtable.create = AsyncMock()
+    prisma_client.db.cavadalabs_companytable.update = AsyncMock(
+        return_value=_company_row(
+            litellm_organization_id="cavadalabs-company-company-1"
+        )
+    )
+    prisma_client.db.cavadalabs_projecttable.update = AsyncMock(
+        return_value=_project_row(litellm_team_id="cavadalabs-project-project-1")
+    )
+    prisma_client.db.litellm_budgettable = MagicMock()
+    prisma_client.db.litellm_organizationtable = MagicMock()
+    prisma_client.db.litellm_teamtable = MagicMock()
+    prisma_client.db.litellm_usertable = MagicMock()
+    prisma_client.db.litellm_organizationmembership = MagicMock()
+    prisma_client.db.litellm_budgettable.create = AsyncMock(
+        return_value=SimpleNamespace(budget_id="budget-compat-1")
+    )
+    prisma_client.db.litellm_organizationtable.find_unique = AsyncMock(
+        return_value=None
+    )
+    prisma_client.db.litellm_organizationtable.create = AsyncMock()
+    prisma_client.db.litellm_organizationtable.update = AsyncMock()
+    prisma_client.db.litellm_teamtable.find_unique = AsyncMock(return_value=None)
+    prisma_client.db.litellm_teamtable.create = AsyncMock()
+    prisma_client.db.litellm_teamtable.update = AsyncMock()
+    prisma_client.db.litellm_usertable.find_first = AsyncMock(return_value=None)
+    prisma_client.db.litellm_usertable.find_unique = AsyncMock(return_value=None)
+    prisma_client.db.litellm_usertable.upsert = AsyncMock(
+        side_effect=lambda **kwargs: SimpleNamespace(
+            user_id=kwargs["data"]["create"]["user_id"],
+            user_email=kwargs["data"]["create"].get("user_email"),
+            team_id=None,
+            sso_user_id=None,
+            organization_id=None,
+            object_permission_id=None,
+            password=None,
+            teams=kwargs["data"]["create"].get("teams", []),
+            user_role=None,
+            max_budget=None,
+            spend=0.0,
+            models=kwargs["data"]["create"].get("models", []),
+            metadata={},
+            max_parallel_requests=None,
+            tpm_limit=None,
+            rpm_limit=None,
+            budget_duration=None,
+            budget_reset_at=None,
+            allowed_cache_controls=[],
+            policies=[],
+            model_spend={},
+            model_max_budget={},
+            created_at=None,
+            updated_at=None,
+        )
+    )
+    prisma_client.db.litellm_organizationmembership.upsert = AsyncMock()
     return CavadaLabsDispatcherService(prisma_client), prisma_client
 
 
@@ -352,6 +409,7 @@ async def test_should_create_company_and_write_cavadalabs_audit_log():
     )
 
     assert response.company_id == "company-1"
+    assert response.litellm_organization_id == "cavadalabs-company-company-1"
     assert response.admin_emails == ["admin@acme.test"]
     create_data = prisma_client.db.cavadalabs_companytable.create.call_args.kwargs[
         "data"
@@ -360,6 +418,16 @@ async def test_should_create_company_and_write_cavadalabs_audit_log():
     assert create_data["updated_by"] == "admin-user"
     assert isinstance(create_data["billing_address"], Json)
     assert create_data["billing_address"].data == {}
+    organization_create_data = (
+        prisma_client.db.litellm_organizationtable.create.call_args.kwargs["data"]
+    )
+    assert organization_create_data["organization_id"] == "cavadalabs-company-company-1"
+    assert organization_create_data["organization_alias"] == "ACME Spa"
+    prisma_client.db.cavadalabs_companytable.update.assert_awaited_once_with(
+        where={"company_id": "company-1"},
+        data={"litellm_organization_id": "cavadalabs-company-company-1"},
+    )
+    prisma_client.db.litellm_organizationmembership.upsert.assert_awaited_once()
     prisma_client.db.cavadalabs_auditlogtable.create.assert_awaited_once()
 
 
@@ -385,12 +453,23 @@ async def test_should_create_project_under_active_company():
     )
 
     assert response.project_id == "project-1"
+    assert response.litellm_team_id == "cavadalabs-project-project-1"
     assert response.allowed_models == ["cavadalabs/qwen3-32b"]
     create_data = prisma_client.db.cavadalabs_projecttable.create.call_args.kwargs[
         "data"
     ]
     assert create_data["company_id"] == "company-1"
     assert create_data["status"] == "production"
+    team_create_data = prisma_client.db.litellm_teamtable.create.call_args.kwargs[
+        "data"
+    ]
+    assert team_create_data["team_id"] == "cavadalabs-project-project-1"
+    assert team_create_data["organization_id"] == "cavadalabs-company-company-1"
+    assert team_create_data["models"] == ["cavadalabs/qwen3-32b"]
+    prisma_client.db.cavadalabs_projecttable.update.assert_awaited_once_with(
+        where={"project_id": "project-1"},
+        data={"litellm_team_id": "cavadalabs-project-project-1"},
+    )
 
 
 @pytest.mark.asyncio
@@ -1023,9 +1102,10 @@ async def test_should_aggregate_company_daily_activity_from_cavadalabs_ledger():
 
     assert response.metadata.total_spend == 0.12
     assert response.metadata.total_api_requests == 1
-    assert response.results[0].breakdown.entities["company-1"].metadata[
-        "alias"
-    ] == "ACME Spa"
+    assert (
+        response.results[0].breakdown.entities["company-1"].metadata["alias"]
+        == "ACME Spa"
+    )
     assert (
         response.results[0].breakdown.api_keys["hashed-key"].metadata.key_alias
         == "Widget key"
@@ -1100,6 +1180,48 @@ async def test_should_mirror_cavadalabs_spend_log_to_request_ledger():
     assert ledger_metadata["cavadalabs"]["policy_id"] == "policy-1"
     assert ledger_metadata["cavadalabs"]["guardrails"] == ["safe-widget"]
     assert ledger_metadata["cavadalabs"]["rag"]["collection_ids"] == ["collection-1"]
+
+
+@pytest.mark.asyncio
+async def test_should_use_authoritative_key_context_for_cavadalabs_ledger():
+    _, prisma_client = _service()
+    prisma_client.db.cavadalabs_requestledgertable = MagicMock()
+    prisma_client.db.cavadalabs_requestledgertable.create_many = AsyncMock()
+
+    await process_spend_logs_cavadalabs_ledger(
+        prisma_client=prisma_client,
+        logs_to_process=[
+            {
+                "request_id": "req-authoritative",
+                "metadata": json.dumps(
+                    {
+                        "cavadalabs_company_id": "company-authoritative",
+                        "cavadalabs_project_id": "project-authoritative",
+                        "spend_logs_metadata": {
+                            "cavadalabs_company_id": "company-spoofed",
+                            "cavadalabs_project_id": "project-spoofed",
+                        },
+                    }
+                ),
+                "api_key": "hashed-key",
+                "custom_llm_provider": "openai",
+                "model": "openai/gpt-4.1",
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "spend": 0.05,
+                "status": "success",
+                "startTime": datetime.now(timezone.utc),
+            }
+        ],
+    )
+
+    create_call = (
+        prisma_client.db.cavadalabs_requestledgertable.create_many.call_args.kwargs
+    )
+    ledger_row = create_call["data"][0]
+    assert ledger_row["company_id"] == "company-authoritative"
+    assert ledger_row["project_id"] == "project-authoritative"
 
 
 @pytest.mark.asyncio

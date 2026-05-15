@@ -37,6 +37,8 @@ export interface KeyResponse {
   project_id: string | null;
   max_parallel_requests: number;
   metadata: Record<string, unknown>;
+  cavadalabs_company_id?: string | null;
+  cavadalabs_project_id?: string | null;
   tpm_limit: number;
   rpm_limit: number;
   duration: string;

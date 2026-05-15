@@ -34,6 +34,8 @@ from litellm.proxy.spend_tracking.spend_tracking_utils import (
     _should_store_prompts_and_responses_in_spend_logs,
     get_logging_payload,
 )
+from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
 from litellm.types.utils import (
     StandardLoggingHiddenParams,
     StandardLoggingMetadata,
@@ -47,6 +49,61 @@ def test_sanitize_request_body_for_spend_logs_payload_basic():
         "messages": [{"role": "user", "content": "Hello, how are you?"}],
     }
     assert _sanitize_request_body_for_spend_logs_payload(request_body) == request_body
+
+
+def test_add_user_key_auth_metadata_propagates_cavadalabs_context():
+    data = {"metadata": {}}
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="hashed-key",
+        metadata={
+            "cavadalabs_company_id": "company-1",
+            "cavadalabs_project_id": "project-1",
+        },
+    )
+
+    LiteLLMProxyRequestSetup.add_user_api_key_auth_to_request_metadata(
+        data=data,
+        user_api_key_dict=user_api_key_dict,
+        _metadata_variable_name="metadata",
+    )
+
+    assert data["metadata"]["cavadalabs_company_id"] == "company-1"
+    assert data["metadata"]["cavadalabs_project_id"] == "project-1"
+
+
+def test_get_logging_payload_keeps_cavadalabs_context_for_spend_logs():
+    start_time = datetime.datetime.now(timezone.utc)
+    end_time = start_time + datetime.timedelta(milliseconds=120)
+
+    payload = get_logging_payload(
+        kwargs={
+            "litellm_params": {
+                "metadata": {
+                    "user_api_key": "hashed-key",
+                    "cavadalabs_company_id": "company-1",
+                    "cavadalabs_project_id": "project-1",
+                }
+            },
+            "call_type": "acompletion",
+            "model": "openai/gpt-4.1",
+            "custom_llm_provider": "openai",
+            "response_cost": 0.12,
+        },
+        response_obj={
+            "id": "chatcmpl-cavadalabs",
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+            },
+        },
+        start_time=start_time,
+        end_time=end_time,
+    )
+
+    metadata = json.loads(payload["metadata"])
+    assert metadata["cavadalabs_company_id"] == "company-1"
+    assert metadata["cavadalabs_project_id"] == "project-1"
 
 
 def test_sanitize_request_body_for_spend_logs_payload_long_string():

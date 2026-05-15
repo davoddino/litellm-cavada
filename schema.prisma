@@ -98,6 +98,7 @@ model LiteLLM_OrganizationTable {
     users LiteLLM_UserTable[]
     keys LiteLLM_VerificationToken[]
     members LiteLLM_OrganizationMembership[] @relation("OrganizationToMembership")
+    cavadalabs_company CavadaLabs_CompanyTable?
     object_permission LiteLLM_ObjectPermissionTable?   @relation(fields: [object_permission_id], references: [object_permission_id])
 }
 
@@ -149,6 +150,7 @@ model LiteLLM_TeamTable {
     litellm_model_table LiteLLM_ModelTable? @relation(fields: [model_id], references: [id])
     object_permission LiteLLM_ObjectPermissionTable?   @relation(fields: [object_permission_id], references: [object_permission_id])
     projects LiteLLM_ProjectTable[]
+    cavadalabs_project CavadaLabs_ProjectTable?
 
     @@index([organization_id])
     @@index([team_alias])
@@ -196,12 +198,14 @@ model CavadaLabs_CompanyTable {
   retention_policy           Json     @default("{}")
   default_guardrail_policy   String?
   default_billing_settings   Json     @default("{}")
+  litellm_organization_id    String?  @unique
   created_at                 DateTime @default(now()) @map("created_at")
   created_by                 String
   updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
   updated_by                 String
 
   projects                   CavadaLabs_ProjectTable[]
+  litellm_organization       LiteLLM_OrganizationTable? @relation(fields: [litellm_organization_id], references: [organization_id])
   chatbots                   CavadaLabs_ChatbotTable[]
   web_tokens                 CavadaLabs_WebTokenTable[]
   model_policies             CavadaLabs_ProjectModelPolicyTable[]
@@ -234,12 +238,14 @@ model CavadaLabs_ProjectTable {
   budget                     Float?
   retention_policy_override Json     @default("{}")
   metadata                   Json     @default("{}")
+  litellm_team_id            String?  @unique
   created_at                 DateTime @default(now()) @map("created_at")
   created_by                 String
   updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
   updated_by                 String
 
   company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
+  litellm_team               LiteLLM_TeamTable? @relation(fields: [litellm_team_id], references: [team_id])
   chatbots                   CavadaLabs_ChatbotTable[]
   web_tokens                 CavadaLabs_WebTokenTable[]
   model_policies             CavadaLabs_ProjectModelPolicyTable[]

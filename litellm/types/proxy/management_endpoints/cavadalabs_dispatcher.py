@@ -278,6 +278,7 @@ class CavadaLabsCompanyUpdateRequest(CavadaLabsBaseModel):
 
 class CavadaLabsCompanyResponse(CavadaLabsCompanyCreateRequest):
     company_id: str
+    litellm_organization_id: Optional[str] = None
     created_at: datetime
     created_by: str
     updated_at: datetime
@@ -330,6 +331,7 @@ class CavadaLabsProjectUpdateRequest(CavadaLabsBaseModel):
 
 class CavadaLabsProjectResponse(CavadaLabsProjectCreateRequest):
     project_id: str
+    litellm_team_id: Optional[str] = None
     created_at: datetime
     created_by: str
     updated_at: datetime

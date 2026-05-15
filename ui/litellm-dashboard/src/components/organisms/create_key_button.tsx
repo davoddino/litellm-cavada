@@ -1,7 +1,5 @@
 "use client";
 import { keyKeys } from "@/app/(dashboard)/hooks/keys/useKeys";
-import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
-import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
 import { useTags } from "@/app/(dashboard)/hooks/tags/useTags";
 import { useUISettings } from "@/app/(dashboard)/hooks/uiSettings/useUISettings";
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
@@ -25,9 +23,8 @@ import PremiumLoggingSettings from "../common_components/PremiumLoggingSettings"
 import RateLimitTypeFormItem from "../common_components/RateLimitTypeFormItem";
 import RouterSettingsAccordion, { RouterSettingsAccordionValue } from "../common_components/RouterSettingsAccordion";
 import TeamDropdown from "../common_components/team_dropdown";
-import OrganizationDropdown from "../common_components/OrganizationDropdown";
-import ProjectDropdown from "../common_components/ProjectDropdown";
 import { CreateUserButton } from "../CreateUserButton";
+import { useCavadaLabsKeyContextOptions } from "../cavadalabs/keyContext";
 import { BudgetWindowEntry, BudgetWindowsEditor } from "../key_team_helpers/BudgetWindowsEditor";
 import { getModelDisplayName } from "../key_team_helpers/fetch_available_models_team_key";
 import { Team } from "../key_team_helpers/key_list";
@@ -165,11 +162,13 @@ export const fetchUserModels = async (
 const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOpenCreate, prefillData }) => {
   const { accessToken, userId: userID, userRole, premiumUser } = useAuthorized();
   const canEditGuardrails = premiumUser || (userRole != null && rolesWithWriteAccess.includes(userRole));
-  const { data: organizations, isLoading: isOrganizationsLoading } = useOrganizations();
-  const { data: projects, isLoading: isProjectsLoading } = useProjects();
+  const {
+    companies: cavadalabsCompanies,
+    projects: cavadalabsProjects,
+    isLoading: isCavadalabsContextLoading,
+  } = useCavadaLabsKeyContextOptions(accessToken);
   const { data: uiSettingsData } = useUISettings();
   const { data: tagsData } = useTags();
-  const enableProjectsUI = Boolean(uiSettingsData?.values?.enable_projects_ui);
   const disableCustomApiKeys = Boolean(uiSettingsData?.values?.disable_custom_api_keys);
   const tagOptions = tagsData
     ? Object.values(tagsData).map((tag) => ({ value: tag.name, label: tag.name }))
@@ -189,7 +188,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
   const [promptsList, setPromptsList] = useState<string[]>([]);
   const [loggingSettings, setLoggingSettings] = useState<any[]>([]);
   const [selectedCreateKeyTeam, setSelectedCreateKeyTeam] = useState<Team | null>(team);
-  const [selectedOrganizationId, setSelectedOrganizationId] = useState<string | null>(null);
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [isCreateUserModalVisible, setIsCreateUserModalVisible] = useState(false);
   const [newlyCreatedUserId, setNewlyCreatedUserId] = useState<string | null>(null);
@@ -219,7 +218,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
     setRouterSettings(null);
     setRouterSettingsKey((prev) => prev + 1);
     setSelectedAgentId(null);
-    setSelectedOrganizationId(null);
+    setSelectedCompanyId(null);
     setSelectedProjectId(null);
     setBudgetLimits([]);
   };
@@ -238,7 +237,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
     setRouterSettings(null);
     setRouterSettingsKey((prev) => prev + 1);
     setSelectedAgentId(null);
-    setSelectedOrganizationId(null);
+    setSelectedCompanyId(null);
     setSelectedProjectId(null);
     setBudgetLimits([]);
   };
@@ -569,9 +568,8 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
   // watches for pendingPrefillModels + modelsToPick to both be populated.
   useEffect(() => {
     if (selectedProjectId) {
-      // When a project is selected, use the project's models
-      const project = projects?.find((p) => p.project_id === selectedProjectId);
-      const projectModels = project?.models ?? [];
+      const project = cavadalabsProjects.find((p) => p.project_id === selectedProjectId);
+      const projectModels = project?.allowed_models ?? [];
       setModelsToPick(projectModels);
       form.setFieldValue("models", []);
       return;
@@ -588,7 +586,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
     }
     // Clear MCP server selection when team changes (available servers may differ)
     form.setFieldValue("allowed_mcp_servers_and_groups", { servers: [], accessGroups: [] });
-  }, [selectedCreateKeyTeam, selectedProjectId, accessToken, userID, userRole, form]);
+  }, [selectedCreateKeyTeam, selectedProjectId, accessToken, userID, userRole, form, cavadalabsProjects]);
 
   // Apply deferred model prefill once the available model list arrives.
   // This handles timing where prefill data arrives before or after models are fetched.
@@ -606,20 +604,6 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
     }
     setPendingPrefillModels(null);
   }, [pendingPrefillModels, modelsToPick, form]);
-
-  // Sync team when project is selected but teams loaded later (race condition)
-  useEffect(() => {
-    if (!selectedProjectId || !teams) return;
-    const project = projects?.find((p) => p.project_id === selectedProjectId);
-    if (!project?.team_id) return;
-    // If team is already set correctly, skip
-    if (selectedCreateKeyTeam?.team_id === project.team_id) return;
-    const projectTeam = teams.find((t) => t.team_id === project.team_id) || null;
-    if (projectTeam) {
-      setSelectedCreateKeyTeam(projectTeam);
-      form.setFieldValue("team_id", projectTeam.team_id);
-    }
-  }, [teams, selectedProjectId, projects]);
 
   // Add a callback function to handle user creation
   const handleUserCreated = (userId: string) => {
@@ -778,27 +762,70 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
             <Form.Item
               label={
                 <span>
-                  Organization{" "}
-                  <Tooltip title="The organization this key belongs to. Selecting an organization filters the available teams.">
+                  Company{" "}
+                  <Tooltip title="The CavadaLabs company this key belongs to.">
                     <InfoCircleOutlined style={{ marginLeft: "4px" }} />
                   </Tooltip>
                 </span>
               }
-              name="organization_id"
+              name="cavadalabs_company_id"
               className="mt-4"
+              rules={[{ required: true, message: "Please select a company" }]}
             >
-              <OrganizationDropdown
-                organizations={organizations}
-                loading={isOrganizationsLoading}
-                disabled={userRole !== "Admin"}
-                onChange={(orgId) => {
-                  setSelectedOrganizationId(orgId || null);
-                  // Clear team and project when org changes
-                  setSelectedCreateKeyTeam(null);
+              <Select
+                showSearch
+                allowClear
+                loading={isCavadalabsContextLoading}
+                placeholder="Select company"
+                optionFilterProp="label"
+                onChange={(companyId) => {
+                  setSelectedCompanyId(companyId || null);
                   setSelectedProjectId(null);
-                  form.setFieldValue("team_id", undefined);
-                  form.setFieldValue("project_id", undefined);
+                  form.setFieldValue("cavadalabs_project_id", undefined);
                 }}
+                options={cavadalabsCompanies.map((company) => ({
+                  label: `${company.legal_name || company.company_id} (${company.company_id})`,
+                  value: company.company_id,
+                }))}
+              />
+            </Form.Item>
+            <Form.Item
+              label={
+                <span>
+                  Project{" "}
+                  <Tooltip title="The CavadaLabs project this key is scoped to. This is the canonical project context for usage and billing.">
+                    <InfoCircleOutlined style={{ marginLeft: "4px" }} />
+                  </Tooltip>
+                </span>
+              }
+              name="cavadalabs_project_id"
+              className="mt-4"
+              rules={[{ required: true, message: "Please select a project" }]}
+            >
+              <Select
+                showSearch
+                allowClear
+                loading={isCavadalabsContextLoading}
+                placeholder="Select project"
+                optionFilterProp="label"
+                onChange={(projectId) => {
+                  if (!projectId) {
+                    setSelectedProjectId(null);
+                    return;
+                  }
+                  const project = cavadalabsProjects.find((item) => item.project_id === projectId);
+                  setSelectedProjectId(projectId);
+                  if (project?.company_id) {
+                    setSelectedCompanyId(project.company_id);
+                    form.setFieldValue("cavadalabs_company_id", project.company_id);
+                  }
+                }}
+                options={cavadalabsProjects
+                  .filter((project) => !selectedCompanyId || project.company_id === selectedCompanyId)
+                  .map((project) => ({
+                    label: `${project.name || project.project_id} (${project.project_id})`,
+                    value: project.project_id,
+                  }))}
               />
             </Form.Item>
             <Form.Item
@@ -822,52 +849,12 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
               help={keyOwner === "service_account" ? "required" : ""}
             >
               <TeamDropdown
-                disabled={selectedProjectId !== null}
-                organizationId={selectedOrganizationId}
+                disabled={false}
                 onTeamSelect={(team) => {
                   setSelectedCreateKeyTeam(team);
-                  setSelectedProjectId(null);
-                  form.setFieldValue("project_id", undefined);
-                  // Auto-populate org from team for non-admin users
-                  if (team?.organization_id) {
-                    setSelectedOrganizationId(team.organization_id);
-                    form.setFieldValue("organization_id", team.organization_id);
-                  } else if (!team) {
-                    setSelectedOrganizationId(null);
-                    form.setFieldValue("organization_id", undefined);
-                  }
                 }}
               />
             </Form.Item>
-            {enableProjectsUI && (
-              <Form.Item
-                label={
-                  <span>
-                    Project{" "}
-                    <Tooltip title="Assign this key to a project. Selecting a project will lock the team to the project's team.">
-                      <InfoCircleOutlined style={{ marginLeft: "4px" }} />
-                    </Tooltip>
-                  </span>
-                }
-                name="project_id"
-                className="mt-4"
-              >
-                <ProjectDropdown
-                  projects={projects}
-                  teamId={selectedCreateKeyTeam?.team_id}
-                  loading={isProjectsLoading || !teams}
-                  onChange={(projectId) => {
-                    if (!projectId) {
-                      setSelectedProjectId(null);
-                      setSelectedCreateKeyTeam(null);
-                      form.setFieldValue("team_id", undefined);
-                      return;
-                    }
-                    setSelectedProjectId(projectId);
-                  }}
-                />
-              </Form.Item>
-            )}
           </div>
 
           {/* Show message when team selection is required */}
@@ -1603,6 +1590,9 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                           "key_alias",
                           "team_id",
                           "organization_id",
+                          "project_id",
+                          "cavadalabs_company_id",
+                          "cavadalabs_project_id",
                           "models",
                           "duration",
                           "metadata",

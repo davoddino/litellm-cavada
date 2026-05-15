@@ -93,6 +93,8 @@ const mockKey: KeyResponse = {
   team_id: "team-1",
   max_parallel_requests: 10,
   metadata: {},
+  cavadalabs_company_id: "company-1",
+  cavadalabs_project_id: "project-1",
   tpm_limit: 1000,
   rpm_limit: 100,
   duration: "30d",
@@ -209,7 +211,8 @@ beforeEach(() => {
     filteredKeys: [mockKey],
     filteredTotalCount: null,
     allTeams: [mockTeam],
-    allOrganizations: [mockOrganization],
+    allCompanies: [{ company_id: "company-1", legal_name: "Acme Srl", status: "active" }],
+    allProjects: [{ project_id: "project-1", company_id: "company-1", name: "Support", status: "production" }],
     handleFilterChange: vi.fn(),
     handleFilterReset: vi.fn(),
   });
@@ -253,6 +256,8 @@ it("should display key information correctly", async () => {
   await waitFor(() => {
     expect(screen.getByText("Test Key Alias")).toBeInTheDocument();
     expect(screen.getByText("Test Team")).toBeInTheDocument();
+    expect(screen.getByText("Acme Srl")).toBeInTheDocument();
+    expect(screen.getByText("Support")).toBeInTheDocument();
     expect(screen.getByText("5.5000")).toBeInTheDocument();
   });
 });
@@ -394,6 +399,8 @@ it("should render table headers correctly", () => {
   expect(screen.getByText("Key ID")).toBeInTheDocument();
   expect(screen.getByText("Key Alias")).toBeInTheDocument();
   expect(screen.getByText("Team")).toBeInTheDocument();
+  expect(screen.getByText("Company")).toBeInTheDocument();
+  expect(screen.getByText("Project")).toBeInTheDocument();
   expect(screen.getByText("Models")).toBeInTheDocument();
   expect(screen.getByText("Spend (USD)")).toBeInTheDocument();
 });

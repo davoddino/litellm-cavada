@@ -5,6 +5,22 @@ import { renderWithProviders } from "../../../tests/test-utils";
 import { KeyResponse } from "../key_team_helpers/key_list";
 import { KeyEditView } from "./key_edit_view";
 
+const { cavadalabsKeyContextOptions } = vi.hoisted(() => ({
+  cavadalabsKeyContextOptions: {
+    companies: [{ company_id: "company-1", legal_name: "Acme Srl", status: "active" }],
+    projects: [
+      {
+        project_id: "project-1",
+        company_id: "company-1",
+        name: "Support",
+        status: "production",
+        allowed_models: ["team-model-1"],
+      },
+    ],
+    isLoading: false,
+  },
+}));
+
 vi.mock("../networking", async () => {
   const actual = await vi.importActual("../networking");
   return {
@@ -53,14 +69,20 @@ vi.mock("../organisms/create_key_button", () => ({
   fetchTeamModels: vi.fn().mockResolvedValue(["team-model-1", "team-model-2"]),
 }));
 
-vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
-  useOrganizations: vi.fn().mockReturnValue({
-    data: [
-      { organization_id: "org-1", organization_alias: "Engineering" },
-      { organization_id: "org-2", organization_alias: "Sales" },
-    ],
+vi.mock("@/app/(dashboard)/hooks/mcpServers/useMCPToolsets", () => ({
+  useMCPToolsets: vi.fn().mockReturnValue({
+    data: [],
     isLoading: false,
+    isError: false,
   }),
+}));
+
+vi.mock("../cavadalabs/keyContext", () => ({
+  getKeyCavadaLabsCompanyId: (key: any) =>
+    key.cavadalabs_company_id || key.metadata?.cavadalabs_company_id || key.metadata?.cavadalabs?.company_id || null,
+  getKeyCavadaLabsProjectId: (key: any) =>
+    key.cavadalabs_project_id || key.metadata?.cavadalabs_project_id || key.metadata?.cavadalabs?.project_id || null,
+  useCavadaLabsKeyContextOptions: () => cavadalabsKeyContextOptions,
 }));
 
 vi.mock("@/app/(dashboard)/hooks/accessGroups/useAccessGroups", () => ({
@@ -102,7 +124,15 @@ describe("KeyEditView", () => {
     metadata: {
       logging: [],
       tags: ["test-tag"],
+      cavadalabs_company_id: "company-1",
+      cavadalabs_project_id: "project-1",
+      cavadalabs: {
+        company_id: "company-1",
+        project_id: "project-1",
+      },
     },
+    cavadalabs_company_id: "company-1",
+    cavadalabs_project_id: "project-1",
     tpm_limit: 10,
     rpm_limit: 10,
     duration: "30d",
@@ -190,7 +220,7 @@ describe("KeyEditView", () => {
     });
   });
 
-  it("should not render tags in metadata textarea", async () => {
+  it("should not render tags or CavadaLabs context in metadata textarea", async () => {
     const { getByLabelText } = renderWithProviders(
       <KeyEditView
         keyData={MOCK_KEY_DATA}
@@ -273,6 +303,25 @@ describe("KeyEditView", () => {
     });
   });
 
+  it("should display CavadaLabs company and project fields", async () => {
+    renderWithProviders(
+      <KeyEditView
+        keyData={MOCK_KEY_DATA}
+        onCancel={() => {}}
+        onSubmit={async () => {}}
+        accessToken={"test-token"}
+        userID={"test-user"}
+        userRole={"admin"}
+        premiumUser={false}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Company")).toBeInTheDocument();
+      expect(screen.getByText("Project")).toBeInTheDocument();
+    });
+  });
+
   it("should display max budget input field", async () => {
     renderWithProviders(
       <KeyEditView
@@ -332,6 +381,10 @@ describe("KeyEditView", () => {
 
     await waitFor(() => {
       expect(onSubmitMock).toHaveBeenCalled();
+      const callArgs = onSubmitMock.mock.calls[0][0];
+      expect(callArgs.cavadalabs_company_id).toBe("company-1");
+      expect(callArgs.cavadalabs_project_id).toBe("project-1");
+      expect(callArgs.organization_id).toBeUndefined();
     });
   });
 
@@ -689,8 +742,8 @@ describe("KeyEditView", () => {
     }
   });
 
-  describe("organization dropdown", () => {
-    it("should render the organization dropdown", async () => {
+  describe("CavadaLabs company/project selectors", () => {
+    it("should render company and project selectors instead of organization", async () => {
       renderWithProviders(
         <KeyEditView
           keyData={MOCK_KEY_DATA}
@@ -704,12 +757,15 @@ describe("KeyEditView", () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText("Organization")).toBeInTheDocument();
+        expect(screen.getByText("Company")).toBeInTheDocument();
+        expect(screen.getByText("Project")).toBeInTheDocument();
       });
+
+      expect(screen.queryByText("Organization")).not.toBeInTheDocument();
     });
 
-    it("should disable the organization dropdown for non-admin users", async () => {
-      const { container } = renderWithProviders(
+    it("should keep company and project selectors available for non-admin users", async () => {
+      renderWithProviders(
         <KeyEditView
           keyData={MOCK_KEY_DATA}
           onCancel={() => {}}
@@ -722,56 +778,42 @@ describe("KeyEditView", () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText("Organization")).toBeInTheDocument();
+        expect(screen.getByText("Company")).toBeInTheDocument();
+        expect(screen.getByText("Project")).toBeInTheDocument();
       });
 
-      const orgFormItem = screen.getByText("Organization").closest(".ant-form-item");
-      const disabledSelect = orgFormItem?.querySelector(".ant-select-disabled");
-      expect(disabledSelect).toBeTruthy();
+      const companyFormItem = screen.getByText("Company").closest(".ant-form-item");
+      const projectFormItem = screen.getByText("Project").closest(".ant-form-item");
+      expect(companyFormItem?.querySelector(".ant-select-disabled")).toBeFalsy();
+      expect(projectFormItem?.querySelector(".ant-select-disabled")).toBeFalsy();
     });
 
-    it("should not disable the organization dropdown for admin users", async () => {
-      const { container } = renderWithProviders(
+    it("should not submit organization_id when saving CavadaLabs key context", async () => {
+      const onSubmitMock = vi.fn().mockResolvedValue(undefined);
+      renderWithProviders(
         <KeyEditView
           keyData={MOCK_KEY_DATA}
           onCancel={() => {}}
-          onSubmit={async () => {}}
-          accessToken=""
-          userID=""
+          onSubmit={onSubmitMock}
+          accessToken="test-token"
+          userID="test-user"
           userRole="Admin"
           premiumUser={false}
         />,
       );
 
       await waitFor(() => {
-        expect(screen.getByText("Organization")).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: /save changes/i })).toBeInTheDocument();
       });
 
-      const orgFormItem = screen.getByText("Organization").closest(".ant-form-item");
-      const disabledSelect = orgFormItem?.querySelector(".ant-select-disabled");
-      expect(disabledSelect).toBeFalsy();
-    });
-
-    it("should initialize organization from keyData", async () => {
-      const keyWithOrg = {
-        ...MOCK_KEY_DATA,
-        organization_id: "org-1",
-      };
-
-      renderWithProviders(
-        <KeyEditView
-          keyData={keyWithOrg}
-          onCancel={() => {}}
-          onSubmit={async () => {}}
-          accessToken=""
-          userID=""
-          userRole="Admin"
-          premiumUser={false}
-        />,
-      );
+      await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
 
       await waitFor(() => {
-        expect(screen.getByText("Engineering")).toBeInTheDocument();
+        expect(onSubmitMock).toHaveBeenCalled();
+        const callArgs = onSubmitMock.mock.calls[0][0];
+        expect(callArgs.cavadalabs_company_id).toBe("company-1");
+        expect(callArgs.cavadalabs_project_id).toBe("project-1");
+        expect(callArgs.organization_id).toBeUndefined();
       });
     });
   });

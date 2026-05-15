@@ -3221,6 +3221,8 @@ export const keyListCall = async (
   sortOrder: string | null = null,
   expand: string | null = null,
   status: string | null = null,
+  cavadalabsCompanyId: string | null = null,
+  cavadalabsProjectId: string | null = null,
 ) => {
   /**
    * Get all available teams on proxy
@@ -3272,6 +3274,14 @@ export const keyListCall = async (
 
     if (status) {
       queryParams.append("status", status);
+    }
+
+    if (cavadalabsCompanyId) {
+      queryParams.append("cavadalabs_company_id", cavadalabsCompanyId);
+    }
+
+    if (cavadalabsProjectId) {
+      queryParams.append("cavadalabs_project_id", cavadalabsProjectId);
     }
 
     queryParams.append("return_full_object", "true");

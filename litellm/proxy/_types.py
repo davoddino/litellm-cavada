@@ -1101,6 +1101,8 @@ class GenerateKeyRequest(KeyRequestBase):
     )
     organization_id: Optional[str] = None
     project_id: Optional[str] = None
+    cavadalabs_company_id: Optional[str] = None
+    cavadalabs_project_id: Optional[str] = None
 
 
 class GenerateKeyResponse(KeyRequestBase):
@@ -1111,6 +1113,8 @@ class GenerateKeyResponse(KeyRequestBase):
     token_id: Optional[str] = None
     organization_id: Optional[str] = None
     project_id: Optional[str] = None
+    cavadalabs_company_id: Optional[str] = None
+    cavadalabs_project_id: Optional[str] = None
     litellm_budget_table: Optional[Any] = None
     token: Optional[str] = None
     created_by: Optional[str] = None
@@ -1140,6 +1144,26 @@ class GenerateKeyResponse(KeyRequestBase):
                 except json.JSONDecodeError:
                     raise ValueError(f"Field {field} should be a valid dictionary")
 
+        metadata = values.get("metadata")
+        if isinstance(metadata, dict):
+            cavadalabs_metadata = metadata.get("cavadalabs")
+            if values.get("cavadalabs_company_id") is None:
+                values["cavadalabs_company_id"] = metadata.get(
+                    "cavadalabs_company_id"
+                ) or (
+                    cavadalabs_metadata.get("company_id")
+                    if isinstance(cavadalabs_metadata, dict)
+                    else None
+                )
+            if values.get("cavadalabs_project_id") is None:
+                values["cavadalabs_project_id"] = metadata.get(
+                    "cavadalabs_project_id"
+                ) or (
+                    cavadalabs_metadata.get("project_id")
+                    if isinstance(cavadalabs_metadata, dict)
+                    else None
+                )
+
         return values
 
 
@@ -1155,6 +1179,8 @@ class UpdateKeyRequest(KeyRequestBase):
     auto_rotate: Optional[bool] = None
     rotation_interval: Optional[str] = None
     organization_id: Optional[str] = None
+    cavadalabs_company_id: Optional[str] = None
+    cavadalabs_project_id: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_temp_budget(self) -> "UpdateKeyRequest":
@@ -2527,6 +2553,8 @@ class LiteLLM_VerificationToken(LiteLLMPydanticObjectBase):
     project_id: Optional[str] = None
     max_parallel_requests: Optional[int] = None
     metadata: Dict = {}
+    cavadalabs_company_id: Optional[str] = None
+    cavadalabs_project_id: Optional[str] = None
     tpm_limit: Optional[int] = None
     rpm_limit: Optional[int] = None
     budget_duration: Optional[str] = None
@@ -2556,6 +2584,34 @@ class LiteLLM_VerificationToken(LiteLLMPydanticObjectBase):
     router_settings: Optional[dict] = None
     budget_limits: Optional[List[dict]] = None  # multiple concurrent budget windows
     model_config = ConfigDict(protected_namespaces=())
+
+    @model_validator(mode="before")
+    @classmethod
+    def set_cavadalabs_context_from_metadata(cls, values):
+        if not isinstance(values, dict):
+            return values
+        metadata = values.get("metadata")
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+        if not isinstance(metadata, dict):
+            return values
+        cavadalabs_metadata = metadata.get("cavadalabs")
+        if values.get("cavadalabs_company_id") is None:
+            values["cavadalabs_company_id"] = metadata.get("cavadalabs_company_id") or (
+                cavadalabs_metadata.get("company_id")
+                if isinstance(cavadalabs_metadata, dict)
+                else None
+            )
+        if values.get("cavadalabs_project_id") is None:
+            values["cavadalabs_project_id"] = metadata.get("cavadalabs_project_id") or (
+                cavadalabs_metadata.get("project_id")
+                if isinstance(cavadalabs_metadata, dict)
+                else None
+            )
+        return values
 
 
 class LiteLLM_DeletedVerificationToken(LiteLLM_VerificationToken):
@@ -3467,6 +3523,8 @@ class SpendLogsMetadata(TypedDict):
     user_api_key_org_id: Optional[str]
     user_api_key_user_id: Optional[str]
     user_api_key_team_alias: Optional[str]
+    cavadalabs_company_id: Optional[str]
+    cavadalabs_project_id: Optional[str]
     spend_logs_metadata: Optional[
         dict
     ]  # special param to log k,v pairs to spendlogs for a call

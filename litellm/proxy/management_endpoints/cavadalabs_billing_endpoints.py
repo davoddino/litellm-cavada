@@ -4,8 +4,12 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
-from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
+from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.cavadalabs.access_control import (
+    require_company_access,
+    resolve_cavadalabs_company_usage_scope,
+)
 from litellm.proxy.cavadalabs.billing import CavadaLabsBillingService
 from litellm.proxy.management_helpers.utils import management_endpoint_wrapper
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
@@ -17,26 +21,7 @@ from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
 router = APIRouter(prefix="/cavadalabs", tags=["cavadalabs-billing"])
 
 
-def _require_proxy_admin(user_api_key_dict: UserAPIKeyAuth) -> None:
-    if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"error": "CavadaLabs billing mutations require proxy_admin"},
-        )
-
-
-def _require_admin_view(user_api_key_dict: UserAPIKeyAuth) -> None:
-    if user_api_key_dict.user_role not in {
-        LitellmUserRoles.PROXY_ADMIN,
-        LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
-    }:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail={"error": "CavadaLabs billing access requires admin view"},
-        )
-
-
-def _service() -> CavadaLabsBillingService:
+def _prisma_client():
     from litellm.proxy import proxy_server
 
     if proxy_server.prisma_client is None:
@@ -44,7 +29,11 @@ def _service() -> CavadaLabsBillingService:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": "Database is required for CavadaLabs billing"},
         )
-    return CavadaLabsBillingService(proxy_server.prisma_client)
+    return proxy_server.prisma_client
+
+
+def _service() -> CavadaLabsBillingService:
+    return CavadaLabsBillingService(_prisma_client())
 
 
 @router.post(
@@ -58,8 +47,16 @@ async def generate_billing_report(
     http_request: Request,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> CavadaLabsBillingReportResponse:
-    _require_proxy_admin(user_api_key_dict)
-    return await _service().generate_monthly_report(data, user_api_key_dict)
+    prisma_client = _prisma_client()
+    await require_company_access(
+        prisma_client.db,
+        company_id=data.company_id,
+        user_api_key_dict=user_api_key_dict,
+        require_admin=True,
+    )
+    return await CavadaLabsBillingService(prisma_client).generate_monthly_report(
+        data, user_api_key_dict
+    )
 
 
 @router.get(
@@ -77,9 +74,23 @@ async def list_billing_reports(
     skip: int = Query(default=0, ge=0),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> CavadaLabsBillingReportListResponse:
-    _require_admin_view(user_api_key_dict)
-    return await _service().list_billing_reports(
+    prisma_client = _prisma_client()
+    company_ids = None
+    if company_id is not None:
+        await require_company_access(
+            prisma_client.db,
+            company_id=company_id,
+            user_api_key_dict=user_api_key_dict,
+        )
+    else:
+        company_ids = await resolve_cavadalabs_company_usage_scope(
+            prisma_client.db,
+            user_api_key_dict=user_api_key_dict,
+            requested_company_ids=None,
+        )
+    return await CavadaLabsBillingService(prisma_client).list_billing_reports(
         company_id=company_id,
+        company_ids=company_ids,
         year=year,
         month=month,
         take=take,
@@ -98,5 +109,11 @@ async def get_billing_report(
     http_request: Request,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> CavadaLabsBillingReportResponse:
-    _require_admin_view(user_api_key_dict)
-    return await _service().get_billing_report(report_id)
+    prisma_client = _prisma_client()
+    report = await CavadaLabsBillingService(prisma_client).get_billing_report(report_id)
+    await require_company_access(
+        prisma_client.db,
+        company_id=report.company_id,
+        user_api_key_dict=user_api_key_dict,
+    )
+    return report

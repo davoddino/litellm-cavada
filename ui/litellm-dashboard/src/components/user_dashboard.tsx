@@ -69,7 +69,6 @@ const UserDashboard: React.FC<UserDashboardProps> = ({
   setTeams,
   setKeys,
   premiumUser,
-  organizations,
   addKey,
   createClicked,
   autoOpenCreate,
@@ -338,7 +337,7 @@ const UserDashboard: React.FC<UserDashboardProps> = ({
               prefillData={prefillData}
             />
           )}
-          <VirtualKeysTable teams={teams} organizations={organizations} />
+          <VirtualKeysTable teams={teams} />
         </Col>
       </Grid>
     </div>

@@ -5,6 +5,9 @@ from typing import Any, Dict, List, Optional
 from fastapi import HTTPException, status
 
 from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy.cavadalabs.compatibility import (
+    ensure_company_compat_organization,
+)
 from litellm.proxy.cavadalabs.dispatcher_base import CavadaLabsDispatcherBase
 from litellm.proxy.cavadalabs.dispatcher_shared import (
     _actor_user_id,
@@ -44,6 +47,14 @@ class CavadaLabsCompanyOperations(CavadaLabsDispatcherBase):
             raise
 
         response = _parse_response(row, CavadaLabsCompanyResponse)
+        litellm_organization_id = await ensure_company_compat_organization(
+            self.prisma_client,
+            company=response,
+            user_api_key_dict=user_api_key_dict,
+        )
+        response = response.model_copy(
+            update={"litellm_organization_id": litellm_organization_id}
+        )
         await self._audit(
             user_api_key_dict=user_api_key_dict,
             action="created",
@@ -69,12 +80,17 @@ class CavadaLabsCompanyOperations(CavadaLabsDispatcherBase):
     async def list_companies(
         self,
         status_filter: Optional[CavadaLabsStatus] = None,
+        company_ids: Optional[List[str]] = None,
         take: int = 100,
         skip: int = 0,
     ) -> List[CavadaLabsCompanyResponse]:
         where: Dict[str, Any] = {}
         if status_filter is not None:
             where["status"] = status_filter.value
+        if company_ids is not None:
+            if not company_ids:
+                return []
+            where["company_id"] = {"in": company_ids}
         rows = await self.db.cavadalabs_companytable.find_many(
             where=where or None,
             take=take,
@@ -100,6 +116,14 @@ class CavadaLabsCompanyOperations(CavadaLabsDispatcherBase):
             data=update_data,
         )
         response = _parse_response(row, CavadaLabsCompanyResponse)
+        litellm_organization_id = await ensure_company_compat_organization(
+            self.prisma_client,
+            company=response,
+            user_api_key_dict=user_api_key_dict,
+        )
+        response = response.model_copy(
+            update={"litellm_organization_id": litellm_organization_id}
+        )
         await self._audit(
             user_api_key_dict=user_api_key_dict,
             action="updated",

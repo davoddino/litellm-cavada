@@ -282,3 +282,33 @@ async def test_should_list_and_get_billing_reports():
     ]
     assert where["company_id"] == "company-1"
     assert where["period_start"] == datetime(2026, 5, 1, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_should_list_billing_reports_for_authorized_company_scope():
+    service, prisma_client = _service()
+    prisma_client.db.cavadalabs_billingreporttable.find_many = AsyncMock(
+        return_value=[
+            _billing_report_row(report_id="billing-report-1", company_id="company-1")
+        ]
+    )
+
+    listed = await service.list_billing_reports(company_ids=["company-1"])
+
+    assert listed.count == 1
+    where = prisma_client.db.cavadalabs_billingreporttable.find_many.call_args.kwargs[
+        "where"
+    ]
+    assert where["company_id"] == {"in": ["company-1"]}
+
+
+@pytest.mark.asyncio
+async def test_should_return_empty_billing_reports_for_empty_company_scope():
+    service, prisma_client = _service()
+    prisma_client.db.cavadalabs_billingreporttable.find_many = AsyncMock()
+
+    listed = await service.list_billing_reports(company_ids=[])
+
+    assert listed.count == 0
+    assert listed.billing_reports == []
+    prisma_client.db.cavadalabs_billingreporttable.find_many.assert_not_awaited()

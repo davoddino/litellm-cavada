@@ -63,11 +63,14 @@ def _row_to_dict(row: Any, response_model: Type[ModelT]) -> Dict[str, Any]:
 
     for key in _JSON_FIELDS:
         value = data.get(key)
-        if isinstance(value, str):
+        json_value = getattr(value, "data", value)
+        if isinstance(json_value, str):
             try:
-                data[key] = json.loads(value)
+                data[key] = json.loads(json_value)
             except json.JSONDecodeError:
                 data[key] = {}
+        else:
+            data[key] = json_value
     return data
 
 
@@ -285,28 +288,28 @@ class CavadaLabsBillingService:
         )
         create_data = serialize_prisma_json_fields(
             {
-            "company_id": data.company_id,
-            "report_version": report_version,
-            "period_start": period_start,
-            "period_end": period_end,
-            "currency": data.currency,
-            "status": CavadaLabsBillingReportStatus.GENERATED.value,
-            "formats": formats,
-            "total_requests": calculation["totals"]["requests"],
-            "total_tokens": calculation["totals"]["total_tokens"],
-            "total_spend": calculation["totals"]["total_spend"],
-            "provider_cost": calculation["totals"]["provider_cost"],
-            "cavadalabs_node_cost": calculation["totals"]["cavadalabs_node_cost"],
-            "tax_rate": data.tax_rate,
-            "tax_amount": calculation["totals"]["tax_amount"],
-            "grand_total": calculation["totals"]["grand_total"],
-            "checksum": checksum,
-            "inputs_snapshot": calculation["inputs_snapshot"],
-            "totals": calculation["totals"],
-            "breakdowns": calculation["breakdowns"],
-            "artifacts": artifacts,
-            "metadata": data.metadata,
-            "generated_by": _actor_user_id(user_api_key_dict),
+                "company_id": data.company_id,
+                "report_version": report_version,
+                "period_start": period_start,
+                "period_end": period_end,
+                "currency": data.currency,
+                "status": CavadaLabsBillingReportStatus.GENERATED.value,
+                "formats": formats,
+                "total_requests": calculation["totals"]["requests"],
+                "total_tokens": calculation["totals"]["total_tokens"],
+                "total_spend": calculation["totals"]["total_spend"],
+                "provider_cost": calculation["totals"]["provider_cost"],
+                "cavadalabs_node_cost": calculation["totals"]["cavadalabs_node_cost"],
+                "tax_rate": data.tax_rate,
+                "tax_amount": calculation["totals"]["tax_amount"],
+                "grand_total": calculation["totals"]["grand_total"],
+                "checksum": checksum,
+                "inputs_snapshot": calculation["inputs_snapshot"],
+                "totals": calculation["totals"],
+                "breakdowns": calculation["breakdowns"],
+                "artifacts": artifacts,
+                "metadata": data.metadata,
+                "generated_by": _actor_user_id(user_api_key_dict),
             }
         )
         row = await self.db.cavadalabs_billingreporttable.create(data=create_data)
@@ -331,6 +334,7 @@ class CavadaLabsBillingService:
     async def list_billing_reports(
         self,
         company_id: Optional[str] = None,
+        company_ids: Optional[List[str]] = None,
         year: Optional[int] = None,
         month: Optional[int] = None,
         take: int = 100,
@@ -339,6 +343,13 @@ class CavadaLabsBillingService:
         where: Dict[str, Any] = {}
         if company_id is not None:
             where["company_id"] = company_id
+        elif company_ids is not None:
+            if not company_ids:
+                return CavadaLabsBillingReportListResponse(
+                    billing_reports=[],
+                    count=0,
+                )
+            where["company_id"] = {"in": company_ids}
         if year is not None and month is not None:
             period_start, period_end = _month_range(year, month)
             where["period_start"] = period_start
@@ -832,15 +843,15 @@ class CavadaLabsBillingService:
             await self.db.cavadalabs_auditlogtable.create(
                 data=serialize_prisma_json_fields(
                     {
-                    "actor_user_id": _actor_user_id(user_api_key_dict),
-                    "actor_api_key_hash": _actor_key_hash(user_api_key_dict),
-                    "action": action,
-                    "resource_type": resource_type,
-                    "resource_id": resource_id,
-                    "company_id": company_id,
-                    "project_id": project_id,
-                    "before_value": before_value,
-                    "after_value": after_value,
+                        "actor_user_id": _actor_user_id(user_api_key_dict),
+                        "actor_api_key_hash": _actor_key_hash(user_api_key_dict),
+                        "action": action,
+                        "resource_type": resource_type,
+                        "resource_id": resource_id,
+                        "company_id": company_id,
+                        "project_id": project_id,
+                        "before_value": before_value,
+                        "after_value": after_value,
                     }
                 )
             )

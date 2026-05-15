@@ -31,6 +31,22 @@ const { formMock, setFieldsValueMock, radioGroupValueRef, formStateRef, mockKeyC
   };
 });
 
+const { cavadalabsKeyContextOptions } = vi.hoisted(() => ({
+  cavadalabsKeyContextOptions: {
+    companies: [{ company_id: "company-1", legal_name: "Acme Srl", status: "active" }],
+    projects: [
+      {
+        project_id: "project-1",
+        company_id: "company-1",
+        name: "Support",
+        status: "production",
+        allowed_models: ["gpt-4"],
+      },
+    ],
+    isLoading: false,
+  },
+}));
+
 const defaultAuthorizedState = {
   accessToken: "test-token",
   userId: "test-user-id",
@@ -270,43 +286,8 @@ vi.mock("@/app/(dashboard)/hooks/tags/useTags", () => ({
   }),
 }));
 
-vi.mock("@/app/(dashboard)/hooks/projects/useProjects", () => ({
-  useProjects: vi.fn().mockReturnValue({ data: [], isLoading: false }),
-}));
-
-vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
-  useOrganizations: vi.fn().mockReturnValue({
-    data: [
-      { organization_id: "org-1", organization_alias: "Engineering" },
-      { organization_id: "org-2", organization_alias: "Sales" },
-    ],
-    isLoading: false,
-  }),
-}));
-
-vi.mock("../common_components/OrganizationDropdown", () => ({
-  default: ({ value, onChange, disabled }: { value?: string; onChange?: (v: string) => void; disabled?: boolean }) => (
-    <select
-      data-testid="org-dropdown"
-      disabled={disabled}
-      value={value || ""}
-      onChange={(e) => onChange?.(e.target.value)}
-    >
-      <option value="">Select org</option>
-      <option value="org-1">Engineering</option>
-      <option value="org-2">Sales</option>
-    </select>
-  ),
-}));
-
-vi.mock("../common_components/ProjectDropdown", () => ({
-  default: ({ value, onChange }: { value?: string; onChange?: (v: string) => void }) => (
-    <input
-      data-testid="project-dropdown"
-      value={value || ""}
-      onChange={(e) => onChange?.(e.target.value)}
-    />
-  ),
+vi.mock("../cavadalabs/keyContext", () => ({
+  useCavadaLabsKeyContextOptions: () => cavadalabsKeyContextOptions,
 }));
 
 vi.mock("../common_components/AccessGroupSelector", () => ({
@@ -481,8 +462,8 @@ describe("CreateKey", () => {
     });
   });
 
-  describe("organization dropdown", () => {
-    it("should render the organization dropdown when modal is open", async () => {
+  describe("CavadaLabs company/project context", () => {
+    it("should render company and project options when modal is open", async () => {
       renderWithProviders(<CreateKey {...defaultProps} />);
 
       act(() => {
@@ -490,13 +471,12 @@ describe("CreateKey", () => {
       });
 
       await waitFor(() => {
-        expect(screen.getByTestId("org-dropdown")).toBeInTheDocument();
+        expect(screen.getByText("Acme Srl (company-1)")).toBeInTheDocument();
+        expect(screen.getByText("Support (project-1)")).toBeInTheDocument();
       });
     });
 
-    it("should disable the organization dropdown for non-admin users", async () => {
-      authorizedState = { ...defaultAuthorizedState, userRole: "Internal User" };
-
+    it("should render team dropdown alongside company and project selectors", async () => {
       renderWithProviders(<CreateKey {...defaultProps} />);
 
       act(() => {
@@ -504,42 +484,13 @@ describe("CreateKey", () => {
       });
 
       await waitFor(() => {
-        expect(screen.getByTestId("org-dropdown")).toBeDisabled();
-      });
-    });
-
-    it("should enable the organization dropdown for admin users", async () => {
-      authorizedState = { ...defaultAuthorizedState, userRole: "Admin" };
-
-      renderWithProviders(<CreateKey {...defaultProps} />);
-
-      act(() => {
-        fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
-      });
-
-      await waitFor(() => {
-        expect(screen.getByTestId("org-dropdown")).not.toBeDisabled();
-      });
-    });
-
-    it("should render team dropdown alongside organization dropdown", async () => {
-      const teamsWithOrg = [
-        { team_id: "team-1", team_alias: "Team Alpha", organization_id: "org-1", models: [] },
-      ];
-
-      renderWithProviders(<CreateKey {...defaultProps} teams={teamsWithOrg as any} />);
-
-      act(() => {
-        fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
-      });
-
-      await waitFor(() => {
-        expect(screen.getByTestId("org-dropdown")).toBeInTheDocument();
+        expect(screen.getByText("Acme Srl (company-1)")).toBeInTheDocument();
+        expect(screen.getByText("Support (project-1)")).toBeInTheDocument();
         expect(screen.getByTestId("team-dropdown")).toBeInTheDocument();
       });
     });
 
-    it("should set organization_id in form state when org is selected", async () => {
+    it("should include CavadaLabs company and project context in keyCreateCall payload", async () => {
       renderWithProviders(<CreateKey {...defaultProps} />);
 
       act(() => {
@@ -547,14 +498,26 @@ describe("CreateKey", () => {
       });
 
       await waitFor(() => {
-        expect(screen.getByTestId("org-dropdown")).toBeInTheDocument();
+        expect(screen.getByText("Acme Srl (company-1)")).toBeInTheDocument();
       });
 
       act(() => {
-        fireEvent.change(screen.getByTestId("org-dropdown"), { target: { value: "org-1" } });
+        formMock.setFieldValue("cavadalabs_company_id", "company-1");
+        formMock.setFieldValue("cavadalabs_project_id", "project-1");
+        formMock.setFieldValue("key_alias", "Support key");
       });
 
-      expect(formStateRef.current["organization_id"]).toBe("org-1");
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create key/i }));
+      });
+
+      await waitFor(() => {
+        expect(mockKeyCreateCall).toHaveBeenCalled();
+        const formValues = mockKeyCreateCall.mock.calls[0][2];
+        expect(formValues.cavadalabs_company_id).toBe("company-1");
+        expect(formValues.cavadalabs_project_id).toBe("project-1");
+        expect(formValues).not.toHaveProperty("organization_id");
+      });
     });
   });
 

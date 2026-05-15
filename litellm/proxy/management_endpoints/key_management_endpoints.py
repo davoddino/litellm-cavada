@@ -577,6 +577,230 @@ def _check_passthrough_routes_caller_permission(
         )
 
 
+CAVADALABS_COMPANY_METADATA_KEY = "cavadalabs_company_id"
+CAVADALABS_PROJECT_METADATA_KEY = "cavadalabs_project_id"
+CAVADALABS_METADATA_ENVELOPE_KEY = "cavadalabs"
+
+
+def _optional_str(value: Any) -> Optional[str]:
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned or None
+    return None
+
+
+def _metadata_to_dict(raw_metadata: Any) -> Dict[str, Any]:
+    if isinstance(raw_metadata, dict):
+        return copy.deepcopy(raw_metadata)
+    if isinstance(raw_metadata, str):
+        try:
+            parsed = json.loads(raw_metadata)
+            return copy.deepcopy(parsed) if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _extract_cavadalabs_key_context(
+    metadata: Optional[Dict[str, Any]],
+) -> Tuple[Optional[str], Optional[str]]:
+    if not isinstance(metadata, dict):
+        return None, None
+    cavadalabs_metadata = metadata.get(CAVADALABS_METADATA_ENVELOPE_KEY)
+    company_id = _optional_str(metadata.get(CAVADALABS_COMPANY_METADATA_KEY))
+    project_id = _optional_str(metadata.get(CAVADALABS_PROJECT_METADATA_KEY))
+    if isinstance(cavadalabs_metadata, dict):
+        company_id = company_id or _optional_str(cavadalabs_metadata.get("company_id"))
+        project_id = project_id or _optional_str(cavadalabs_metadata.get("project_id"))
+    return company_id, project_id
+
+
+def _set_cavadalabs_key_context_metadata(
+    metadata: Dict[str, Any],
+    company_id: str,
+    project_id: str,
+) -> Dict[str, Any]:
+    updated_metadata = copy.deepcopy(metadata)
+    cavadalabs_metadata = updated_metadata.get(CAVADALABS_METADATA_ENVELOPE_KEY)
+    if not isinstance(cavadalabs_metadata, dict):
+        cavadalabs_metadata = {}
+    cavadalabs_metadata["company_id"] = company_id
+    cavadalabs_metadata["project_id"] = project_id
+    updated_metadata[CAVADALABS_COMPANY_METADATA_KEY] = company_id
+    updated_metadata[CAVADALABS_PROJECT_METADATA_KEY] = project_id
+    updated_metadata[CAVADALABS_METADATA_ENVELOPE_KEY] = cavadalabs_metadata
+    spend_logs_metadata = updated_metadata.get("spend_logs_metadata")
+    if not isinstance(spend_logs_metadata, dict):
+        spend_logs_metadata = {}
+    spend_logs_metadata[CAVADALABS_COMPANY_METADATA_KEY] = company_id
+    spend_logs_metadata[CAVADALABS_PROJECT_METADATA_KEY] = project_id
+    updated_metadata["spend_logs_metadata"] = spend_logs_metadata
+    return updated_metadata
+
+
+def _cavadalabs_key_metadata_filter(
+    field: Literal["company_id", "project_id"], value: str
+) -> Dict[str, Any]:
+    top_level_key = (
+        CAVADALABS_COMPANY_METADATA_KEY
+        if field == "company_id"
+        else CAVADALABS_PROJECT_METADATA_KEY
+    )
+    return {
+        "OR": [
+            {"metadata": {"path": [top_level_key], "equals": value}},
+            {
+                "metadata": {
+                    "path": [CAVADALABS_METADATA_ENVELOPE_KEY, field],
+                    "equals": value,
+                }
+            },
+        ]
+    }
+
+
+def _is_proxy_admin_user(user_api_key_dict: UserAPIKeyAuth) -> bool:
+    return user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value
+
+
+async def _validate_cavadalabs_key_context(
+    prisma_client: Any,
+    company_id: Optional[str],
+    project_id: Optional[str],
+) -> Tuple[str, str]:
+    if project_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "cavadalabs_project_id is required when assigning a CavadaLabs key context"
+            },
+        )
+
+    project = await prisma_client.db.cavadalabs_projecttable.find_unique(
+        where={"project_id": project_id}
+    )
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": f"CavadaLabs project not found: {project_id}"},
+        )
+
+    resolved_company_id = company_id or getattr(project, "company_id", None)
+    if resolved_company_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "CavadaLabs project is missing its company_id"},
+        )
+
+    if getattr(project, "company_id", None) != resolved_company_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "cavadalabs_project_id must belong to cavadalabs_company_id"
+            },
+        )
+
+    if getattr(project, "status", None) == "archived":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": f"CavadaLabs project is archived: {project_id}"},
+        )
+
+    company = await prisma_client.db.cavadalabs_companytable.find_unique(
+        where={"company_id": resolved_company_id}
+    )
+    if company is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": f"CavadaLabs company not found: {resolved_company_id}"},
+        )
+    if getattr(company, "status", None) != "active":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": f"CavadaLabs company is not active: {resolved_company_id}"
+            },
+        )
+
+    return resolved_company_id, project_id
+
+
+async def _apply_cavadalabs_key_context(
+    data_json: Dict[str, Any],
+    existing_metadata: Optional[Dict[str, Any]],
+    prisma_client: Any,
+    user_api_key_dict: UserAPIKeyAuth,
+) -> Dict[str, Any]:
+    requested_company_id = _optional_str(
+        data_json.pop(CAVADALABS_COMPANY_METADATA_KEY, None)
+    )
+    requested_project_id = _optional_str(
+        data_json.pop(CAVADALABS_PROJECT_METADATA_KEY, None)
+    )
+    existing_company_id, existing_project_id = _extract_cavadalabs_key_context(
+        existing_metadata
+    )
+    metadata_was_submitted = "metadata" in data_json
+    submitted_metadata = _metadata_to_dict(data_json.get("metadata"))
+    metadata_company_id, metadata_project_id = _extract_cavadalabs_key_context(
+        submitted_metadata
+    )
+
+    requested_company_id = requested_company_id or metadata_company_id
+    requested_project_id = requested_project_id or metadata_project_id
+    context_was_requested = (
+        requested_company_id is not None or requested_project_id is not None
+    )
+
+    if not context_was_requested:
+        if metadata_was_submitted and existing_company_id and existing_project_id:
+            data_json["metadata"] = _set_cavadalabs_key_context_metadata(
+                metadata=submitted_metadata,
+                company_id=existing_company_id,
+                project_id=existing_project_id,
+            )
+        return data_json
+
+    if not _is_proxy_admin_user(user_api_key_dict):
+        requested_context_matches_existing = (
+            existing_company_id is not None
+            and existing_project_id is not None
+            and (requested_company_id or existing_company_id) == existing_company_id
+            and (requested_project_id or existing_project_id) == existing_project_id
+        )
+        if requested_context_matches_existing:
+            data_json["metadata"] = _set_cavadalabs_key_context_metadata(
+                metadata=submitted_metadata or _metadata_to_dict(existing_metadata),
+                company_id=existing_company_id,
+                project_id=existing_project_id,
+            )
+            return data_json
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "Only proxy admins can assign CavadaLabs company/project context to keys"
+            },
+        )
+
+    company_id = requested_company_id or existing_company_id
+    project_id = requested_project_id or existing_project_id
+    company_id, project_id = await _validate_cavadalabs_key_context(
+        prisma_client=prisma_client,
+        company_id=company_id,
+        project_id=project_id,
+    )
+
+    metadata = submitted_metadata
+    if not metadata and existing_metadata is not None:
+        metadata = _metadata_to_dict(existing_metadata)
+    data_json["metadata"] = _set_cavadalabs_key_context_metadata(
+        metadata=metadata,
+        company_id=company_id,
+        project_id=project_id,
+    )
+    return data_json
+
+
 async def validate_team_id_used_in_service_account_request(
     team_id: Optional[str],
     prisma_client: Optional[PrismaClient],
@@ -764,6 +988,12 @@ async def _common_key_generation_helper(  # noqa: PLR0915
             delattr(data, field)
 
     data_json = data.model_dump(exclude_unset=True, exclude_none=True)  # type: ignore
+    data_json = await _apply_cavadalabs_key_context(
+        data_json=data_json,
+        existing_metadata=None,
+        prisma_client=prisma_client,
+        user_api_key_dict=user_api_key_dict,
+    )
 
     data_json = handle_key_type(data, data_json)
 
@@ -1738,11 +1968,21 @@ def prepare_metadata_fields(
 async def prepare_key_update_data(
     data: Union[UpdateKeyRequest, RegenerateKeyRequest],
     existing_key_row: LiteLLM_VerificationToken,
+    user_api_key_dict: Optional[UserAPIKeyAuth] = None,
+    prisma_client: Optional[Any] = None,
 ):
     data_json: dict = data.model_dump(exclude_unset=True)
     data_json.pop("key", None)
     data_json.pop("new_key", None)
     data_json.pop("grace_period", None)  # Request-only param, not a DB column
+    _metadata = _metadata_to_dict(existing_key_row.metadata or {})
+    if user_api_key_dict is not None and prisma_client is not None:
+        data_json = await _apply_cavadalabs_key_context(
+            data_json=data_json,
+            existing_metadata=_metadata,
+            prisma_client=prisma_client,
+            user_api_key_dict=user_api_key_dict,
+        )
     if (
         data.metadata is not None
         and data.metadata.get("service_account_id") is not None
@@ -1811,8 +2051,6 @@ async def prepare_key_update_data(
             data_json=non_default_values,
             existing_key_row=existing_key_row,
         )
-
-    _metadata = existing_key_row.metadata or {}
 
     # validate model_max_budget
     if "model_max_budget" in non_default_values:
@@ -2033,7 +2271,10 @@ async def _process_single_key_update(
 
     # Prepare update data
     non_default_values = await prepare_key_update_data(
-        data=update_key_request, existing_key_row=existing_key_row
+        data=update_key_request,
+        existing_key_row=existing_key_row,
+        user_api_key_dict=user_api_key_dict,
+        prisma_client=prisma_client,
     )
 
     # Update key in database
@@ -2457,7 +2698,10 @@ async def update_key_fn(  # noqa: PLR0915
         # Enforce upperbound key params on update (don't fill defaults)
         _enforce_upperbound_key_params(data, fill_defaults=False)
         non_default_values = await prepare_key_update_data(
-            data=data, existing_key_row=existing_key_row
+            data=data,
+            existing_key_row=existing_key_row,
+            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
         )
 
         # Only validate key_alias format if it's actually being changed
@@ -4219,7 +4463,10 @@ async def _execute_virtual_key_regeneration(
         # Enforce upperbound key params on regenerate (don't fill defaults)
         _enforce_upperbound_key_params(data, fill_defaults=False)
         non_default_values = await prepare_key_update_data(
-            data=data, existing_key_row=key_in_db
+            data=data,
+            existing_key_row=key_in_db,
+            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
         )
         # Only validate key_alias format if it's actually being changed
         new_key_alias = non_default_values.get("key_alias")
@@ -4890,6 +5137,12 @@ async def list_keys(
         None, description="Filter by status (e.g. 'deleted')"
     ),
     project_id: Optional[str] = Query(None, description="Filter keys by project ID"),
+    cavadalabs_company_id: Optional[str] = Query(
+        None, description="Filter keys by CavadaLabs company ID"
+    ),
+    cavadalabs_project_id: Optional[str] = Query(
+        None, description="Filter keys by CavadaLabs project ID"
+    ),
     access_group_id: Optional[str] = Query(
         None, description="Filter keys by access group ID"
     ),
@@ -5000,6 +5253,8 @@ async def list_keys(
             expand=expand,
             status=status,
             project_id=project_id,
+            cavadalabs_company_id=cavadalabs_company_id,
+            cavadalabs_project_id=cavadalabs_project_id,
             access_group_id=access_group_id,
             use_substring_matching=use_substring_matching,
         )
@@ -5227,6 +5482,29 @@ def _validate_sort_params(
     return order_by
 
 
+def _apply_cavadalabs_key_filters(
+    where: Dict[str, Union[str, Dict[str, Any], List[Dict[str, Any]]]],
+    *,
+    cavadalabs_company_id: Optional[str],
+    cavadalabs_project_id: Optional[str],
+) -> Dict[str, Union[str, Dict[str, Any], List[Dict[str, Any]]]]:
+    if cavadalabs_company_id:
+        where = {
+            "AND": [
+                where,
+                _cavadalabs_key_metadata_filter("company_id", cavadalabs_company_id),
+            ]
+        }
+    if cavadalabs_project_id:
+        where = {
+            "AND": [
+                where,
+                _cavadalabs_key_metadata_filter("project_id", cavadalabs_project_id),
+            ]
+        }
+    return where
+
+
 def _build_key_filter_conditions(
     user_id: Optional[str],
     team_id: Optional[str],
@@ -5238,6 +5516,8 @@ def _build_key_filter_conditions(
     member_team_ids: Optional[List[str]] = None,
     include_created_by_keys: bool = False,
     project_id: Optional[str] = None,
+    cavadalabs_company_id: Optional[str] = None,
+    cavadalabs_project_id: Optional[str] = None,
     access_group_id: Optional[str] = None,
     use_substring_matching: bool = False,
 ) -> Dict[str, Union[str, Dict[str, Any], List[Dict[str, Any]]]]:
@@ -5347,6 +5627,11 @@ def _build_key_filter_conditions(
         where = {"AND": [where, {"team_id": team_id}]}
     if project_id:
         where = {"AND": [where, {"project_id": project_id}]}
+    where = _apply_cavadalabs_key_filters(
+        where,
+        cavadalabs_company_id=cavadalabs_company_id,
+        cavadalabs_project_id=cavadalabs_project_id,
+    )
     if access_group_id:
         where = {"AND": [where, {"access_group_ids": {"hasSome": [access_group_id]}}]}
 
@@ -5377,6 +5662,8 @@ async def _list_key_helper(
     expand: Optional[List[str]] = None,
     status: Optional[str] = None,
     project_id: Optional[str] = None,
+    cavadalabs_company_id: Optional[str] = None,
+    cavadalabs_project_id: Optional[str] = None,
     access_group_id: Optional[str] = None,
     use_substring_matching: bool = False,
 ) -> KeyListResponseObject:
@@ -5413,6 +5700,8 @@ async def _list_key_helper(
         member_team_ids=member_team_ids,
         include_created_by_keys=include_created_by_keys,
         project_id=project_id,
+        cavadalabs_company_id=cavadalabs_company_id,
+        cavadalabs_project_id=cavadalabs_project_id,
         access_group_id=access_group_id,
         use_substring_matching=use_substring_matching,
     )

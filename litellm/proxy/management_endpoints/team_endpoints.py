@@ -71,6 +71,9 @@ from litellm.proxy.auth.auth_checks import (
     get_user_object,
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.cavadalabs.access_control import (
+    resolve_cavadalabs_team_list_filters,
+)
 from litellm.proxy.management_endpoints.common_utils import (
     _is_user_org_admin_for_team,
     _is_user_team_admin,
@@ -4299,6 +4302,14 @@ async def list_team(
         default=None, description="Only return teams which this 'user_id' belongs to"
     ),
     organization_id: Optional[str] = None,
+    cavadalabs_company_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Filter teams by CavadaLabs company context.",
+    ),
+    cavadalabs_project_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Filter teams by CavadaLabs project context.",
+    ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
@@ -4322,6 +4333,29 @@ async def list_team(
             status_code=400,
             detail={"error": CommonProxyErrors.db_not_connected_error.value},
         )
+
+    if not isinstance(cavadalabs_company_id, str):
+        cavadalabs_company_id = None
+    if not isinstance(cavadalabs_project_id, str):
+        cavadalabs_project_id = None
+
+    cavadalabs_team_id: Optional[str] = None
+    if cavadalabs_company_id is not None or cavadalabs_project_id is not None:
+        (
+            cavadalabs_organization_id,
+            cavadalabs_team_id,
+        ) = await resolve_cavadalabs_team_list_filters(
+            prisma_client.db,
+            user_api_key_dict=user_api_key_dict,
+            cavadalabs_company_id=cavadalabs_company_id,
+            cavadalabs_project_id=cavadalabs_project_id,
+        )
+        if cavadalabs_company_id is not None and cavadalabs_organization_id is None:
+            return []
+        if cavadalabs_project_id is not None and cavadalabs_team_id is None:
+            return []
+        if cavadalabs_organization_id is not None:
+            organization_id = cavadalabs_organization_id
 
     filtered_response = await _authorize_and_filter_teams(
         user_api_key_dict=user_api_key_dict,
@@ -4378,6 +4412,11 @@ async def list_team(
                 for team in returned_responses
                 if team.organization_id == organization_id
             ]
+
+    if cavadalabs_team_id is not None:
+        returned_responses = [
+            team for team in returned_responses if team.team_id == cavadalabs_team_id
+        ]
 
     return returned_responses
 

@@ -4,6 +4,11 @@
 
 // Fields that should be filtered out from metadata display due to security concerns
 const SENSITIVE_METADATA_FIELDS = ["logging"] as const;
+const CANONICAL_KEY_CONTEXT_METADATA_FIELDS = [
+  "cavadalabs",
+  "cavadalabs_company_id",
+  "cavadalabs_project_id",
+] as const;
 
 /**
  * Filters out sensitive information from metadata for display purposes
@@ -48,16 +53,19 @@ export const formatMetadataForDisplay = (
 };
 
 /**
- * Removes the top-level "tags" property from a metadata object.
- * This prevents duplicated tag information in UIs where tags are managed separately.
+ * Removes metadata properties that are edited through first-class key fields.
+ * This prevents duplicated tag and CavadaLabs context information in UIs where
+ * those values are managed separately.
  * @param metadata - The metadata value to process; returned as-is if not an object
- * @returns A shallow copy of the object without the "tags" key, or the original value for non-objects
+ * @returns A shallow copy without first-class metadata keys, or the original value for non-objects
  */
 export const stripTagsFromMetadata = (metadata: any) => {
   if (!metadata || typeof metadata !== "object") {
     return metadata;
   }
-  // Remove tags key from metadata shown in textarea to avoid duplication
-  const { tags, ...rest } = metadata as Record<string, any>;
-  return rest;
+  return Object.fromEntries(
+    Object.entries(metadata as Record<string, any>).filter(
+      ([key]) => key !== "tags" && !CANONICAL_KEY_CONTEXT_METADATA_FIELDS.includes(key as any),
+    ),
+  );
 };

@@ -355,6 +355,14 @@ class _ProxyDBLogger(CustomLogger):
                     metadata["user_api_key_team_id"] = key_obj.team_id
                 if metadata.get("user_api_key_org_id") is None:
                     metadata["user_api_key_org_id"] = key_obj.org_id
+                if metadata.get("cavadalabs_company_id") is None:
+                    metadata["cavadalabs_company_id"] = getattr(
+                        key_obj, "cavadalabs_company_id", None
+                    )
+                if metadata.get("cavadalabs_project_id") is None:
+                    metadata["cavadalabs_project_id"] = getattr(
+                        key_obj, "cavadalabs_project_id", None
+                    )
             except Exception:
                 verbose_proxy_logger.debug(
                     "Failed to enrich failure metadata with key info for api_key=%s",

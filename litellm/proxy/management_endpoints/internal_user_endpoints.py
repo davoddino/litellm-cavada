@@ -16,7 +16,7 @@ import asyncio
 import json
 import traceback
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union, cast
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 import fastapi
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -27,6 +27,9 @@ from litellm._uuid import uuid
 from litellm.proxy._types import *
 from litellm.proxy.auth.auth_checks import get_team_object, get_user_object
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.cavadalabs.access_control import (
+    resolve_cavadalabs_user_list_filters,
+)
 from litellm.proxy.hooks.user_management_event_hooks import UserManagementEventHooks
 from litellm.proxy.management_endpoints.common_daily_activity import (
     get_daily_activity,
@@ -1874,6 +1877,55 @@ async def _authorize_user_list_request(
     return ",".join(allowed_org_ids)
 
 
+def _merge_organization_id_filters(
+    organization_ids: Optional[str], extra_organization_ids: List[str]
+) -> Optional[str]:
+    if not extra_organization_ids:
+        return organization_ids
+    organization_id_set = {
+        oid.strip() for oid in (organization_ids or "").split(",") if oid.strip()
+    }
+    organization_id_set.update(extra_organization_ids)
+    return ",".join(sorted(organization_id_set))
+
+
+async def _resolve_user_list_cavadalabs_scope(
+    *,
+    prisma_client: Any,
+    user_api_key_dict: UserAPIKeyAuth,
+    organization_ids: Optional[str],
+    cavadalabs_company_ids: Optional[str],
+    cavadalabs_project_ids: Optional[str],
+    user_api_key_cache: Any,
+    proxy_logging_obj: Any,
+) -> Tuple[Optional[str], List[str]]:
+    (
+        cavadalabs_organization_ids,
+        cavadalabs_team_ids,
+    ) = await resolve_cavadalabs_user_list_filters(
+        prisma_client.db,
+        user_api_key_dict=user_api_key_dict,
+        cavadalabs_company_ids=cavadalabs_company_ids,
+        cavadalabs_project_ids=cavadalabs_project_ids,
+    )
+    organization_ids = _merge_organization_id_filters(
+        organization_ids, cavadalabs_organization_ids
+    )
+
+    # Server-side authorization: proxy admins see all, org admins see only their org(s).
+    # CavadaLabs project admins can list members inside explicitly requested
+    # project teams without needing broad company-level user visibility.
+    if not cavadalabs_team_ids or organization_ids:
+        organization_ids = await _authorize_user_list_request(
+            user_api_key_dict=user_api_key_dict,
+            organization_ids=organization_ids,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+            proxy_logging_obj=proxy_logging_obj,
+        )
+    return organization_ids, cavadalabs_team_ids
+
+
 @router.get(
     "/user/list",
     tags=["Internal User management"],
@@ -1910,6 +1962,14 @@ async def get_users(
     organization_ids: Optional[str] = fastapi.Query(
         default=None,
         description="Filter users by organization membership. Comma-separated list of org IDs.",
+    ),
+    cavadalabs_company_ids: Optional[str] = fastapi.Query(
+        default=None,
+        description="Filter users by CavadaLabs company IDs. Comma-separated list.",
+    ),
+    cavadalabs_project_ids: Optional[str] = fastapi.Query(
+        default=None,
+        description="Filter users by CavadaLabs project IDs. Comma-separated list.",
     ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
@@ -1952,11 +2012,12 @@ async def get_users(
             detail={"error": f"No db connected. prisma client={prisma_client}"},
         )
 
-    # Server-side authorization: proxy admins see all, org admins see only their org(s)
-    organization_ids = await _authorize_user_list_request(
+    organization_ids, cavadalabs_team_ids = await _resolve_user_list_cavadalabs_scope(
+        prisma_client=prisma_client,
         user_api_key_dict=user_api_key_dict,
         organization_ids=organization_ids,
-        prisma_client=prisma_client,
+        cavadalabs_company_ids=cavadalabs_company_ids,
+        cavadalabs_project_ids=cavadalabs_project_ids,
         user_api_key_cache=user_api_key_cache,
         proxy_logging_obj=proxy_logging_obj,
     )
@@ -1988,7 +2049,19 @@ async def get_users(
             "mode": "insensitive",  # Case-insensitive search
         }
 
-    if team is not None and isinstance(team, str):
+    if cavadalabs_team_ids:
+        if team is not None and isinstance(team, str):
+            if team not in cavadalabs_team_ids:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": "Requested team is outside the authorized CavadaLabs project scope."
+                    },
+                )
+            where_conditions["teams"] = {"has": team}
+        else:
+            where_conditions["teams"] = {"hasSome": cavadalabs_team_ids}
+    elif team is not None and isinstance(team, str):
         where_conditions["teams"] = {
             "has": team  # Array contains for string arrays in Prisma
         }

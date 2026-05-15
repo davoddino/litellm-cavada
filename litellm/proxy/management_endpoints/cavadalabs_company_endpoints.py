@@ -2,14 +2,18 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.cavadalabs.access_control import (
+    require_company_access,
+    resolve_cavadalabs_company_usage_scope,
+    visible_company_ids_for_user,
+)
 from litellm.proxy.cavadalabs.usage import get_cavadalabs_daily_activity
 from litellm.proxy.management_endpoints.cavadalabs_dispatcher_utils import (
     dispatcher_service,
-    require_admin_view,
     require_proxy_admin,
 )
 from litellm.proxy.management_helpers.utils import management_endpoint_wrapper
@@ -62,9 +66,22 @@ async def list_companies(
     skip: int = Query(default=0, ge=0),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> CavadaLabsCompanyListResponse:
-    require_admin_view(user_api_key_dict)
+    from litellm.proxy.proxy_server import prisma_client
+
+    if prisma_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "Database is required for CavadaLabs dispatcher"},
+        )
+    visible_company_ids = await visible_company_ids_for_user(
+        prisma_client.db,
+        user_api_key_dict,
+    )
     companies = await dispatcher_service().list_companies(
         status_filter=status_filter,
+        company_ids=(
+            list(visible_company_ids) if visible_company_ids is not None else None
+        ),
         take=take,
         skip=skip,
     )
@@ -91,11 +108,20 @@ async def get_company_daily_activity(
 ) -> SpendAnalyticsPaginatedResponse:
     from litellm.proxy.proxy_server import prisma_client
 
-    require_admin_view(user_api_key_dict)
+    if prisma_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "Database is required for CavadaLabs dispatcher"},
+        )
+    entity_ids = await resolve_cavadalabs_company_usage_scope(
+        prisma_client.db,
+        user_api_key_dict=user_api_key_dict,
+        requested_company_ids=company_ids,
+    )
     return await get_cavadalabs_daily_activity(
         prisma_client=prisma_client,
         entity_id_field="company_id",
-        entity_id=_split_csv(company_ids),
+        entity_id=entity_ids,
         start_date=start_date,
         end_date=end_date,
         model=model,
@@ -117,7 +143,18 @@ async def get_company(
     http_request: Request,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> CavadaLabsCompanyResponse:
-    require_admin_view(user_api_key_dict)
+    from litellm.proxy.proxy_server import prisma_client
+
+    if prisma_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "Database is required for CavadaLabs dispatcher"},
+        )
+    await require_company_access(
+        prisma_client.db,
+        company_id=company_id,
+        user_api_key_dict=user_api_key_dict,
+    )
     return await dispatcher_service().get_company(company_id)
 
 
@@ -133,7 +170,19 @@ async def update_company(
     http_request: Request,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> CavadaLabsCompanyResponse:
-    require_proxy_admin(user_api_key_dict)
+    from litellm.proxy.proxy_server import prisma_client
+
+    if prisma_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "Database is required for CavadaLabs dispatcher"},
+        )
+    await require_company_access(
+        prisma_client.db,
+        company_id=company_id,
+        user_api_key_dict=user_api_key_dict,
+        require_admin=True,
+    )
     return await dispatcher_service().update_company(
         company_id, data, user_api_key_dict
     )
@@ -150,5 +199,17 @@ async def archive_company(
     http_request: Request,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> CavadaLabsCompanyResponse:
-    require_proxy_admin(user_api_key_dict)
+    from litellm.proxy.proxy_server import prisma_client
+
+    if prisma_client is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "Database is required for CavadaLabs dispatcher"},
+        )
+    await require_company_access(
+        prisma_client.db,
+        company_id=company_id,
+        user_api_key_dict=user_api_key_dict,
+        require_admin=True,
+    )
     return await dispatcher_service().archive_company(company_id, user_api_key_dict)

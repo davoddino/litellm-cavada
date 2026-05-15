@@ -1,7 +1,4 @@
 import GuardrailSelector from "@/components/guardrails/GuardrailSelector";
-import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
-import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
-import { useUISettings } from "@/app/(dashboard)/hooks/uiSettings/useUISettings";
 import PolicySelector from "@/components/policies/PolicySelector";
 import { InfoCircleOutlined } from "@ant-design/icons";
 import { TextInput, Button as TremorButton } from "@tremor/react";
@@ -14,7 +11,11 @@ import { mapInternalToDisplayNames } from "../callback_info_helpers";
 import KeyLifecycleSettings from "../common_components/KeyLifecycleSettings";
 import PassThroughRoutesSelector from "../common_components/PassThroughRoutesSelector";
 import RateLimitTypeFormItem from "../common_components/RateLimitTypeFormItem";
-import OrganizationDropdown from "../common_components/OrganizationDropdown";
+import {
+  getKeyCavadaLabsCompanyId,
+  getKeyCavadaLabsProjectId,
+  useCavadaLabsKeyContextOptions,
+} from "../cavadalabs/keyContext";
 import { extractLoggingSettings, formatMetadataForDisplay, stripTagsFromMetadata } from "../key_info_utils";
 import { BudgetWindowEntry, BudgetWindowsEditor } from "../key_team_helpers/BudgetWindowsEditor";
 import { KeyResponse } from "../key_team_helpers/key_list";
@@ -99,7 +100,8 @@ export function KeyEditView({
       ? mapInternalToDisplayNames(keyData.metadata.litellm_disabled_callbacks)
       : [],
   );
-  const [selectedOrganizationId, setSelectedOrganizationId] = useState<string | null>(keyData.organization_id || null);
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(getKeyCavadaLabsCompanyId(keyData));
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(getKeyCavadaLabsProjectId(keyData));
   const [autoRotationEnabled, setAutoRotationEnabled] = useState<boolean>(keyData.auto_rotate || false);
   const [rotationInterval, setRotationInterval] = useState<string>(keyData.rotation_interval || "");
   const [neverExpire, setNeverExpire] = useState<boolean>(!keyData.expires);
@@ -107,22 +109,22 @@ export function KeyEditView({
   const [budgetLimits, setBudgetLimits] = useState<BudgetWindowEntry[]>(
     Array.isArray(keyData.budget_limits) ? keyData.budget_limits : [],
   );
-  const { data: organizations, isLoading: isOrganizationsLoading } = useOrganizations();
-  const { data: projects } = useProjects();
-  const { data: uiSettingsData } = useUISettings();
-  const enableProjectsUI = Boolean(uiSettingsData?.values?.enable_projects_ui);
-  const hasProject = Boolean(keyData.project_id);
-  const projectDisplay = (() => {
-    if (!keyData.project_id) return null;
-    const project = projects?.find((p) => p.project_id === keyData.project_id);
-    return project?.project_alias ? `${project.project_alias} (${keyData.project_id})` : keyData.project_id;
-  })();
+  const {
+    companies: cavadalabsCompanies,
+    projects: cavadalabsProjects,
+    isLoading: isCavadalabsContextLoading,
+  } = useCavadaLabsKeyContextOptions(accessToken);
 
   useEffect(() => {
     const fetchModels = async () => {
       if (!userID || !userRole || !accessToken) return;
 
       try {
+        if (selectedProjectId) {
+          const project = cavadalabsProjects.find((item) => item.project_id === selectedProjectId);
+          setAvailableModels(project?.allowed_models ?? []);
+          return;
+        }
         if (keyData.team_id === null) {
           // Fetch user models if no team
           const model_available = await modelAvailableCall(accessToken, userID, userRole);
@@ -150,7 +152,7 @@ export function KeyEditView({
 
     fetchPrompts();
     fetchModels();
-  }, [userID, userRole, accessToken, team, keyData.team_id]);
+  }, [userID, userRole, accessToken, team, keyData.team_id, selectedProjectId, cavadalabsProjects]);
 
   // Sync disabled callbacks with form when component mounts
   useEffect(() => {
@@ -172,6 +174,8 @@ export function KeyEditView({
   const initialValues = {
     ...keyData,
     token: keyData.token || keyData.token_id,
+    cavadalabs_company_id: getKeyCavadaLabsCompanyId(keyData),
+    cavadalabs_project_id: getKeyCavadaLabsProjectId(keyData),
     budget_duration: getBudgetDuration(keyData.budget_duration),
     metadata: formatMetadataForDisplay(stripTagsFromMetadata(keyData.metadata)),
     guardrails: keyData.metadata?.guardrails,
@@ -202,9 +206,13 @@ export function KeyEditView({
   };
 
   useEffect(() => {
+    setSelectedCompanyId(getKeyCavadaLabsCompanyId(keyData));
+    setSelectedProjectId(getKeyCavadaLabsProjectId(keyData));
     form.setFieldsValue({
       ...keyData,
       token: keyData.token || keyData.token_id,
+      cavadalabs_company_id: getKeyCavadaLabsCompanyId(keyData),
+      cavadalabs_project_id: getKeyCavadaLabsProjectId(keyData),
       budget_duration: getBudgetDuration(keyData.budget_duration),
       metadata: formatMetadataForDisplay(stripTagsFromMetadata(keyData.metadata)),
       guardrails: keyData.metadata?.guardrails,
@@ -657,68 +665,95 @@ export function KeyEditView({
       <Form.Item
         label={
           <span>
-            Organization{" "}
-            <Tooltip title="The organization this key belongs to. Selecting an organization filters the available teams.">
+            Company{" "}
+            <Tooltip title="The CavadaLabs company this key belongs to.">
               <InfoCircleOutlined style={{ marginLeft: "4px" }} />
             </Tooltip>
           </span>
         }
-        name="organization_id"
+        name="cavadalabs_company_id"
       >
-        <OrganizationDropdown
-          organizations={organizations}
-          loading={isOrganizationsLoading}
-          disabled={userRole !== "Admin"}
-          onChange={(orgId) => {
-            setSelectedOrganizationId(orgId || null);
-            form.setFieldValue("team_id", undefined);
+        <Select
+          showSearch
+          allowClear
+          loading={isCavadalabsContextLoading}
+          placeholder="Select company"
+          optionFilterProp="label"
+          onChange={(companyId) => {
+            setSelectedCompanyId(companyId || null);
+            setSelectedProjectId(null);
+            form.setFieldValue("cavadalabs_project_id", undefined);
           }}
+          options={cavadalabsCompanies.map((company) => ({
+            label: `${company.legal_name || company.company_id} (${company.company_id})`,
+            value: company.company_id,
+          }))}
+        />
+      </Form.Item>
+
+      <Form.Item
+        label={
+          <span>
+            Project{" "}
+            <Tooltip title="The CavadaLabs project this key is scoped to for usage, billing, and product governance.">
+              <InfoCircleOutlined style={{ marginLeft: "4px" }} />
+            </Tooltip>
+          </span>
+        }
+        name="cavadalabs_project_id"
+      >
+        <Select
+          showSearch
+          allowClear
+          loading={isCavadalabsContextLoading}
+          placeholder="Select project"
+          optionFilterProp="label"
+          onChange={(projectId) => {
+            if (!projectId) {
+              setSelectedProjectId(null);
+              return;
+            }
+            const project = cavadalabsProjects.find((item) => item.project_id === projectId);
+            setSelectedProjectId(projectId);
+            if (project?.company_id) {
+              setSelectedCompanyId(project.company_id);
+              form.setFieldValue("cavadalabs_company_id", project.company_id);
+            }
+          }}
+          options={cavadalabsProjects
+            .filter((project) => !selectedCompanyId || project.company_id === selectedCompanyId)
+            .map((project) => ({
+              label: `${project.name || project.project_id} (${project.project_id})`,
+              value: project.project_id,
+            }))}
         />
       </Form.Item>
 
       <Form.Item
         label="Team ID"
         name="team_id"
-        help={enableProjectsUI && hasProject ? "Team is locked because this key belongs to a project" : undefined}
       >
         <Select
           placeholder="Select team"
           showSearch
-          disabled={enableProjectsUI && hasProject}
           style={{ width: "100%" }}
           onChange={(teamId) => {
             const selectedTeam = teams?.find((t) => t.team_id === teamId) || null;
-            if (selectedTeam?.organization_id) {
-              setSelectedOrganizationId(selectedTeam.organization_id);
-              form.setFieldValue("organization_id", selectedTeam.organization_id);
-            } else if (!teamId) {
-              setSelectedOrganizationId(null);
-              form.setFieldValue("organization_id", undefined);
-            }
+            if (!selectedTeam) form.setFieldValue("team_id", undefined);
           }}
           filterOption={(input, option) => {
-            const filteredTeams = selectedOrganizationId
-              ? teams?.filter((t) => t.organization_id === selectedOrganizationId)
-              : teams;
-            const team = filteredTeams?.find((t) => t.team_id === option?.value);
+            const team = teams?.find((t) => t.team_id === option?.value);
             if (!team) return false;
             return team.team_alias?.toLowerCase().includes(input.toLowerCase()) ?? false;
           }}
         >
-          {(selectedOrganizationId ? teams?.filter((t) => t.organization_id === selectedOrganizationId) : teams)?.map(
-            (team) => (
-              <Select.Option key={team.team_id} value={team.team_id}>
-                {`${team.team_alias} (${team.team_id})`}
-              </Select.Option>
-            ),
-          )}
+          {teams?.map((team) => (
+            <Select.Option key={team.team_id} value={team.team_id}>
+              {`${team.team_alias} (${team.team_id})`}
+            </Select.Option>
+          ))}
         </Select>
       </Form.Item>
-      {enableProjectsUI && hasProject && (
-        <Form.Item label="Project">
-          <Input value={projectDisplay ?? ""} disabled />
-        </Form.Item>
-      )}
       <Form.Item label="Logging Settings" name="logging_settings">
         <EditLoggingSettings
           value={form.getFieldValue("logging_settings")}

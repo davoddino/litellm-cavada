@@ -88,6 +88,8 @@ def _get_spend_logs_metadata(
             user_api_key_org_id=None,
             user_api_key_user_id=None,
             user_api_key_team_alias=None,
+            cavadalabs_company_id=None,
+            cavadalabs_project_id=None,
             spend_logs_metadata=None,
             requester_ip_address=None,
             additional_usage_values=None,

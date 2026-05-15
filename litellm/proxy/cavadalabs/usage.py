@@ -27,8 +27,7 @@ def _normalize_entity_ids(
     if entity_id is None:
         return None
     if isinstance(entity_id, list):
-        cleaned = [item.strip() for item in entity_id if item and item.strip()]
-        return cleaned or None
+        return [item.strip() for item in entity_id if item and item.strip()]
     cleaned = entity_id.strip()
     return cleaned or None
 

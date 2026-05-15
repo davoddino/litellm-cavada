@@ -1,6 +1,5 @@
 "use client";
 import { useKeys } from "@/app/(dashboard)/hooks/keys/useKeys";
-import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
 import { formatNumberWithCommas } from "@/utils/dataUtils";
 import { ChevronDownIcon, ChevronRightIcon, ChevronUpIcon, SwitchVerticalIcon } from "@heroicons/react/outline";
 import {
@@ -34,12 +33,11 @@ import { PaginatedKeyAliasSelect } from "../KeyAliasSelect/PaginatedKeyAliasSele
 import { KeyResponse, Team } from "../key_team_helpers/key_list";
 import FilterComponent, { FilterOption } from "../molecules/filter";
 import DefaultProxyAdminTag from "../common_components/DefaultProxyAdminTag";
-import { Organization } from "../networking";
 import KeyInfoView from "../templates/key_info_view";
+import { getKeyCavadaLabsCompanyId, getKeyCavadaLabsProjectId } from "../cavadalabs/keyContext";
 
 interface VirtualKeysTableProps {
   teams: Team[] | null;
-  organizations: Organization[] | null;
   onSortChange?: (sortBy: string, sortOrder: "asc" | "desc") => void;
   currentSort?: {
     sortBy: string;
@@ -52,9 +50,7 @@ interface VirtualKeysTableProps {
  * The team selector and filtering have been removed so that all keys are shown.
  */
 
-export function VirtualKeysTable({ teams, organizations, onSortChange, currentSort }: VirtualKeysTableProps) {
-  const { data: fetchedOrganizations } = useOrganizations();
-  const resolvedOrganizations = fetchedOrganizations ?? organizations ?? [];
+export function VirtualKeysTable({ teams, onSortChange, currentSort }: VirtualKeysTableProps) {
   const [selectedKey, setSelectedKey] = useState<KeyResponse | null>(null);
   const [sorting, setSorting] = React.useState<SortingState>(() => {
     if (currentSort) {
@@ -96,11 +92,19 @@ export function VirtualKeysTable({ teams, organizations, onSortChange, currentSo
 
   // Use the filter logic hook
 
-  const { filters, filteredKeys, filteredTotalCount, allTeams, allOrganizations, handleFilterChange, handleFilterReset } =
+  const {
+    filters,
+    filteredKeys,
+    filteredTotalCount,
+    allTeams,
+    allCompanies = [],
+    allProjects = [],
+    handleFilterChange,
+    handleFilterReset,
+  } =
     useFilterLogic({
       keys: keys?.keys || [],
       teams,
-      organizations,
     });
 
   // Defer the transition so the button stays in loading state until the table
@@ -240,16 +244,33 @@ export function VirtualKeysTable({ teams, organizations, onSortChange, currentSo
       },
     },
     {
-      id: "organization_alias",
-      accessorKey: "org_id",
-      header: "Organization",
+      id: "cavadalabs_company",
+      header: "Company",
       size: 140,
       enableSorting: false,
       cell: (info) => {
-        const orgId = info.getValue() as string | null;
-        if (!orgId) return "-";
-        const org = resolvedOrganizations.find((o) => o.organization_id === orgId);
-        const displayValue = org?.organization_alias || orgId;
+        const companyId = getKeyCavadaLabsCompanyId(info.row.original);
+        if (!companyId) return "-";
+        const company = allCompanies.find((item) => item.company_id === companyId);
+        const displayValue = company?.legal_name || companyId;
+        const width = info.cell.column.getSize();
+        return (
+          <span className="font-mono text-xs truncate block" style={{ maxWidth: width, overflow: "hidden" }}>
+            {displayValue}
+          </span>
+        );
+      },
+    },
+    {
+      id: "cavadalabs_project",
+      header: "Project",
+      size: 140,
+      enableSorting: false,
+      cell: (info) => {
+        const projectId = getKeyCavadaLabsProjectId(info.row.original);
+        if (!projectId) return "-";
+        const project = allProjects.find((item) => item.project_id === projectId);
+        const displayValue = project?.name || projectId;
         const width = info.cell.column.getSize();
         return (
           <span className="font-mono text-xs truncate block" style={{ maxWidth: width, overflow: "hidden" }}>
@@ -588,7 +609,7 @@ export function VirtualKeysTable({ teams, organizations, onSortChange, currentSo
         );
       },
     },
-  ], [teams, resolvedOrganizations]);
+  ], [teams, allCompanies, allProjects, expandedAccordions]);
 
   const filterOptions: FilterOption[] = [
     {
@@ -611,22 +632,41 @@ export function VirtualKeysTable({ teams, organizations, onSortChange, currentSo
       },
     },
     {
-      name: "Organization ID",
-      label: "Organization ID",
+      name: "Company ID",
+      label: "Company",
       isSearchable: true,
       searchFn: async (searchText: string) => {
-        if (!allOrganizations || allOrganizations.length === 0) return [];
+        if (!allCompanies || allCompanies.length === 0) return [];
 
-        const filteredOrgs = allOrganizations.filter(
-          (org) => org.organization_id?.toLowerCase().includes(searchText.toLowerCase()) ?? false,
+        const filteredCompanies = allCompanies.filter(
+          (company) =>
+            company.company_id.toLowerCase().includes(searchText.toLowerCase()) ||
+            (company.legal_name ?? "").toLowerCase().includes(searchText.toLowerCase()),
         );
 
-        return filteredOrgs
-          .filter((org) => org.organization_id !== null && org.organization_id !== undefined)
-          .map((org) => ({
-            label: `${org.organization_id || "Unknown"} (${org.organization_id})`,
-            value: org.organization_id as string,
-          }));
+        return filteredCompanies.map((company) => ({
+          label: `${company.legal_name || company.company_id} (${company.company_id})`,
+          value: company.company_id,
+        }));
+      },
+    },
+    {
+      name: "Project ID",
+      label: "Project",
+      isSearchable: true,
+      searchFn: async (searchText: string) => {
+        if (!allProjects || allProjects.length === 0) return [];
+
+        const filteredProjects = allProjects.filter(
+          (project) =>
+            project.project_id.toLowerCase().includes(searchText.toLowerCase()) ||
+            (project.name ?? "").toLowerCase().includes(searchText.toLowerCase()),
+        );
+
+        return filteredProjects.map((project) => ({
+          label: `${project.name || project.project_id} (${project.project_id})`,
+          value: project.project_id,
+        }));
       },
     },
     {

@@ -2524,6 +2524,8 @@ class StandardLoggingUserAPIKeyMetadata(TypedDict):
     user_api_key_end_user_id: Optional[str]
     user_api_key_request_route: Optional[str]
     user_api_key_auth_metadata: Optional[Dict[str, str]]
+    cavadalabs_company_id: Optional[str]
+    cavadalabs_project_id: Optional[str]
 
 
 class StandardLoggingMCPToolCall(TypedDict, total=False):

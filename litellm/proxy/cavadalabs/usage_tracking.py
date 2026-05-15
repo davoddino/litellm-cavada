@@ -37,12 +37,14 @@ def _metadata_dict(raw_metadata: Any) -> Dict[str, Any]:
 
 
 def _metadata_sources(metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
-    sources: List[Dict[str, Any]] = []
+    # Top-level spend-log metadata is server-authenticated key context. Keep it
+    # ahead of request-supplied spend_logs_metadata so clients cannot spoof
+    # CavadaLabs billing attribution for a virtual key.
+    sources: List[Dict[str, Any]] = [metadata]
     for key in ("cavadalabs", "spend_logs_metadata"):
         value = metadata.get(key)
         if isinstance(value, dict):
             sources.append(value)
-    sources.append(metadata)
     return sources
 
 
