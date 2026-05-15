@@ -11,6 +11,7 @@ from litellm.proxy.cavadalabs.dispatcher_shared import (
     _is_unique_violation,
     _parse_response,
 )
+from litellm.proxy.cavadalabs.prisma_json import serialize_prisma_json_fields
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
     CavadaLabsProjectCreateRequest,
     CavadaLabsProjectResponse,
@@ -27,11 +28,13 @@ class CavadaLabsProjectOperations(CavadaLabsCompanyOperations):
     ) -> CavadaLabsProjectResponse:
         company = await self.get_company(data.company_id)
         self._ensure_company_active(company, "create projects")
-        create_data = {
-            **data.model_dump(mode="python"),
-            "created_by": _actor_user_id(user_api_key_dict),
-            "updated_by": _actor_user_id(user_api_key_dict),
-        }
+        create_data = serialize_prisma_json_fields(
+            {
+                **data.model_dump(mode="python"),
+                "created_by": _actor_user_id(user_api_key_dict),
+                "updated_by": _actor_user_id(user_api_key_dict),
+            }
+        )
         try:
             row = await self.db.cavadalabs_projecttable.create(data=create_data)
         except Exception as exc:
@@ -96,6 +99,7 @@ class CavadaLabsProjectOperations(CavadaLabsCompanyOperations):
         if not update_data:
             return before
         update_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        update_data = serialize_prisma_json_fields(update_data)
         row = await self.db.cavadalabs_projecttable.update(
             where={"project_id": project_id},
             data=update_data,

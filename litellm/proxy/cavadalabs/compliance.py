@@ -15,6 +15,10 @@ from litellm.proxy.cavadalabs.dispatcher import (
     _actor_user_id,
     _is_unique_violation,
 )
+from litellm.proxy.cavadalabs.prisma_json import (
+    parse_prisma_json_fields,
+    serialize_prisma_json_fields,
+)
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
     CavadaLabsAISystemAssessmentCreateRequest,
     CavadaLabsAISystemAssessmentResponse,
@@ -42,16 +46,39 @@ from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
-_JSON_FIELDS = {
+_DOCUMENT_JSON_FIELDS = {
     "generated_from",
     "metadata",
+}
+_EVIDENCE_JSON_FIELDS = {
+    "content",
+    "metadata",
+}
+_PROCESSING_ACTIVITY_JSON_FIELDS = {
+    "metadata",
+}
+_DSR_JSON_FIELDS = {
     "result",
+    "scope",
+    "metadata",
+}
+_ASSESSMENT_JSON_FIELDS = {
     "prohibited_practice_review",
     "human_oversight",
     "model_provider_metadata",
     "evaluation_evidence",
+    "metadata",
+}
+_AUDIT_JSON_FIELDS = {
     "before_value",
     "after_value",
+}
+_JSON_FIELDS_BY_RESPONSE = {
+    CavadaLabsComplianceDocumentResponse: _DOCUMENT_JSON_FIELDS,
+    CavadaLabsComplianceEvidenceResponse: _EVIDENCE_JSON_FIELDS,
+    CavadaLabsProcessingActivityResponse: _PROCESSING_ACTIVITY_JSON_FIELDS,
+    CavadaLabsDataSubjectRequestResponse: _DSR_JSON_FIELDS,
+    CavadaLabsAISystemAssessmentResponse: _ASSESSMENT_JSON_FIELDS,
 }
 _TERMINAL_DSR_STATUSES = {
     CavadaLabsDataSubjectRequestStatus.COMPLETED.value,
@@ -82,14 +109,10 @@ def _row_to_dict(row: Any, response_model: Type[ModelT]) -> Dict[str, Any]:
                 if field_name in getattr(row, "__dict__", {}):
                     data[field_name] = getattr(row, field_name)
 
-    for key in _JSON_FIELDS:
-        value = data.get(key)
-        if isinstance(value, str):
-            try:
-                data[key] = json.loads(value)
-            except json.JSONDecodeError:
-                data[key] = {}
-    return data
+    return parse_prisma_json_fields(
+        data,
+        json_fields=_JSON_FIELDS_BY_RESPONSE.get(response_model),
+    )
 
 
 def _parse_response(row: Any, response_model: Type[ModelT]) -> ModelT:
@@ -126,6 +149,10 @@ class CavadaLabsComplianceService:
         create_data["checksum"] = self._document_checksum(create_data)
         create_data["created_by"] = _actor_user_id(user_api_key_dict)
         create_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        create_data = serialize_prisma_json_fields(
+            create_data,
+            json_fields=_DOCUMENT_JSON_FIELDS,
+        )
         try:
             row = await self.db.cavadalabs_compliancedocumenttable.create(
                 data=create_data
@@ -216,6 +243,10 @@ class CavadaLabsComplianceService:
                 update_data[key] = merged[key]
         update_data["checksum"] = self._document_checksum(merged)
         update_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        update_data = serialize_prisma_json_fields(
+            update_data,
+            json_fields=_DOCUMENT_JSON_FIELDS,
+        )
         try:
             row = await self.db.cavadalabs_compliancedocumenttable.update(
                 where={"document_id": document_id},
@@ -257,6 +288,10 @@ class CavadaLabsComplianceService:
         create_data["checksum"] = self._evidence_checksum(create_data)
         create_data["created_by"] = _actor_user_id(user_api_key_dict)
         create_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        create_data = serialize_prisma_json_fields(
+            create_data,
+            json_fields=_EVIDENCE_JSON_FIELDS,
+        )
         row = await self.db.cavadalabs_complianceevidencetable.create(data=create_data)
         response = _parse_response(row, CavadaLabsComplianceEvidenceResponse)
         await self._audit(
@@ -335,6 +370,10 @@ class CavadaLabsComplianceService:
         merged["captured_at"] = update_data["captured_at"]
         update_data["checksum"] = self._evidence_checksum(merged)
         update_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        update_data = serialize_prisma_json_fields(
+            update_data,
+            json_fields=_EVIDENCE_JSON_FIELDS,
+        )
         row = await self.db.cavadalabs_complianceevidencetable.update(
             where={"evidence_id": evidence_id},
             data=update_data,
@@ -363,6 +402,10 @@ class CavadaLabsComplianceService:
         )
         create_data["created_by"] = _actor_user_id(user_api_key_dict)
         create_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        create_data = serialize_prisma_json_fields(
+            create_data,
+            json_fields=_PROCESSING_ACTIVITY_JSON_FIELDS,
+        )
         try:
             row = await self.db.cavadalabs_processingactivitytable.create(
                 data=create_data
@@ -439,6 +482,10 @@ class CavadaLabsComplianceService:
             project_id=merged.get("project_id"),
         )
         update_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        update_data = serialize_prisma_json_fields(
+            update_data,
+            json_fields=_PROCESSING_ACTIVITY_JSON_FIELDS,
+        )
         try:
             row = await self.db.cavadalabs_processingactivitytable.update(
                 where={"activity_id": activity_id},
@@ -476,6 +523,10 @@ class CavadaLabsComplianceService:
         self._normalize_dsr_lifecycle(create_data)
         create_data["created_by"] = _actor_user_id(user_api_key_dict)
         create_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        create_data = serialize_prisma_json_fields(
+            create_data,
+            json_fields=_DSR_JSON_FIELDS,
+        )
         row = await self.db.cavadalabs_datasubjectrequesttable.create(data=create_data)
         response = _parse_response(row, CavadaLabsDataSubjectRequestResponse)
         await self._audit(
@@ -554,6 +605,10 @@ class CavadaLabsComplianceService:
             if key not in update_data and key in merged:
                 update_data[key] = merged[key]
         update_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        update_data = serialize_prisma_json_fields(
+            update_data,
+            json_fields=_DSR_JSON_FIELDS,
+        )
         row = await self.db.cavadalabs_datasubjectrequesttable.update(
             where={"dsr_id": dsr_id},
             data=update_data,
@@ -587,6 +642,10 @@ class CavadaLabsComplianceService:
         self._normalize_ai_assessment_lifecycle(create_data)
         create_data["created_by"] = _actor_user_id(user_api_key_dict)
         create_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        create_data = serialize_prisma_json_fields(
+            create_data,
+            json_fields=_ASSESSMENT_JSON_FIELDS,
+        )
         try:
             row = await self.db.cavadalabs_aisystemassessmenttable.create(
                 data=create_data
@@ -673,6 +732,10 @@ class CavadaLabsComplianceService:
         if "approved_at" not in update_data:
             update_data["approved_at"] = merged.get("approved_at")
         update_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        update_data = serialize_prisma_json_fields(
+            update_data,
+            json_fields=_ASSESSMENT_JSON_FIELDS,
+        )
         try:
             row = await self.db.cavadalabs_aisystemassessmenttable.update(
                 where={"assessment_id": assessment_id},
@@ -935,17 +998,20 @@ class CavadaLabsComplianceService:
     ) -> None:
         try:
             await self.db.cavadalabs_auditlogtable.create(
-                data={
-                    "actor_user_id": _actor_user_id(user_api_key_dict),
-                    "actor_api_key_hash": _actor_key_hash(user_api_key_dict),
-                    "action": action,
-                    "resource_type": resource_type,
-                    "resource_id": resource_id,
-                    "company_id": company_id,
-                    "project_id": project_id,
-                    "before_value": before_value,
-                    "after_value": after_value,
-                }
+                data=serialize_prisma_json_fields(
+                    {
+                        "actor_user_id": _actor_user_id(user_api_key_dict),
+                        "actor_api_key_hash": _actor_key_hash(user_api_key_dict),
+                        "action": action,
+                        "resource_type": resource_type,
+                        "resource_id": resource_id,
+                        "company_id": company_id,
+                        "project_id": project_id,
+                        "before_value": before_value,
+                        "after_value": after_value,
+                    },
+                    json_fields=_AUDIT_JSON_FIELDS,
+                )
             )
         except Exception:
             verbose_proxy_logger.exception(

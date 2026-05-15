@@ -9,6 +9,7 @@ from litellm.proxy.cavadalabs.dispatcher import (
     _now_utc,
     hash_web_token,
 )
+from litellm.proxy.cavadalabs.prisma_json import serialize_prisma_json_fields
 from litellm.proxy.cavadalabs.nodes_shared import (
     _NODE_SIGNATURE_MAX_SKEW,
     _daily_report_date,
@@ -112,7 +113,7 @@ class CavadaLabsNodeRuntimeOperations:
 
         node_row = await self.db.cavadalabs_nodetable.update(
             where={"node_id": enrollment.node_id},
-            data=update_data,
+            data=serialize_prisma_json_fields(update_data),
         )
         node = _parse_response(node_row, CavadaLabsNodeResponse)
         await self._audit_event(
@@ -211,7 +212,7 @@ class CavadaLabsNodeRuntimeOperations:
             update_data["hostname"] = data.hostname
         row = await self.db.cavadalabs_nodetable.update(
             where={"node_id": node_id},
-            data=update_data,
+            data=serialize_prisma_json_fields(update_data),
         )
         return _parse_response(row, CavadaLabsNodeResponse)
 
@@ -244,6 +245,7 @@ class CavadaLabsNodeRuntimeOperations:
                 **gpu.model_dump(mode="python", exclude={"gpu_id"}),
                 "updated_by": _node_actor(node_id),
             }
+            payload = serialize_prisma_json_fields(payload)
             if existing is not None:
                 row = await self.db.cavadalabs_gputable.update(
                     where={"gpu_id": existing.gpu_id},
@@ -279,7 +281,8 @@ class CavadaLabsNodeRuntimeOperations:
         if node_cost_estimate is None:
             node_cost_estimate = self._estimate_node_daily_cost(node=node, data=data)
 
-        payload = {
+        payload = serialize_prisma_json_fields(
+            {
             "samples": data.samples,
             "total_kwh": data.total_kwh,
             "total_model_runtime_seconds": data.total_model_runtime_seconds,
@@ -289,7 +292,8 @@ class CavadaLabsNodeRuntimeOperations:
             "node_cost_estimate": node_cost_estimate,
             "errors": data.errors,
             "metadata": data.metadata,
-        }
+            }
+        )
         existing = await self.db.cavadalabs_nodedailyreporttable.find_first(
             where={"node_id": node_id, "report_date": report_date}
         )

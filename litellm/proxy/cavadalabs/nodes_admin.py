@@ -11,6 +11,7 @@ from litellm.proxy.cavadalabs.dispatcher import (
     _is_unique_violation,
     _now_utc,
 )
+from litellm.proxy.cavadalabs.prisma_json import serialize_prisma_json_fields
 from litellm.proxy.cavadalabs.nodes_shared import (
     _create_node_enrollment_secret,
     _parse_response,
@@ -51,6 +52,7 @@ class CavadaLabsNodeAdminOperations:
 
         create_data["created_by"] = _actor_user_id(user_api_key_dict)
         create_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        create_data = serialize_prisma_json_fields(create_data)
         try:
             row = await self.db.cavadalabs_nodetable.create(data=create_data)
         except Exception as exc:
@@ -129,6 +131,7 @@ class CavadaLabsNodeAdminOperations:
             )
 
         update_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        update_data = serialize_prisma_json_fields(update_data)
         row = await self.db.cavadalabs_nodetable.update(
             where={"node_id": node_id},
             data=update_data,
@@ -171,7 +174,8 @@ class CavadaLabsNodeAdminOperations:
         enrollment_secret, secret_prefix, secret_hash = _create_node_enrollment_secret()
         expires_at = _now_utc() + timedelta(seconds=data.expires_in_seconds)
         row = await self.db.cavadalabs_nodeenrollmenttable.create(
-            data={
+            data=serialize_prisma_json_fields(
+                {
                 "node_id": node_id,
                 "secret_prefix": secret_prefix,
                 "secret_hash": secret_hash,
@@ -180,7 +184,8 @@ class CavadaLabsNodeAdminOperations:
                 "metadata": data.metadata,
                 "created_by": _actor_user_id(user_api_key_dict),
                 "updated_by": _actor_user_id(user_api_key_dict),
-            }
+                }
+            )
         )
         enrollment = _parse_response(row, CavadaLabsNodeEnrollmentResponse)
         await self._audit_admin(

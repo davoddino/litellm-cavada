@@ -11,6 +11,7 @@ from litellm.proxy.cavadalabs.dispatcher_shared import (
     _is_unique_violation,
     _parse_response,
 )
+from litellm.proxy.cavadalabs.prisma_json import serialize_prisma_json_fields
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
     CavadaLabsChatbotResponse,
     CavadaLabsProjectModelPolicyCreateRequest,
@@ -96,12 +97,14 @@ class CavadaLabsModelPolicyOperations(CavadaLabsProjectOperations):
         project = await self.get_project(data.project_id)
         self._ensure_project_not_archived(project, "create model policies")
         self._ensure_model_allowed(project, data.model_alias)
-        create_data = {
-            **data.model_dump(mode="python"),
-            "company_id": project.company_id,
-            "created_by": _actor_user_id(user_api_key_dict),
-            "updated_by": _actor_user_id(user_api_key_dict),
-        }
+        create_data = serialize_prisma_json_fields(
+            {
+                **data.model_dump(mode="python"),
+                "company_id": project.company_id,
+                "created_by": _actor_user_id(user_api_key_dict),
+                "updated_by": _actor_user_id(user_api_key_dict),
+            }
+        )
         try:
             row = await self.db.cavadalabs_projectmodelpolicytable.create(
                 data=create_data
@@ -166,6 +169,7 @@ class CavadaLabsModelPolicyOperations(CavadaLabsProjectOperations):
         next_model_alias = update_data.get("model_alias", before.model_alias)
         self._ensure_model_allowed(project, next_model_alias)
         update_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        update_data = serialize_prisma_json_fields(update_data)
         try:
             row = await self.db.cavadalabs_projectmodelpolicytable.update(
                 where={"policy_id": policy_id},

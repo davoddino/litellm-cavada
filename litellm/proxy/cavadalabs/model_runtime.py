@@ -10,6 +10,7 @@ from fastapi import HTTPException, status
 
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy.cavadalabs.dispatcher_shared import _now_utc, _parse_response
+from litellm.proxy.cavadalabs.prisma_json import serialize_prisma_json_fields
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
     CavadaLabsGPUResponse,
     CavadaLabsGPUStatus,
@@ -272,7 +273,8 @@ class CavadaLabsHostedModelRuntimeService:
             else None
         )
         row = await self.db.cavadalabs_modelloadrequesttable.create(
-            data={
+            data=serialize_prisma_json_fields(
+                {
                 "company_id": company_id,
                 "project_id": project_id,
                 "model_alias": policy.model_alias,
@@ -288,7 +290,8 @@ class CavadaLabsHostedModelRuntimeService:
                     "reason_code": reason_code,
                     "auto_enqueued": True,
                 },
-            }
+                }
+            )
         )
         return _parse_response(row, CavadaLabsModelLoadRequestResponse)
 

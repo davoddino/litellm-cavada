@@ -11,6 +11,7 @@ from litellm.proxy.cavadalabs.dispatcher import (
     _is_unique_violation,
     _now_utc,
 )
+from litellm.proxy.cavadalabs.prisma_json import serialize_prisma_json_fields
 from litellm.proxy.cavadalabs.nodes_shared import (
     _SCHEDULABLE_GPU_STATUSES,
     _SCHEDULABLE_NODE_STATUSES,
@@ -274,7 +275,8 @@ class CavadaLabsNodeSchedulerOperations:
         lock_expires_at = _now_utc() + timedelta(seconds=data.lock_ttl_seconds)
         try:
             lock_row = await self.db.cavadalabs_gpulocktable.create(
-                data={
+                data=serialize_prisma_json_fields(
+                    {
                     "node_id": node.node_id,
                     "gpu_id": gpu.gpu_id,
                     "model_id": request.model_alias,
@@ -290,7 +292,8 @@ class CavadaLabsNodeSchedulerOperations:
                         "scheduler": "cavadalabs",
                         "model_load_request_id": request.model_load_request_id,
                     },
-                }
+                    }
+                )
             )
         except Exception as exc:
             if _is_unique_violation(exc):
@@ -303,7 +306,8 @@ class CavadaLabsNodeSchedulerOperations:
                 "model_load_request_id": request.model_load_request_id,
                 "status": CavadaLabsModelRuntimeStatus.QUEUED.value,
             },
-            data={
+            data=serialize_prisma_json_fields(
+                {
                 "status": CavadaLabsModelRuntimeStatus.LOCKING.value,
                 "node_id": node.node_id,
                 "gpu_id": gpu.gpu_id,
@@ -313,7 +317,8 @@ class CavadaLabsNodeSchedulerOperations:
                     "scheduled_at": _now_utc().isoformat(),
                     "gpu_lock_id": lock.lock_id,
                 },
-            },
+                }
+            ),
         )
         if claimed_count == 0:
             await self.db.cavadalabs_gpulocktable.update(

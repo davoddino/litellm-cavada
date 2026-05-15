@@ -14,6 +14,7 @@ from litellm.proxy.cavadalabs.dispatcher import (
     _actor_user_id,
     _is_unique_violation,
 )
+from litellm.proxy.cavadalabs.prisma_json import serialize_prisma_json_fields
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
     CavadaLabsChatbotRAGAssignmentCreateRequest,
     CavadaLabsChatbotRAGAssignmentResponse,
@@ -96,11 +97,13 @@ class CavadaLabsRAGService:
         if data.project_id is not None:
             await self._require_project(data.project_id, company_id=data.company_id)
 
-        create_data = {
-            **data.model_dump(mode="python"),
-            "created_by": _actor_user_id(user_api_key_dict),
-            "updated_by": _actor_user_id(user_api_key_dict),
-        }
+        create_data = serialize_prisma_json_fields(
+            {
+                **data.model_dump(mode="python"),
+                "created_by": _actor_user_id(user_api_key_dict),
+                "updated_by": _actor_user_id(user_api_key_dict),
+            }
+        )
         try:
             row = await self.db.cavadalabs_ragcollectiontable.create(data=create_data)
         except Exception as exc:
@@ -198,6 +201,7 @@ class CavadaLabsRAGService:
             await self._require_project(next_project_id, company_id=before.company_id)
 
         update_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        update_data = serialize_prisma_json_fields(update_data)
         try:
             row = await self.db.cavadalabs_ragcollectiontable.update(
                 where={"collection_id": collection_id},
@@ -248,13 +252,15 @@ class CavadaLabsRAGService:
                 detail={"error": "Cannot add documents to archived RAG collection"},
             )
 
-        create_data = {
-            **data.model_dump(mode="python"),
-            "company_id": collection.company_id,
-            "project_id": collection.project_id,
-            "created_by": _actor_user_id(user_api_key_dict),
-            "updated_by": _actor_user_id(user_api_key_dict),
-        }
+        create_data = serialize_prisma_json_fields(
+            {
+                **data.model_dump(mode="python"),
+                "company_id": collection.company_id,
+                "project_id": collection.project_id,
+                "created_by": _actor_user_id(user_api_key_dict),
+                "updated_by": _actor_user_id(user_api_key_dict),
+            }
+        )
         if (
             create_data.get("status") == CavadaLabsRAGDocumentStatus.INDEXED.value
             and create_data.get("last_indexed_at") is None
@@ -341,6 +347,7 @@ class CavadaLabsRAGService:
             update_data["last_indexed_at"] = _now_utc()
 
         update_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        update_data = serialize_prisma_json_fields(update_data)
         row = await self.db.cavadalabs_ragdocumenttable.update(
             where={"document_id": document_id},
             data=update_data,
@@ -372,13 +379,15 @@ class CavadaLabsRAGService:
         chatbot = await self._require_chatbot(data.chatbot_id)
         self._validate_chatbot_collection_match(chatbot, collection)
 
-        create_data = {
-            **data.model_dump(mode="python"),
-            "company_id": chatbot.company_id,
-            "project_id": chatbot.project_id,
-            "created_by": _actor_user_id(user_api_key_dict),
-            "updated_by": _actor_user_id(user_api_key_dict),
-        }
+        create_data = serialize_prisma_json_fields(
+            {
+                **data.model_dump(mode="python"),
+                "company_id": chatbot.company_id,
+                "project_id": chatbot.project_id,
+                "created_by": _actor_user_id(user_api_key_dict),
+                "updated_by": _actor_user_id(user_api_key_dict),
+            }
+        )
         try:
             row = await self.db.cavadalabs_chatbotragassignmenttable.create(
                 data=create_data
@@ -469,6 +478,7 @@ class CavadaLabsRAGService:
             return before
 
         update_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        update_data = serialize_prisma_json_fields(update_data)
         row = await self.db.cavadalabs_chatbotragassignmenttable.update(
             where={"assignment_id": assignment_id},
             data=update_data,
@@ -654,7 +664,8 @@ class CavadaLabsRAGService:
     ) -> None:
         try:
             await self.db.cavadalabs_auditlogtable.create(
-                data={
+                data=serialize_prisma_json_fields(
+                    {
                     "actor_user_id": _actor_user_id(user_api_key_dict),
                     "actor_api_key_hash": _actor_key_hash(user_api_key_dict),
                     "action": action,
@@ -664,7 +675,8 @@ class CavadaLabsRAGService:
                     "project_id": project_id,
                     "before_value": before_value,
                     "after_value": after_value,
-                }
+                    }
+                )
             )
         except Exception:
             verbose_proxy_logger.exception("Failed to write CavadaLabs RAG audit log")

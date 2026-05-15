@@ -12,6 +12,7 @@ from litellm.proxy.cavadalabs.dispatcher import (
     _is_unique_violation,
     _now_utc,
 )
+from litellm.proxy.cavadalabs.prisma_json import serialize_prisma_json_fields
 from litellm.proxy.cavadalabs.nodes_shared import (
     _active_gpu_lock_key,
     _parse_response,
@@ -62,12 +63,14 @@ class CavadaLabsNodeModelLoadOperations:
         create_data = data.model_dump(mode="python")
         create_data["node_id"] = node_id
         row = await self.db.cavadalabs_modelloadrequesttable.create(
-            data={
+            data=serialize_prisma_json_fields(
+                {
                 **create_data,
                 "company_id": company_id,
                 "status": CavadaLabsModelRuntimeStatus.QUEUED.value,
                 "requested_by": _actor_user_id(user_api_key_dict),
-            }
+                }
+            )
         )
         response = _parse_response(row, CavadaLabsModelLoadRequestResponse)
         await self._audit_admin(
@@ -176,6 +179,7 @@ class CavadaLabsNodeModelLoadOperations:
                 update_data["node_id"], before.project_id
             )
 
+        update_data = serialize_prisma_json_fields(update_data)
         row = await self.db.cavadalabs_modelloadrequesttable.update(
             where={"model_load_request_id": model_load_request_id},
             data=update_data,
@@ -230,6 +234,7 @@ class CavadaLabsNodeModelLoadOperations:
         }:
             payload["unloaded_at"] = _now_utc()
 
+        payload = serialize_prisma_json_fields(payload)
         if existing is None:
             row = await self.db.cavadalabs_loadedmodeltable.create(
                 data={**payload, "node_id": node_id}
@@ -271,11 +276,13 @@ class CavadaLabsNodeModelLoadOperations:
 
         try:
             row = await self.db.cavadalabs_gpulocktable.create(
-                data={
+                data=serialize_prisma_json_fields(
+                    {
                     **data.model_dump(mode="python"),
                     "status": CavadaLabsGPULockStatus.ACTIVE.value,
                     "lock_key": _active_gpu_lock_key(data.gpu_id),
-                }
+                    }
+                )
             )
         except Exception as exc:
             if _is_unique_violation(exc):

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -12,6 +11,7 @@ from uuid import uuid4
 from pydantic import BaseModel
 
 from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy.cavadalabs.prisma_json import parse_prisma_json_fields
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
     CavadaLabsChatbotResponse,
     CavadaLabsCompanyResponse,
@@ -85,14 +85,7 @@ def _row_to_dict(row: Any, response_model: Type[ModelT]) -> Dict[str, Any]:
                 if field_name in getattr(row, "__dict__", {}):
                     data[field_name] = getattr(row, field_name)
 
-    for key in _JSON_FIELDS:
-        value = data.get(key)
-        if isinstance(value, str):
-            try:
-                data[key] = json.loads(value)
-            except json.JSONDecodeError:
-                data[key] = {}
-    return data
+    return parse_prisma_json_fields(data, json_fields=_JSON_FIELDS)
 
 
 def _parse_response(row: Any, response_model: Type[ModelT]) -> ModelT:

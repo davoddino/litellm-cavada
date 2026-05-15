@@ -5,6 +5,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from litellm._logging import verbose_proxy_logger
 from litellm.litellm_core_utils.safe_json_loads import safe_json_loads
+from litellm.proxy.cavadalabs.prisma_json import serialize_prisma_json_fields
 from litellm.proxy.utils import PrismaClient
 
 
@@ -179,7 +180,7 @@ async def process_spend_logs_cavadalabs_ledger(
             )
             continue
         if row is not None:
-            ledger_rows.append(row)
+            ledger_rows.append(serialize_prisma_json_fields(row))
 
     if not ledger_rows:
         return

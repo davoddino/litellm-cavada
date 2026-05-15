@@ -17,6 +17,7 @@ from litellm.proxy.cavadalabs.dispatcher import (
     _actor_user_id,
     _is_unique_violation,
 )
+from litellm.proxy.cavadalabs.prisma_json import serialize_prisma_json_fields
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
     CavadaLabsChatCompletionRequest,
     CavadaLabsGuardrailDecision,
@@ -166,7 +167,7 @@ class CavadaLabsGuardrailService:
             chatbot_id=data.chatbot_id,
             scope=data.scope,
         )
-        create_data = data.model_dump(mode="python")
+        create_data = serialize_prisma_json_fields(data.model_dump(mode="python"))
         create_data["created_by"] = _actor_user_id(user_api_key_dict)
         create_data["updated_by"] = _actor_user_id(user_api_key_dict)
         try:
@@ -244,6 +245,7 @@ class CavadaLabsGuardrailService:
         if not update_data:
             return before
         update_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        update_data = serialize_prisma_json_fields(update_data)
         row = await self.db.cavadalabs_guardrailpolicytable.update(
             where={"policy_id": policy_id},
             data=update_data,
@@ -548,7 +550,8 @@ class CavadaLabsGuardrailService:
         if policy.log_raw_content:
             metadata["raw_text"] = data.text
         row = await self.db.cavadalabs_guardraildecisionlogtable.create(
-            data={
+            data=serialize_prisma_json_fields(
+                {
                 "policy_id": policy.policy_id,
                 "policy_name": policy.name,
                 "company_id": data.company_id,
@@ -570,7 +573,8 @@ class CavadaLabsGuardrailService:
                 "redaction_summary": redaction_summary,
                 "latency_ms": latency_ms,
                 "metadata": metadata,
-            }
+                }
+            )
         )
         return _parse_response(row, CavadaLabsGuardrailDecisionLogResponse)
 
@@ -631,7 +635,8 @@ class CavadaLabsGuardrailService:
     ) -> None:
         try:
             await self.db.cavadalabs_auditlogtable.create(
-                data={
+                data=serialize_prisma_json_fields(
+                    {
                     "actor_user_id": _actor_user_id(user_api_key_dict),
                     "actor_api_key_hash": _actor_key_hash(user_api_key_dict),
                     "action": action,
@@ -641,7 +646,8 @@ class CavadaLabsGuardrailService:
                     "project_id": project_id,
                     "before_value": before_value,
                     "after_value": after_value,
-                }
+                    }
+                )
             )
         except Exception as exc:
             verbose_proxy_logger.warning(

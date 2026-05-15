@@ -21,6 +21,7 @@ from litellm.proxy.cavadalabs.dispatcher import (
     _actor_key_hash,
     _actor_user_id,
 )
+from litellm.proxy.cavadalabs.prisma_json import serialize_prisma_json_fields
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
     CavadaLabsBillingReportFormat,
     CavadaLabsBillingReportGenerateRequest,
@@ -282,7 +283,8 @@ class CavadaLabsBillingService:
             calculation=calculation,
             checksum=checksum,
         )
-        create_data = {
+        create_data = serialize_prisma_json_fields(
+            {
             "company_id": data.company_id,
             "report_version": report_version,
             "period_start": period_start,
@@ -305,7 +307,8 @@ class CavadaLabsBillingService:
             "artifacts": artifacts,
             "metadata": data.metadata,
             "generated_by": _actor_user_id(user_api_key_dict),
-        }
+            }
+        )
         row = await self.db.cavadalabs_billingreporttable.create(data=create_data)
         response = _parse_response(row, CavadaLabsBillingReportResponse)
         await self._audit(
@@ -827,7 +830,8 @@ class CavadaLabsBillingService:
     ) -> None:
         try:
             await self.db.cavadalabs_auditlogtable.create(
-                data={
+                data=serialize_prisma_json_fields(
+                    {
                     "actor_user_id": _actor_user_id(user_api_key_dict),
                     "actor_api_key_hash": _actor_key_hash(user_api_key_dict),
                     "action": action,
@@ -837,7 +841,8 @@ class CavadaLabsBillingService:
                     "project_id": project_id,
                     "before_value": before_value,
                     "after_value": after_value,
-                }
+                    }
+                )
             )
         except Exception as exc:
             verbose_proxy_logger.warning(

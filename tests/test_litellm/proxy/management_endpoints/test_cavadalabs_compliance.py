@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -263,6 +264,9 @@ async def test_should_create_published_compliance_document_with_checksum_and_aud
         assert data["project_id"] == "project-1"
         assert data["published_at"] is not None
         assert data["checksum"]
+        assert data["content"] == "DPIA content"
+        assert json.loads(data["generated_from"]) == {}
+        assert json.loads(data["metadata"]) == {}
         return _document_row(**data)
 
     prisma_client.db.cavadalabs_compliancedocumenttable.create = AsyncMock(
@@ -284,6 +288,41 @@ async def test_should_create_published_compliance_document_with_checksum_and_aud
 
     assert response.project_id == "project-1"
     assert response.status == "published"
+    prisma_client.db.cavadalabs_auditlogtable.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_should_serialize_compliance_evidence_content_without_coercing_document_content():
+    service, prisma_client = _service()
+    prisma_client.db.cavadalabs_companytable.find_unique = AsyncMock(
+        return_value=_company_row()
+    )
+    prisma_client.db.cavadalabs_ragcollectiontable.find_unique = AsyncMock(
+        return_value=_collection_row()
+    )
+
+    def _create_evidence(*, data):
+        assert json.loads(data["content"]) == {"deleted_documents": 3}
+        assert json.loads(data["metadata"]) == {}
+        return _evidence_row(**data)
+
+    prisma_client.db.cavadalabs_complianceevidencetable.create = AsyncMock(
+        side_effect=_create_evidence
+    )
+
+    response = await service.create_evidence(
+        CavadaLabsComplianceEvidenceCreateRequest(
+            company_id="company-1",
+            collection_id="collection-1",
+            framework=CavadaLabsComplianceFramework.GDPR,
+            evidence_type="rag_deletion_certificate",
+            title="RAG deletion certificate",
+            content={"deleted_documents": 3},
+        ),
+        _admin(),
+    )
+
+    assert response.content == {"deleted_documents": 3}
     prisma_client.db.cavadalabs_auditlogtable.create.assert_awaited_once()
 
 
@@ -353,6 +392,8 @@ async def test_should_default_dsr_due_date_and_complete_workflow():
 
     def _create_dsr(*, data):
         assert data["due_at"] == received_at.replace(day=14, month=6)
+        assert json.loads(data["scope"]) == {}
+        assert json.loads(data["result"]) == {}
         return _dsr_row(**data)
 
     prisma_client.db.cavadalabs_datasubjectrequesttable.create = AsyncMock(
@@ -402,6 +443,7 @@ async def test_should_default_dsr_due_date_and_complete_workflow():
         ]
     )
     assert update_payload["completed_at"] is not None
+    assert json.loads(update_payload["result"]) == {"deleted_sessions": ["session-1"]}
     assert completed.status == "completed"
 
 

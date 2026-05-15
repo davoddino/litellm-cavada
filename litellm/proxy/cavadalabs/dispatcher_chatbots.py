@@ -19,6 +19,7 @@ from litellm.proxy.cavadalabs.dispatcher_shared import (
     _parse_response,
     hash_web_token,
 )
+from litellm.proxy.cavadalabs.prisma_json import serialize_prisma_json_fields
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
     CavadaLabsChatbotCreateRequest,
     CavadaLabsChatbotResponse,
@@ -47,11 +48,13 @@ class CavadaLabsChatbotOperations(CavadaLabsProjectOperations):
         company = await self.get_company(data.company_id)
         self._ensure_company_active(company, "create chatbots")
         self._ensure_project_not_archived(project, "create chatbots")
-        create_data = {
-            **data.model_dump(mode="python"),
-            "created_by": _actor_user_id(user_api_key_dict),
-            "updated_by": _actor_user_id(user_api_key_dict),
-        }
+        create_data = serialize_prisma_json_fields(
+            {
+                **data.model_dump(mode="python"),
+                "created_by": _actor_user_id(user_api_key_dict),
+                "updated_by": _actor_user_id(user_api_key_dict),
+            }
+        )
         try:
             row = await self.db.cavadalabs_chatbottable.create(data=create_data)
         except Exception as exc:
@@ -126,6 +129,7 @@ class CavadaLabsChatbotOperations(CavadaLabsProjectOperations):
                 detail={"error": "published chatbots require a system_prompt"},
             )
         update_data["updated_by"] = _actor_user_id(user_api_key_dict)
+        update_data = serialize_prisma_json_fields(update_data)
         row = await self.db.cavadalabs_chatbottable.update(
             where={"chatbot_id": chatbot_id},
             data=update_data,
@@ -193,18 +197,20 @@ class CavadaLabsChatbotOperations(CavadaLabsProjectOperations):
 
         token, token_prefix, token_hash = _create_browser_token()
         allowed_domains = data.allowed_domains or chatbot.allowed_domains
-        create_data = {
-            **data.model_dump(
-                mode="python", exclude={"expires_in_seconds", "expires_at"}
-            ),
-            "allowed_domains": allowed_domains,
-            "token_prefix": token_prefix,
-            "token_hash": token_hash,
-            "status": CavadaLabsWebTokenStatus.ACTIVE.value,
-            "expires_at": expires_at,
-            "created_by": _actor_user_id(user_api_key_dict),
-            "updated_by": _actor_user_id(user_api_key_dict),
-        }
+        create_data = serialize_prisma_json_fields(
+            {
+                **data.model_dump(
+                    mode="python", exclude={"expires_in_seconds", "expires_at"}
+                ),
+                "allowed_domains": allowed_domains,
+                "token_prefix": token_prefix,
+                "token_hash": token_hash,
+                "status": CavadaLabsWebTokenStatus.ACTIVE.value,
+                "expires_at": expires_at,
+                "created_by": _actor_user_id(user_api_key_dict),
+                "updated_by": _actor_user_id(user_api_key_dict),
+            }
+        )
         row = await self.db.cavadalabs_webtokentable.create(data=create_data)
         web_token = _parse_response(row, CavadaLabsWebTokenResponse)
         await self._audit(

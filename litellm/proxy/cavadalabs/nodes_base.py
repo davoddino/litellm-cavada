@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 from litellm._logging import verbose_proxy_logger
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.cavadalabs.dispatcher import _actor_key_hash, _actor_user_id
+from litellm.proxy.cavadalabs.prisma_json import serialize_prisma_json_fields
 from litellm.proxy.cavadalabs.nodes_shared import (
     _NODE_SIGNATURE_MAX_SKEW,
 )
@@ -99,7 +100,8 @@ class CavadaLabsNodeBase:
     ) -> None:
         try:
             await self.db.cavadalabs_auditlogtable.create(
-                data={
+                data=serialize_prisma_json_fields(
+                    {
                     "actor_user_id": actor_user_id,
                     "actor_api_key_hash": actor_api_key_hash,
                     "action": action,
@@ -109,7 +111,8 @@ class CavadaLabsNodeBase:
                     "project_id": project_id,
                     "before_value": before_value,
                     "after_value": after_value,
-                }
+                    }
+                )
             )
         except Exception as exc:
             verbose_proxy_logger.warning(

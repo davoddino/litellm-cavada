@@ -10,6 +10,7 @@ from litellm.proxy.cavadalabs.dispatcher_shared import (
     _actor_key_hash,
     _actor_user_id,
 )
+from litellm.proxy.cavadalabs.prisma_json import serialize_prisma_json_fields
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
     CavadaLabsCompanyResponse,
     CavadaLabsProjectResponse,
@@ -39,7 +40,8 @@ class CavadaLabsDispatcherBase:
     ) -> None:
         try:
             await self.db.cavadalabs_auditlogtable.create(
-                data={
+                data=serialize_prisma_json_fields(
+                    {
                     "actor_user_id": _actor_user_id(user_api_key_dict),
                     "actor_api_key_hash": _actor_key_hash(user_api_key_dict),
                     "action": action,
@@ -49,7 +51,8 @@ class CavadaLabsDispatcherBase:
                     "project_id": project_id,
                     "before_value": before_value,
                     "after_value": after_value,
-                }
+                    }
+                )
             )
         except Exception as exc:
             verbose_proxy_logger.warning(
