@@ -1407,13 +1407,35 @@ try:
             verbose_proxy_logger.debug(f"Found UI ready marker: {marker_file}")
             return True
 
-        # Fallback signal: Detect restructuring pattern
-        # After restructuring, routes exist as directories with index.html inside
-        # (e.g., login/index.html instead of login.html)
         # Check for main index.html first (basic UI structure requirement)
         if not os.path.exists(os.path.join(ui_dir, "index.html")):
             return False
 
+        # A partially updated export can contain both already-restructured routes
+        # and new root-level route HTML files. Do not skip restructuring in that case.
+        try:
+            for current_root, dirnames, files in os.walk(ui_dir):
+                rel_root = os.path.relpath(current_root, ui_dir)
+                first_segment = "" if rel_root == "." else rel_root.split(os.sep)[0]
+                if first_segment in {"_next", "litellm-asset-prefix"}:
+                    dirnames[:] = []
+                    continue
+
+                for filename in files:
+                    if filename.endswith(".html") and filename != "index.html":
+                        verbose_proxy_logger.debug(
+                            f"UI export still has route HTML to restructure: {filename}"
+                        )
+                        return False
+        except (PermissionError, OSError) as e:
+            verbose_proxy_logger.debug(
+                f"Could not scan {ui_dir} for pending UI route HTML files: {e}"
+            )
+            return False
+
+        # Fallback signal: Detect restructuring pattern. After restructuring,
+        # routes exist as directories with index.html inside (e.g., login/index.html
+        # instead of login.html).
         # Look for ANY subdirectory with index.html (proves restructuring happened)
         # Ignore directories starting with _ (Next.js internals like _next)
         try:
@@ -1472,20 +1494,32 @@ try:
 
     runtime_ui_path = os.getenv("LITELLM_UI_PATH", default_runtime_ui_path)
 
-    # Validate packaged UI before proceeding
-    if not _validate_ui_directory(packaged_ui_path):
+    # Validate packaged UI before proceeding. Source-tree development can have a
+    # complete dashboard export in ui/litellm-dashboard/out even when the proxy
+    # packaged output has not been copied yet.
+    packaged_ui_is_valid = _validate_ui_directory(packaged_ui_path)
+    dashboard_export_is_valid = _validate_ui_directory(dashboard_export_path)
+    ui_source_path = packaged_ui_path
+
+    if not packaged_ui_is_valid:
         verbose_proxy_logger.error(
             f"Packaged UI at {packaged_ui_path} is invalid or incomplete. "
             f"UI may not function correctly."
         )
+        if dashboard_export_is_valid:
+            verbose_proxy_logger.warning(
+                f"Using dashboard export at {dashboard_export_path} as the UI source "
+                f"because packaged UI is incomplete."
+            )
+            ui_source_path = dashboard_export_path
 
     # Decision tree for UI path selection:
-    # 1. If runtime path == packaged path: use packaged UI directly
+    # 1. If runtime path == packaged path: use the best available UI source directly
     # 2. If runtime UI exists and is pre-restructured: use it
     # 3. If runtime UI exists but not restructured: use it (will restructure later)
-    # 4. If runtime UI missing: try to populate from packaged UI
+    # 4. If runtime UI missing: try to populate from the best available UI source
     #    4a. If population succeeds: use runtime UI
-    #    4b. If population fails: fall back to packaged UI
+    #    4b. If population fails: fall back to the best available UI source
 
     should_use_runtime_path = runtime_ui_path != packaged_ui_path
 
@@ -1509,11 +1543,11 @@ try:
         # Case 4: Runtime UI missing - try to populate
         else:
             verbose_proxy_logger.info(
-                f"UI not found at {runtime_ui_path}. Attempting to populate from packaged UI."
+                f"UI not found at {runtime_ui_path}. Attempting to populate from {ui_source_path}."
             )
 
             success, error = _try_populate_ui_directory(
-                packaged_ui_path, runtime_ui_path
+                ui_source_path, runtime_ui_path
             )
 
             if success:
@@ -1523,15 +1557,15 @@ try:
                 # Case 4b: Population failed - fall back to packaged UI
                 verbose_proxy_logger.warning(
                     f"Failed to populate UI at {runtime_ui_path}: {error}. "
-                    f"Falling back to packaged UI at {packaged_ui_path}. "
+                    f"Falling back to UI source at {ui_source_path}. "
                     f"For read-only deployments, pre-build UI in Dockerfile "
                     f"or set LITELLM_UI_PATH to a writable emptyDir volume."
                 )
-                ui_path = packaged_ui_path
+                ui_path = ui_source_path
     else:
-        # Case 1: Using packaged UI directly (local development)
-        verbose_proxy_logger.info(f"Using packaged UI directory: {packaged_ui_path}")
-        ui_path = packaged_ui_path
+        # Case 1: Using the best available UI source directly (local development)
+        verbose_proxy_logger.info(f"Using UI source directory: {ui_source_path}")
+        ui_path = ui_source_path
 
     # Validate final UI path
     if not _validate_ui_directory(ui_path):

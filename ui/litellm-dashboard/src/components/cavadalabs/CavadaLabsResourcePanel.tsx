@@ -20,7 +20,7 @@ import {
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { EyeOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createCavadaLabsResource,
   cavadalabsRequest,
@@ -250,6 +250,13 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
   const [createOpen, setCreateOpen] = useState(false);
   const [detailsRow, setDetailsRow] = useState<CavadaLabsRecord | null>(null);
   const [operationResult, setOperationResult] = useState<OperationResult | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (createOpen) {
@@ -275,16 +282,20 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
     setError(null);
     try {
       const response = await listCavadaLabsResource<Record<string, any>>(accessToken, config.listPath, filters);
+      if (!mountedRef.current) return;
       const nextRows = Array.isArray(response?.[config.responseKey]) ? response[config.responseKey] : [];
       setRows(nextRows);
       setCount(Number(response?.count ?? nextRows.length));
     } catch (err) {
+      if (!mountedRef.current) return;
       const messageText = err instanceof Error ? err.message : String(err);
       setError(messageText);
       setRows([]);
       setCount(0);
     } finally {
-      setLoading(false);
+      if (mountedRef.current) {
+        setLoading(false);
+      }
     }
   }, [accessToken, config.listPath, config.responseKey, filters, missingFilters.length]);
 

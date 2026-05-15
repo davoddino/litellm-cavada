@@ -21,6 +21,7 @@ import {
   TagsOutlined,
   AuditOutlined,
   ClusterOutlined,
+  FolderOutlined,
 } from "@ant-design/icons";
 // import {
 //   all_admin_roles,
@@ -92,8 +93,10 @@ const routeFor = (slug: string): string => {
       return "usage";
     case "teams":
       return "teams";
-    case "organizations":
-      return "organizations";
+    case "cavadalabs-companies":
+      return "cavadalabs?tab=tenants&resource=companies";
+    case "cavadalabs-projects":
+      return "cavadalabs?tab=tenants&resource=projects";
     case "users":
       return "users";
     case "api_ref":
@@ -186,9 +189,16 @@ const menuItems: MenuItemCfg[] = [
   { key: "6", page: "teams", label: "Teams", icon: <TeamOutlined style={{ fontSize: 18 }} /> },
   {
     key: "17",
-    page: "organizations",
-    label: "Organizations",
+    page: "cavadalabs-companies",
+    label: "Companies",
     icon: <BankOutlined style={{ fontSize: 18 }} />,
+    roles: all_admin_roles,
+  },
+  {
+    key: "30",
+    page: "cavadalabs-projects",
+    label: "Projects",
+    icon: <FolderOutlined style={{ fontSize: 18 }} />,
     roles: all_admin_roles,
   },
   {

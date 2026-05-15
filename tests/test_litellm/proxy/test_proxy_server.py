@@ -603,6 +603,31 @@ def test_ui_extensionless_route_requires_restructure(tmp_path):
     assert "login" in response.text
 
 
+def test_ui_pre_restructured_detection_rejects_pending_route_html(tmp_path):
+    """
+    A partially updated export can have old restructured routes and new route
+    HTML files. It still needs restructuring before StaticFiles can serve /ui/<route>/.
+    """
+
+    from litellm.proxy import proxy_server
+
+    ui_root = tmp_path / "ui"
+    ui_root.mkdir()
+    (ui_root / "index.html").write_text("index")
+    login_dir = ui_root / "login"
+    login_dir.mkdir()
+    (login_dir / "index.html").write_text("login")
+    (ui_root / "cavadalabs.html").write_text("cavadalabs")
+
+    assert proxy_server._is_ui_pre_restructured(str(ui_root)) is False
+
+    proxy_server._restructure_ui_html_files(str(ui_root))
+
+    assert not (ui_root / "cavadalabs.html").exists()
+    assert (ui_root / "cavadalabs" / "index.html").read_text() == "cavadalabs"
+    assert proxy_server._is_ui_pre_restructured(str(ui_root)) is True
+
+
 def test_packaged_ui_serves_extensionless_routes_and_asset_prefix():
     """
     Regression coverage for the proxy-served UI entry points and Next asset prefix.

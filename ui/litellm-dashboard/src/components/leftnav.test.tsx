@@ -94,7 +94,8 @@ describe("Sidebar (leftnav)", () => {
       "Guardrails Monitor",
       "Teams",
       "Internal Users",
-      "Organizations",
+      "Companies",
+      "Projects",
       "Access Groups",
       "Budgets",
       "API Reference",
@@ -197,7 +198,7 @@ describe("Sidebar (leftnav)", () => {
     });
   });
 
-  it("should show Organizations tab for organization admins", async () => {
+  it("should not show CavadaLabs tenant controls for organization admins without CavadaLabs admin role", async () => {
     mockUseAuthorized.mockReturnValueOnce({
       userId: "org-admin-user-id",
       accessToken: "test-access-token",
@@ -233,6 +234,8 @@ describe("Sidebar (leftnav)", () => {
 
     await renderSidebar();
 
-    expect(screen.getByText("Organizations")).toBeInTheDocument();
+    expect(screen.queryByText("Organizations")).not.toBeInTheDocument();
+    expect(screen.queryByText("Companies")).not.toBeInTheDocument();
+    expect(screen.queryByText("Projects")).not.toBeInTheDocument();
   });
 });

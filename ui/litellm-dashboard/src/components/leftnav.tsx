@@ -56,6 +56,8 @@ const { Sider } = Layout;
 const MIGRATED_PAGES: Record<string, string> = {
   "api-reference": "api-reference",
   cavadalabs: "cavadalabs",
+  "cavadalabs-companies": "cavadalabs?tab=tenants&resource=companies",
+  "cavadalabs-projects": "cavadalabs?tab=tenants&resource=projects",
 };
 
 /** Build an absolute href for a migrated page, respecting base URL + serverRootPath. */
@@ -262,13 +264,16 @@ const menuGroups: MenuGroup[] = [
         icon: <TeamOutlined />,
       },
       {
-        key: "projects",
-        page: "projects",
-        label: (
-          <span className="flex items-center gap-2">
-            Projects <NewBadge />
-          </span>
-        ),
+        key: "companies",
+        page: "cavadalabs-companies",
+        label: "Companies",
+        icon: <BankOutlined />,
+        roles: all_admin_roles,
+      },
+      {
+        key: "cavadalabs-projects",
+        page: "cavadalabs-projects",
+        label: "Projects",
         icon: <FolderOutlined />,
         roles: all_admin_roles,
       },
@@ -277,13 +282,6 @@ const menuGroups: MenuGroup[] = [
         page: "users",
         label: "Internal Users",
         icon: <UserOutlined />,
-        roles: all_admin_roles,
-      },
-      {
-        key: "organizations",
-        page: "organizations",
-        label: "Organizations",
-        icon: <BankOutlined />,
         roles: all_admin_roles,
       },
       {
@@ -532,8 +530,9 @@ const Sidebar: React.FC<SidebarProps> = ({
         children: item.children ? filterItemsByRole(item.children) : undefined,
       }))
       .filter((item) => {
-        // Special handling for organizations and users menu items - allow org_admins
-        if (item.key === "organizations" || item.key === "users") {
+        // Special handling for users menu item - allow org_admins.
+        // CavadaLabs Companies/Projects require CavadaLabs admin-view permissions.
+        if (item.key === "users") {
           const hasRoleAccess = !item.roles || item.roles.includes(userRole) || isOrgAdmin;
           if (!hasRoleAccess) return false;
 

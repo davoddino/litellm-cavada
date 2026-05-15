@@ -1,6 +1,7 @@
 "use client";
 
 import { Alert, Card, Col, Row, Space, Spin, Tabs, Tag, Typography } from "antd";
+import { useSearchParams } from "next/navigation";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { listCavadaLabsResource } from "./api";
 import CavadaLabsResourcePanel from "./CavadaLabsResourcePanel";
@@ -29,6 +30,40 @@ const countFromResponse = (response: any, key: string): number => {
   return 0;
 };
 
+const tabKeys = new Set(["overview", "tenants", "runtime", "knowledge", "safety", "billing", "compliance"]);
+
+const resourceTabMap: Record<string, string> = {
+  companies: "tenants",
+  projects: "tenants",
+  chatbots: "tenants",
+  webTokens: "tenants",
+  modelPolicies: "runtime",
+  nodes: "runtime",
+  modelLoadRequests: "runtime",
+  gpuLocks: "runtime",
+  ragCollections: "knowledge",
+  ragDocuments: "knowledge",
+  ragAssignments: "knowledge",
+  guardrailPolicies: "safety",
+  guardrailDecisions: "safety",
+  billingReports: "billing",
+  complianceDocuments: "compliance",
+  complianceEvidence: "compliance",
+  processingActivities: "compliance",
+  dataSubjectRequests: "compliance",
+  aiSystemAssessments: "compliance",
+};
+
+const resolveActiveTab = (searchParams: Pick<URLSearchParams, "get">): string => {
+  const tab = searchParams.get("tab");
+  if (tab && tabKeys.has(tab)) return tab;
+
+  const resource = searchParams.get("resource");
+  if (resource && resourceTabMap[resource]) return resourceTabMap[resource];
+
+  return "overview";
+};
+
 const PanelStack = ({
   configs,
   accessToken,
@@ -54,14 +89,21 @@ const PanelStack = ({
 );
 
 const CavadaLabsDashboard: React.FC<CavadaLabsDashboardProps> = ({ accessToken }) => {
+  const searchParams = useSearchParams();
   const [context, setContext] = useState<CavadaLabsRuntimeContext>(emptyContext);
   const [referenceLoading, setReferenceLoading] = useState(false);
   const [referenceError, setReferenceError] = useState<string | null>(null);
   const [overviewCounts, setOverviewCounts] = useState<Record<string, number>>({});
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
+  const requestedTab = useMemo(() => resolveActiveTab(searchParams), [searchParams]);
+  const [activeTabKey, setActiveTabKey] = useState(requestedTab);
 
   const refreshAll = useCallback(() => setRefreshNonce((value) => value + 1), []);
+
+  useEffect(() => {
+    setActiveTabKey(requestedTab);
+  }, [requestedTab]);
 
   const loadReferenceData = useCallback(async () => {
     if (!accessToken) return;
@@ -202,7 +244,8 @@ const CavadaLabsDashboard: React.FC<CavadaLabsDashboardProps> = ({ accessToken }
       {referenceError ? <Alert type="error" showIcon className="mb-4" message={referenceError} /> : null}
 
       <Tabs
-        defaultActiveKey="overview"
+        activeKey={activeTabKey}
+        onChange={setActiveTabKey}
         items={[
           {
             key: "overview",

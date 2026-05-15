@@ -2,6 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders, screen, waitFor } from "../../../../tests/test-utils";
 import CavadaLabsPage from "./page";
 
+const { mockUseSearchParams } = vi.hoisted(() => ({
+  mockUseSearchParams: vi.fn(() => new URLSearchParams()),
+}));
+
+vi.mock("next/navigation", () => ({
+  useSearchParams: mockUseSearchParams,
+}));
+
 vi.mock("@/app/(dashboard)/hooks/useAuthorized", () => ({
   default: () => ({
     accessToken: "token-1",
@@ -111,6 +119,7 @@ describe("CavadaLabsPage", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUseSearchParams.mockReturnValue(new URLSearchParams());
   });
 
   afterEach(() => {
@@ -144,5 +153,21 @@ describe("CavadaLabsPage", () => {
         }),
       ).toBe(true);
     });
+  });
+
+  it("should open the tenants tab when a Companies access-control link is requested", async () => {
+    mockUseSearchParams.mockReturnValue(new URLSearchParams("tab=tenants&resource=companies"));
+    const mockFetch = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://proxy.test");
+      return Promise.resolve(jsonResponse(payloadForPath(url.pathname)));
+    });
+    global.fetch = mockFetch as any;
+
+    renderWithProviders(<CavadaLabsPage />);
+
+    const tenantsTab = await screen.findByRole("tab", { name: "Tenants" });
+    expect(tenantsTab).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByText("New company")).toBeInTheDocument();
+    expect(await screen.findByText("New project")).toBeInTheDocument();
   });
 });
