@@ -1,5 +1,4 @@
 import asyncio
-import importlib
 import json
 import os
 import re
@@ -636,6 +635,37 @@ def test_packaged_ui_serves_extensionless_routes_and_asset_prefix():
 
     asset_response = client.get(asset_match.group("path"))
     assert asset_response.status_code == 200
+
+
+def test_ui_entrypoint_route_is_registered_before_next_static_assets(tmp_path):
+    """
+    /ui must not disappear when the dashboard entrypoint exists but _next assets are absent.
+
+    Production deployments can temporarily have index.html present before assets are copied.
+    The proxy should still register /ui and return a useful HTML response instead of the
+    framework-level {"detail": "Not Found"} route miss.
+    """
+
+    from litellm.proxy import proxy_server
+
+    ui_root = tmp_path / "ui"
+    ui_root.mkdir()
+    (ui_root / "index.html").write_text("LiteLLM Dashboard")
+
+    fastapi_app = FastAPI()
+    proxy_server._register_ui_static_routes(
+        fastapi_app,
+        str(ui_root),
+        "/litellm-asset-prefix",
+    )
+    client = TestClient(fastapi_app, follow_redirects=False)
+
+    response = client.get("/ui")
+    assert response.status_code == 200
+    assert response.text == "LiteLLM Dashboard"
+
+    asset_response = client.get("/litellm-asset-prefix/_next/static/chunks/missing.js")
+    assert asset_response.status_code == 404
 
 
 def test_restructure_always_happens(monkeypatch):

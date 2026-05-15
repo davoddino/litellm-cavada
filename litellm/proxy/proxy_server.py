@@ -1293,6 +1293,49 @@ try:
     ui_path = packaged_ui_path
     litellm_asset_prefix = "/litellm-asset-prefix"
 
+    def _register_ui_static_routes(
+        fastapi_app: FastAPI,
+        selected_ui_path: str,
+        asset_prefix: str,
+    ) -> None:
+        @fastapi_app.get("/ui", include_in_schema=False)
+        async def serve_ui_without_trailing_slash():
+            """Serve the dashboard entrypoint for clients requesting /ui exactly."""
+
+            index_path = os.path.join(selected_ui_path, "index.html")
+            if not os.path.exists(index_path):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="LiteLLM UI index.html not found",
+                )
+            return FileResponse(index_path, media_type="text/html")
+
+        next_static_path = os.path.join(selected_ui_path, "_next")
+        if os.path.isdir(next_static_path):
+            # # Mount the _next directory at the root level
+            fastapi_app.mount(
+                "/_next",
+                StaticFiles(directory=next_static_path),
+                name="next_static",
+            )
+            fastapi_app.mount(
+                f"{asset_prefix}/_next",
+                StaticFiles(directory=next_static_path),
+                name="next_static",
+            )
+            # print(f"mounted _next at {server_root_path}/ui/_next")
+        else:
+            verbose_proxy_logger.warning(
+                f"LiteLLM UI static assets not found at {next_static_path}. "
+                "The /ui entrypoint will be served, but browser assets may 404 until the dashboard build is copied."
+            )
+
+        fastapi_app.mount(
+            "/ui",
+            StaticFiles(directory=selected_ui_path, html=True),
+            name="ui",
+        )
+
     def _dir_has_content(path: str) -> bool:
         try:
             return os.path.isdir(path) and any(os.scandir(path))
@@ -1528,32 +1571,7 @@ try:
                         # Skip binary files or files we can't write to
                         continue
 
-    # # Mount the _next directory at the root level
-    app.mount(
-        "/_next",
-        StaticFiles(directory=os.path.join(ui_path, "_next")),
-        name="next_static",
-    )
-    app.mount(
-        f"{litellm_asset_prefix}/_next",
-        StaticFiles(directory=os.path.join(ui_path, "_next")),
-        name="next_static",
-    )
-    # print(f"mounted _next at {server_root_path}/ui/_next")
-
-    @app.get("/ui", include_in_schema=False)
-    async def serve_ui_without_trailing_slash():
-        """Serve the dashboard entrypoint for clients requesting /ui exactly."""
-
-        index_path = os.path.join(ui_path, "index.html")
-        if not os.path.exists(index_path):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="LiteLLM UI index.html not found",
-            )
-        return FileResponse(index_path, media_type="text/html")
-
-    app.mount("/ui", StaticFiles(directory=ui_path, html=True), name="ui")
+    _register_ui_static_routes(app, ui_path, litellm_asset_prefix)
 
     def _restructure_ui_html_files(ui_root: str) -> None:
         """Ensure each exported HTML route is available as <route>/index.html."""
