@@ -1541,6 +1541,18 @@ try:
     )
     # print(f"mounted _next at {server_root_path}/ui/_next")
 
+    @app.get("/ui", include_in_schema=False)
+    async def serve_ui_without_trailing_slash():
+        """Serve the dashboard entrypoint for clients requesting /ui exactly."""
+
+        index_path = os.path.join(ui_path, "index.html")
+        if not os.path.exists(index_path):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LiteLLM UI index.html not found",
+            )
+        return FileResponse(index_path, media_type="text/html")
+
     app.mount("/ui", StaticFiles(directory=ui_path, html=True), name="ui")
 
     def _restructure_ui_html_files(ui_root: str) -> None:

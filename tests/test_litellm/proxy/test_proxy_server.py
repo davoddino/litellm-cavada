@@ -2,6 +2,7 @@ import asyncio
 import importlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -601,6 +602,40 @@ def test_ui_extensionless_route_requires_restructure(tmp_path):
     response = client.get("/ui/login")
     assert response.status_code == 200
     assert "login" in response.text
+
+
+def test_packaged_ui_serves_extensionless_routes_and_asset_prefix():
+    """
+    Regression coverage for the proxy-served UI entry points and Next asset prefix.
+
+    Browsers request the dashboard at /ui or /ui/ and then load assets from
+    /litellm-asset-prefix/_next/static/*. A stale or partially copied static
+    export can return the HTML but 404 the assets, leaving the dashboard blank.
+    """
+
+    client = TestClient(app, follow_redirects=False)
+
+    response = client.get("/ui")
+    assert response.status_code == 200
+    assert "LiteLLM Dashboard" in response.text
+
+    response = client.get("/ui/cavadalabs")
+    assert response.status_code in {307, 308}
+    assert response.headers["location"].endswith("/ui/cavadalabs/")
+
+    response = client.get("/ui/cavadalabs/")
+    assert response.status_code == 200
+    assert "LiteLLM Dashboard" in response.text
+    assert "cavadalabs" in response.text
+
+    asset_match = re.search(
+        r"""(?:href|src)="(?P<path>/litellm-asset-prefix/_next/static/[^"]+)""",
+        response.text,
+    )
+    assert asset_match is not None
+
+    asset_response = client.get(asset_match.group("path"))
+    assert asset_response.status_code == 200
 
 
 def test_restructure_always_happens(monkeypatch):
