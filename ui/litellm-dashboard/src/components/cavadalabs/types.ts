@@ -96,6 +96,9 @@ export interface CavadaLabsResourceConfig {
   createPath?: string;
   createLabel?: string;
   createFields?: CavadaLabsFieldConfig[];
+  updatePath?: (row: CavadaLabsRecord) => string;
+  updateLabel?: string;
+  updateFields?: CavadaLabsFieldConfig[];
   filters?: CavadaLabsFieldConfig[];
   requiredFilters?: string[];
   getInitialFilters?: (context: CavadaLabsRuntimeContext) => CavadaLabsRecord;

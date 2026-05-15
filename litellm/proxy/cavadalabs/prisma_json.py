@@ -5,6 +5,8 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Dict, Iterable, Optional, Set
 
+from prisma import Json
+
 
 CAVADALABS_PRISMA_JSON_FIELDS: Set[str] = {
     "access_policy",
@@ -56,20 +58,21 @@ def serialize_prisma_json_fields(
     json_fields: Optional[Iterable[str]] = None,
 ) -> Dict[str, Any]:
     """
-    Convert CavadaLabs Prisma Json columns to JSON text before writes.
+    Convert CavadaLabs Prisma Json columns to prisma.Json before writes.
 
-    prisma-client-python rejects bare Python dict/list/None values for Json
-    fields in this project. LiteLLM's established proxy pattern is to send JSON
-    text to Prisma and parse it back on reads.
+    prisma-client-python rejects bare Python dict/list values for Json fields.
+    The generated client expects the prisma.Json wrapper, with the wrapped
+    payload already JSON-serializable.
     """
     target_fields = set(json_fields or CAVADALABS_PRISMA_JSON_FIELDS)
     serialized = dict(data)
     for field_name in target_fields:
         if field_name in serialized:
-            serialized[field_name] = json.dumps(
-                serialized[field_name],
-                default=_json_default,
-            )
+            value = serialized[field_name]
+            if value is None or isinstance(value, Json):
+                continue
+            json_safe_value = json.loads(json.dumps(value, default=_json_default))
+            serialized[field_name] = Json(json_safe_value)
     return serialized
 
 

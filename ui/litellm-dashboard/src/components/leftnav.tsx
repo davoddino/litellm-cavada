@@ -1,4 +1,3 @@
-import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
 import { useTeams } from "@/app/(dashboard)/hooks/teams/useTeams";
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import {
@@ -42,9 +41,9 @@ import {
   rolesWithWriteAccess,
 } from "../utils/roles";
 import NewBadge from "./common_components/NewBadge";
-import type { Organization } from "./networking";
 import UsageIndicator from "./UsageIndicator";
 import { serverRootPath } from "./networking";
+import { buildUiPath } from "@/utils/uiRoutes";
 const { Sider } = Layout;
 
 /**
@@ -59,21 +58,6 @@ const MIGRATED_PAGES: Record<string, string> = {
   "cavadalabs-companies": "cavadalabs/companies",
   "cavadalabs-projects": "cavadalabs/projects",
 };
-
-/** Build an absolute href for a migrated page, respecting base URL + serverRootPath. */
-function migratedHref(routeSegment: string): string {
-  const raw = process.env.NEXT_PUBLIC_BASE_URL ?? "";
-  const trimmed = raw.replace(/^\/+|\/+$/g, "");
-  let base = trimmed ? `/${trimmed}/` : "/";
-
-  if (serverRootPath && serverRootPath !== "/") {
-    const cleanRoot = serverRootPath.replace(/\/+$/, "");
-    const cleanBase = base.replace(/^\/+/, "");
-    base = `${cleanRoot}/${cleanBase}`;
-  }
-
-  return `${base}${routeSegment}`;
-}
 
 // Define the props type
 interface SidebarProps {
@@ -442,16 +426,9 @@ const Sidebar: React.FC<SidebarProps> = ({
   allowVectorStoresForTeamAdmins,
 }) => {
   const { userId, accessToken, userRole } = useAuthorized();
-  const { data: organizations } = useOrganizations();
   const { data: teams } = useTeams();
 
-  // Check if user is an org_admin
-  const isOrgAdmin = useMemo(() => {
-    if (!userId || !organizations) return false;
-    return organizations.some((org: Organization) =>
-      org.members?.some((member) => member.user_id === userId && member.user_role === "org_admin"),
-    );
-  }, [userId, organizations]);
+  const isOrgAdmin = false;
 
   // Check if user is a team admin for any team
   const isTeamAdmin = useMemo(() => isUserTeamAdminForAnyTeam(teams ?? null, userId ?? ""), [teams, userId]);
@@ -488,7 +465,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     // For migrated pages, generate a path-based href for right-click "Open in new tab"
     const migratedRoute = MIGRATED_PAGES[page];
     const href = migratedRoute
-      ? migratedHref(migratedRoute)
+      ? buildUiPath(migratedRoute, serverRootPath)
       : (() => {
           const params = new URLSearchParams(window.location.search);
           params.set("page", page);

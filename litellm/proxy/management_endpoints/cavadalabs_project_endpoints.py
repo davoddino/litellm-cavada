@@ -6,12 +6,16 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.cavadalabs.usage import get_cavadalabs_daily_activity
 from litellm.proxy.management_endpoints.cavadalabs_dispatcher_utils import (
     dispatcher_service,
     require_admin_view,
     require_proxy_admin,
 )
 from litellm.proxy.management_helpers.utils import management_endpoint_wrapper
+from litellm.types.proxy.management_endpoints.common_daily_activity import (
+    SpendAnalyticsPaginatedResponse,
+)
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
     CavadaLabsProjectCreateRequest,
     CavadaLabsProjectListResponse,
@@ -21,6 +25,13 @@ from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
 )
 
 router = APIRouter(tags=["cavadalabs-projects"])
+
+
+def _split_csv(value: Optional[str]) -> Optional[list[str]]:
+    if value is None:
+        return None
+    values = [item.strip() for item in value.split(",") if item.strip()]
+    return values or None
 
 
 @router.post(
@@ -62,6 +73,41 @@ async def list_projects(
         skip=skip,
     )
     return CavadaLabsProjectListResponse(projects=projects, count=len(projects))
+
+
+@router.get(
+    "/projects/daily/activity",
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=SpendAnalyticsPaginatedResponse,
+)
+@management_endpoint_wrapper
+async def get_project_daily_activity(
+    http_request: Request,
+    start_date: Optional[str] = Query(default=None),
+    end_date: Optional[str] = Query(default=None),
+    model: Optional[str] = Query(default=None),
+    api_key: Optional[str] = Query(default=None),
+    project_ids: Optional[str] = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=1000),
+    timezone: Optional[int] = Query(default=None),
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+) -> SpendAnalyticsPaginatedResponse:
+    from litellm.proxy.proxy_server import prisma_client
+
+    require_admin_view(user_api_key_dict)
+    return await get_cavadalabs_daily_activity(
+        prisma_client=prisma_client,
+        entity_id_field="project_id",
+        entity_id=_split_csv(project_ids),
+        start_date=start_date,
+        end_date=end_date,
+        model=model,
+        api_key=api_key,
+        page=page,
+        page_size=page_size,
+        timezone_offset_minutes=timezone,
+    )
 
 
 @router.get(

@@ -139,6 +139,10 @@ export const normalizeFormPayload = (
       payload[key] = "";
       return;
     }
+    if (field?.emptyValue === "null" && isEmpty(value)) {
+      payload[key] = null;
+      return;
+    }
     if (!isEmpty(value)) {
       payload[key] = value;
     }
@@ -170,6 +174,19 @@ export const getCreateInitialValues = (fields: CavadaLabsFieldConfig[] = []): Ca
   fields.forEach((field) => {
     const value = getFieldInitialValue(field);
     if (value !== undefined) values[field.name] = value;
+  });
+  return values;
+};
+
+export const getUpdateInitialValues = (
+  row: CavadaLabsRecord,
+  fields: CavadaLabsFieldConfig[] = [],
+): CavadaLabsRecord => {
+  const values: CavadaLabsRecord = {};
+  fields.forEach((field) => {
+    const value = row[field.name];
+    if (value === undefined || value === null) return;
+    values[field.name] = field.type === "json" ? JSON.stringify(value, null, 2) : value;
   });
   return values;
 };

@@ -33,10 +33,11 @@ import { useInfiniteUsers } from "@/app/(dashboard)/hooks/users/useUsers";
 import { formatNumberWithCommas } from "@/utils/dataUtils";
 import { all_admin_roles, internalUserRoles } from "../../../utils/roles";
 import { ActivityMetrics, processActivityData } from "../../activity_metrics";
+import { listCavadaLabsResource } from "../../cavadalabs/api";
 import CloudZeroExportModal from "../../cloudzero_export_modal";
 import EntityUsageExportModal from "../../EntityUsageExport";
 import { Team } from "../../key_team_helpers/key_list";
-import { Organization, tagListCall, userDailyActivityAggregatedCall, userDailyActivityCall } from "../../networking";
+import { tagListCall, userDailyActivityAggregatedCall, userDailyActivityCall } from "../../networking";
 import AdvancedDatePicker from "../../shared/advanced_date_picker";
 import { ChartLoader } from "../../shared/chart_loader";
 import { Tag } from "../../tag_management/types";
@@ -54,10 +55,9 @@ import { UsageOption, UsageViewSelect } from "./UsageViewSelect/UsageViewSelect"
 
 interface UsagePageProps {
   teams: Team[];
-  organizations: Organization[];
 }
 
-const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations }) => {
+const UsagePage: React.FC<UsagePageProps> = ({ teams }) => {
   const { accessToken, userRole, userId: userID, premiumUser } = useAuthorized();
   // Aggregated endpoint: try first, fall back to paginated if unavailable
   const [aggregatedData, setAggregatedData] = useState<{ results: DailyData[]; metadata: any } | null>(null);
@@ -78,6 +78,8 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations }) => {
   });
 
   const [allTags, setAllTags] = useState<EntityList[]>([]);
+  const [cavadalabsCompanies, setCavadalabsCompanies] = useState<EntityList[]>([]);
+  const [cavadalabsProjects, setCavadalabsProjects] = useState<EntityList[]>([]);
   const { data: customers = [] } = useCustomers();
   const { data: agentsResponse } = useAgents();
   const { data: currentUser } = useCurrentUser();
@@ -182,6 +184,41 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations }) => {
       cancelled = true;
     };
   }, [accessToken, startTime, endTime]);
+
+  useEffect(() => {
+    if (!accessToken || !isAdmin || (usageView !== "company" && usageView !== "project")) {
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const [companyResponse, projectResponse] = await Promise.all([
+          listCavadaLabsResource<{ companies?: Record<string, any>[] }>(accessToken, "/cavadalabs/companies"),
+          listCavadaLabsResource<{ projects?: Record<string, any>[] }>(accessToken, "/cavadalabs/projects"),
+        ]);
+        if (cancelled) return;
+        setCavadalabsCompanies(
+          (companyResponse.companies ?? []).map((company) => ({
+            label: company.legal_name || company.company_id,
+            value: company.company_id,
+          })),
+        );
+        setCavadalabsProjects(
+          (projectResponse.projects ?? []).map((project) => ({
+            label: project.name || project.project_id,
+            value: project.project_id,
+          })),
+        );
+      } catch (e) {
+        if (!cancelled) {
+          console.error("Failed to fetch CavadaLabs usage filters", e);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [accessToken, isAdmin, usageView]);
 
   // Try aggregated endpoint first, fall back to paginated on failure
   const aggregatedFetchIdRef = useRef(0);
@@ -658,7 +695,7 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations }) => {
                                     0,
                                     (userSpendData.metadata?.total_prompt_tokens || 0) -
                                       (userSpendData.metadata?.total_cache_read_input_tokens || 0) -
-                                      (userSpendData.metadata?.total_cache_creation_input_tokens || 0)
+                                      (userSpendData.metadata?.total_cache_creation_input_tokens || 0),
                                   ).toLocaleString()}
                                 </Text>
                               </Card>
@@ -849,25 +886,6 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations }) => {
               </TabGroup>
             </>
           )}
-          {/* Organization Usage Panel */}
-
-          {usageView === "organization" && (
-            <EntityUsage
-              accessToken={accessToken}
-              entityType="organization"
-              userID={userID}
-              userRole={userRole}
-              dateValue={dateValue}
-              entityList={
-                organizations?.map((organization) => ({
-                  label: organization.organization_alias,
-                  value: organization.organization_id,
-                })) || null
-              }
-              premiumUser={premiumUser}
-            />
-          )}
-
           {/* Team Usage Panel */}
           {usageView === "team" && (
             <EntityUsage
@@ -881,6 +899,32 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations }) => {
                   value: team.team_id,
                 })) || null
               }
+              premiumUser={premiumUser}
+              dateValue={dateValue}
+            />
+          )}
+
+          {/* CavadaLabs Company Usage Panel */}
+          {usageView === "company" && (
+            <EntityUsage
+              accessToken={accessToken}
+              entityType="company"
+              userID={userID}
+              userRole={userRole}
+              entityList={cavadalabsCompanies.length > 0 ? cavadalabsCompanies : null}
+              premiumUser={premiumUser}
+              dateValue={dateValue}
+            />
+          )}
+
+          {/* CavadaLabs Project Usage Panel */}
+          {usageView === "project" && (
+            <EntityUsage
+              accessToken={accessToken}
+              entityType="project"
+              userID={userID}
+              userRole={userRole}
+              entityList={cavadalabsProjects.length > 0 ? cavadalabsProjects : null}
               premiumUser={premiumUser}
               dateValue={dateValue}
             />

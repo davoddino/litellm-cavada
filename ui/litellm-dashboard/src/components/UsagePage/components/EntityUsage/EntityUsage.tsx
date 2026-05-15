@@ -31,6 +31,8 @@ import { UsageExportHeader } from "../../../EntityUsageExport";
 import type { EntityType } from "../../../EntityUsageExport/types";
 import {
   agentDailyActivityCall,
+  cavadalabsCompanyDailyActivityCall,
+  cavadalabsProjectDailyActivityCall,
   customerDailyActivityCall,
   organizationDailyActivityCall,
   tagDailyActivityCall,
@@ -95,6 +97,8 @@ const ENTITY_FETCH_FNS: Record<EntityType, (...args: any[]) => Promise<any>> = {
   tag: tagDailyActivityCall,
   team: teamDailyActivityCall,
   organization: organizationDailyActivityCall,
+  company: cavadalabsCompanyDailyActivityCall,
+  project: cavadalabsProjectDailyActivityCall,
   customer: customerDailyActivityCall,
   agent: agentDailyActivityCall,
   user: userDailyActivityCall,
@@ -328,6 +332,15 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
     if (metadata?.team_alias) {
       return metadata.team_alias;
     }
+    if (metadata?.alias) {
+      return metadata.alias;
+    }
+    if (metadata?.legal_name) {
+      return metadata.legal_name;
+    }
+    if (metadata?.name) {
+      return metadata.name;
+    }
     return entity;
   };
 
@@ -472,10 +485,7 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
       {entityType === "team" && (
         <div className="mb-4">
           <Text className="mb-2">Filter by team</Text>
-          <TeamMultiSelect
-            value={selectedTags}
-            onChange={setSelectedTags}
-          />
+          <TeamMultiSelect value={selectedTags} onChange={setSelectedTags} />
         </div>
       )}
       <UsageExportHeader

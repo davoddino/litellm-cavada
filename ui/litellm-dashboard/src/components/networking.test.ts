@@ -164,6 +164,21 @@ describe("daily activity helpers", () => {
     expect(urlWithTeams.searchParams.get("team_ids")).toBe("team-a,team-b");
     expect(urlWithTeams.searchParams.get("exclude_team_ids")).toBe("litellm-dashboard");
   });
+
+  it("builds CavadaLabs company and project daily activity URLs", async () => {
+    const mockFetch = setupSuccessfulFetch();
+
+    await Networking.cavadalabsCompanyDailyActivityCall("token", startTime, endTime, 1, ["company-1"]);
+    await Networking.cavadalabsProjectDailyActivityCall("token", startTime, endTime, 2, ["project-1", "project-2"]);
+
+    const companyUrl = new URL(mockFetch.mock.calls[0][0] as string, "http://example.com");
+    const projectUrl = new URL(mockFetch.mock.calls[1][0] as string, "http://example.com");
+
+    expect(companyUrl.pathname).toBe("/cavadalabs/companies/daily/activity");
+    expect(companyUrl.searchParams.get("company_ids")).toBe("company-1");
+    expect(projectUrl.pathname).toBe("/cavadalabs/projects/daily/activity");
+    expect(projectUrl.searchParams.get("project_ids")).toBe("project-1,project-2");
+  });
 });
 
 describe("UI config and public endpoints", () => {

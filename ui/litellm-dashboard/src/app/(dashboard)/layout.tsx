@@ -5,23 +5,10 @@ import Navbar from "@/components/navbar";
 import { ThemeProvider } from "@/contexts/ThemeContext";
 import SidebarProvider from "@/app/(dashboard)/components/SidebarProvider";
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
+import { serverRootPath } from "@/components/networking";
 import { useRouter, useSearchParams } from "next/navigation";
 import { DebugWarningBanner } from "@/components/DebugWarningBanner";
-
-/** ---- BASE URL HELPERS ---- */
-function normalizeBasePrefix(raw: string | undefined | null): string {
-  const trimmed = (raw ?? "").trim();
-  if (!trimmed) return "";
-  const core = trimmed.replace(/^\/+/, "").replace(/\/+$/, "");
-  return core ? `/${core}/` : "/";
-}
-const BASE_PREFIX = normalizeBasePrefix(process.env.NEXT_PUBLIC_BASE_URL);
-function withBase(path: string): string {
-  const body = path.startsWith("/") ? path.slice(1) : path;
-  const combined = `${BASE_PREFIX}${body}`;
-  return combined.startsWith("/") ? combined : `/${combined}`;
-}
-/** -------------------------------- */
+import { buildUiPath, getUiBasePath } from "@/utils/uiRoutes";
 
 /**
  * Pages that have been migrated to path-based routing under (dashboard)/.
@@ -50,13 +37,14 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
     // If the page has been migrated to path routing, navigate there
     const migratedRoute = MIGRATED_PAGES[newPage];
     if (migratedRoute) {
-      router.push(withBase(migratedRoute));
+      router.push(buildUiPath(migratedRoute, serverRootPath));
       setPage(newPage);
       return;
     }
 
     // Otherwise, navigate back to the legacy root page with query params
-    router.push(withBase(`?page=${newPage}`));
+    const basePath = getUiBasePath(serverRootPath).replace(/\/$/, "");
+    router.push(`${basePath || "/"}?page=${newPage}`);
     setPage(newPage);
   };
 

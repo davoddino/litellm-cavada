@@ -123,4 +123,96 @@ describe("CavadaLabsResourcePanel", () => {
       }),
     );
   });
+
+  it("should submit company edits through the configured patch endpoint", async () => {
+    const user = userEvent.setup();
+    const config = buildCavadaLabsResourceConfigs(context).companies;
+    const mockFetch = vi.fn().mockImplementation((_url: string, options: RequestInit) => {
+      if (options?.method === "PATCH") {
+        return Promise.resolve(
+          jsonResponse({
+            company_id: "company-1",
+            legal_name: "Acme Labs Srl",
+            status: "active",
+          }),
+        );
+      }
+      return Promise.resolve(
+        jsonResponse({
+          companies: [
+            {
+              company_id: "company-1",
+              legal_name: "Acme Srl",
+              status: "active",
+              billing_address: {},
+              retention_policy: {},
+              default_billing_settings: {},
+              metadata: {},
+            },
+          ],
+          count: 1,
+        }),
+      );
+    });
+    global.fetch = mockFetch as any;
+
+    renderWithProviders(<CavadaLabsResourcePanel accessToken="token-1" config={config} context={context} />);
+
+    await screen.findByText("Acme Srl");
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.clear(screen.getByLabelText("Legal name"));
+    await user.type(screen.getByLabelText("Legal name"), "Acme Labs Srl");
+    await user.click(screen.getByRole("button", { name: /^ok$/i }));
+
+    await waitFor(() => {
+      expect(mockFetch.mock.calls.some((call) => call[1]?.method === "PATCH")).toBe(true);
+    });
+
+    const patchCall = mockFetch.mock.calls.find((call) => call[1]?.method === "PATCH");
+    expect(patchCall?.[0]).toBe("http://proxy.test/cavadalabs/companies/company-1");
+    expect(JSON.parse(String(patchCall?.[1]?.body))).toEqual(
+      expect.objectContaining({
+        legal_name: "Acme Labs Srl",
+        status: "active",
+      }),
+    );
+  });
+
+  it("should archive projects through the configured delete endpoint", async () => {
+    const user = userEvent.setup();
+    const config = buildCavadaLabsResourceConfigs(context).projects;
+    const mockFetch = vi.fn().mockImplementation((_url: string, options: RequestInit) => {
+      if (options?.method === "DELETE") {
+        return Promise.resolve(jsonResponse({ project_id: "project-1", status: "archived" }));
+      }
+      return Promise.resolve(
+        jsonResponse({
+          projects: [
+            {
+              project_id: "project-1",
+              company_id: "company-1",
+              name: "Support",
+              status: "production",
+              allowed_models: ["cavadalabs/qwen3-32b"],
+            },
+          ],
+          count: 1,
+        }),
+      );
+    });
+    global.fetch = mockFetch as any;
+
+    renderWithProviders(<CavadaLabsResourcePanel accessToken="token-1" config={config} context={context} />);
+
+    await screen.findByText("Support");
+    await user.click(screen.getByRole("button", { name: "Archive" }));
+    await user.click(screen.getByRole("button", { name: /^ok$/i }));
+
+    await waitFor(() => {
+      expect(mockFetch.mock.calls.some((call) => call[1]?.method === "DELETE")).toBe(true);
+    });
+
+    const deleteCall = mockFetch.mock.calls.find((call) => call[1]?.method === "DELETE");
+    expect(deleteCall?.[0]).toBe("http://proxy.test/cavadalabs/projects/project-1");
+  });
 });

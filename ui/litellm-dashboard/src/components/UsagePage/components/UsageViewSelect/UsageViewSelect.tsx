@@ -1,6 +1,7 @@
 import {
   BankOutlined,
   BarChartOutlined,
+  FolderOutlined,
   GlobalOutlined,
   LineChartOutlined,
   RobotOutlined,
@@ -11,7 +12,17 @@ import {
 } from "@ant-design/icons";
 import { Badge, Select } from "antd";
 import React from "react";
-export type UsageOption = "global" | "my-usage" | "organization" | "team" | "customer" | "tag" | "agent" | "user" | "user-agent-activity";
+export type UsageOption =
+  | "global"
+  | "my-usage"
+  | "team"
+  | "company"
+  | "project"
+  | "customer"
+  | "tag"
+  | "agent"
+  | "user"
+  | "user-agent-activity";
 export interface UsageViewSelectProps {
   value: UsageOption;
   onChange: (value: UsageOption) => void;
@@ -52,20 +63,24 @@ const OPTIONS: OptionConfig[] = [
     adminOnly: true,
   },
   {
-    value: "organization",
-    label: "Organization Usage",
-    showForAdmin: "Organization Usage",
-    showForNonAdmin: "Your Organization Usage",
-    description: "View organization-level usage",
-    descriptionForAdmin: "View usage across all organizations",
-    descriptionForNonAdmin: "View your organization's usage",
-    icon: <BankOutlined style={{ fontSize: "16px" }} />,
-  },
-  {
     value: "team",
     label: "Team Usage",
     description: "View usage by team",
     icon: <TeamOutlined style={{ fontSize: "16px" }} />,
+  },
+  {
+    value: "company",
+    label: "Company Usage",
+    description: "View usage by CavadaLabs company",
+    icon: <BankOutlined style={{ fontSize: "16px" }} />,
+    adminOnly: true,
+  },
+  {
+    value: "project",
+    label: "Project Usage",
+    description: "View usage by CavadaLabs project",
+    icon: <FolderOutlined style={{ fontSize: "16px" }} />,
+    adminOnly: true,
   },
   {
     value: "customer",

@@ -18,6 +18,8 @@ vi.mock("../../../networking", () => ({
   tagDailyActivityCall: vi.fn(),
   teamDailyActivityCall: vi.fn(),
   organizationDailyActivityCall: vi.fn(),
+  cavadalabsCompanyDailyActivityCall: vi.fn(),
+  cavadalabsProjectDailyActivityCall: vi.fn(),
   customerDailyActivityCall: vi.fn(),
   agentDailyActivityCall: vi.fn(),
   userDailyActivityCall: vi.fn(),
@@ -61,6 +63,8 @@ describe("EntityUsage", () => {
   const mockTagDailyActivityCall = vi.mocked(networking.tagDailyActivityCall);
   const mockTeamDailyActivityCall = vi.mocked(networking.teamDailyActivityCall);
   const mockOrganizationDailyActivityCall = vi.mocked(networking.organizationDailyActivityCall);
+  const mockCavadalabsCompanyDailyActivityCall = vi.mocked(networking.cavadalabsCompanyDailyActivityCall);
+  const mockCavadalabsProjectDailyActivityCall = vi.mocked(networking.cavadalabsProjectDailyActivityCall);
   const mockCustomerDailyActivityCall = vi.mocked(networking.customerDailyActivityCall);
   const mockAgentDailyActivityCall = vi.mocked(networking.agentDailyActivityCall);
   const mockUserDailyActivityCall = vi.mocked(networking.userDailyActivityCall);
@@ -352,12 +356,16 @@ describe("EntityUsage", () => {
     mockTagDailyActivityCall.mockClear();
     mockTeamDailyActivityCall.mockClear();
     mockOrganizationDailyActivityCall.mockClear();
+    mockCavadalabsCompanyDailyActivityCall.mockClear();
+    mockCavadalabsProjectDailyActivityCall.mockClear();
     mockCustomerDailyActivityCall.mockClear();
     mockAgentDailyActivityCall.mockClear();
     mockUserDailyActivityCall.mockClear();
     mockTagDailyActivityCall.mockResolvedValue(mockSpendData);
     mockTeamDailyActivityCall.mockResolvedValue(mockSpendData);
     mockOrganizationDailyActivityCall.mockResolvedValue(mockSpendData);
+    mockCavadalabsCompanyDailyActivityCall.mockResolvedValue(mockSpendData);
+    mockCavadalabsProjectDailyActivityCall.mockResolvedValue(mockSpendData);
     mockCustomerDailyActivityCall.mockResolvedValue(mockSpendData);
     mockAgentDailyActivityCall.mockResolvedValue(mockAgentSpendData);
     mockUserDailyActivityCall.mockResolvedValue(mockSpendData);
@@ -410,6 +418,26 @@ describe("EntityUsage", () => {
       const spendElements = screen.getAllByText("$100.50");
       expect(spendElements.length).toBeGreaterThan(0);
     });
+  });
+
+  it("should render with company entity type and call CavadaLabs company usage API", async () => {
+    render(<EntityUsage {...defaultProps} entityType="company" />);
+
+    await waitFor(() => {
+      expect(mockCavadalabsCompanyDailyActivityCall).toHaveBeenCalled();
+    });
+
+    expect(screen.getByText("Company Spend Overview")).toBeInTheDocument();
+  });
+
+  it("should render with project entity type and call CavadaLabs project usage API", async () => {
+    render(<EntityUsage {...defaultProps} entityType="project" />);
+
+    await waitFor(() => {
+      expect(mockCavadalabsProjectDailyActivityCall).toHaveBeenCalled();
+    });
+
+    expect(screen.getByText("Project Spend Overview")).toBeInTheDocument();
   });
 
   it("should render with customer entity type and call customer API", async () => {

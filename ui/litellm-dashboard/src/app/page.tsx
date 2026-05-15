@@ -19,17 +19,11 @@ import { Team } from "@/components/key_team_helpers/key_list";
 import { MCPServers } from "@/components/mcp_tools";
 import ModelHubTable from "@/components/AIHub/ModelHubTable";
 import Navbar from "@/components/navbar";
-import {
-  getUiConfig,
-  Organization,
-  proxyBaseUrl,
-  setGlobalLitellmHeaderName,
-  getInProductNudgesCall,
-} from "@/components/networking";
+import { getUiConfig, proxyBaseUrl, setGlobalLitellmHeaderName, getInProductNudgesCall } from "@/components/networking";
+import type { Organization } from "@/components/networking";
 import NewUsagePage from "@/components/UsagePage/components/UsagePageView";
 import OldTeams from "@/components/OldTeams";
-import { fetchUserModels, CreateKeyPrefillData } from "@/components/organisms/create_key_button";
-import Organizations, { fetchOrganizations } from "@/components/organizations";
+import { CreateKeyPrefillData } from "@/components/organisms/create_key_button";
 import PassThroughSettings from "@/components/pass_through_settings";
 import PromptsPanel from "@/components/prompts";
 import PublicModelHub from "@/components/public_model_hub";
@@ -90,6 +84,7 @@ const LEGACY_REDIRECTS: Record<string, string> = {
   cavadalabs: "cavadalabs",
   "cavadalabs-companies": "cavadalabs/companies",
   "cavadalabs-projects": "cavadalabs/projects",
+  organizations: "cavadalabs/companies",
 };
 
 function CreateKeyPageContent() {
@@ -99,8 +94,7 @@ function CreateKeyPageContent() {
   const [userEmail, setUserEmail] = useState<null | string>(null);
   const [teams, setTeams] = useState<Team[] | null>(null);
   const [keys, setKeys] = useState<null | any[]>([]);
-  const [organizations, setOrganizations] = useState<Organization[]>([]);
-  const [userModels, setUserModels] = useState<string[]>([]);
+  const organizations = useMemo<Organization[]>(() => [], []);
   const [proxySettings, setProxySettings] = useState<ProxySettings>({
     PROXY_BASE_URL: "",
     PROXY_LOGOUT_URL: "",
@@ -363,17 +357,11 @@ function CreateKeyPageContent() {
 
   useEffect(() => {
     if (accessToken && userID && userRole) {
-      fetchUserModels(userID, userRole, accessToken, setUserModels);
-    }
-    if (accessToken && userID && userRole) {
       v2TeamListCall(accessToken, 1, 100, {
         userID: userRole !== "Admin" && userRole !== "Admin Viewer" ? userID : null,
       })
         .then((response) => setTeams(response.teams ?? []))
         .catch(console.error);
-    }
-    if (accessToken) {
-      fetchOrganizations(accessToken, setOrganizations);
     }
   }, [accessToken, userID, userRole]);
 
@@ -556,15 +544,6 @@ function CreateKeyPageContent() {
                     premiumUser={premiumUser}
                     searchParams={searchParams}
                   />
-                ) : page == "organizations" ? (
-                  <Organizations
-                    organizations={organizations}
-                    setOrganizations={setOrganizations}
-                    userModels={userModels}
-                    accessToken={accessToken}
-                    userRole={userRole}
-                    premiumUser={premiumUser}
-                  />
                 ) : page == "admin-panel" ? (
                   <AdminPanel proxySettings={proxySettings} />
                 ) : page == "logging-and-alerts" ? (
@@ -650,10 +629,7 @@ function CreateKeyPageContent() {
                 ) : page == "guardrails-monitor" ? (
                   <GuardrailsMonitorView accessToken={accessToken} />
                 ) : page == "new_usage" ? (
-                  <NewUsagePage
-                    teams={(teams as Team[]) ?? []}
-                    organizations={(organizations as Organization[]) ?? []}
-                  />
+                  <NewUsagePage teams={(teams as Team[]) ?? []} />
                 ) : (
                   <Usage
                     userID={userID}

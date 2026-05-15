@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
+from prisma import Json
 
 from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.cavadalabs.dispatcher import (
@@ -20,6 +21,7 @@ from litellm.proxy.cavadalabs.chatbot_endpoints import (
 from litellm.proxy.cavadalabs.usage_tracking import (
     process_spend_logs_cavadalabs_ledger,
 )
+from litellm.proxy.cavadalabs.usage import get_cavadalabs_daily_activity
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
     CavadaLabsChatbotCreateRequest,
     CavadaLabsChatCompletionRequest,
@@ -356,6 +358,8 @@ async def test_should_create_company_and_write_cavadalabs_audit_log():
     ]
     assert create_data["created_by"] == "admin-user"
     assert create_data["updated_by"] == "admin-user"
+    assert isinstance(create_data["billing_address"], Json)
+    assert create_data["billing_address"].data == {}
     prisma_client.db.cavadalabs_auditlogtable.create.assert_awaited_once()
 
 
@@ -808,7 +812,7 @@ async def test_should_enqueue_load_request_and_route_to_external_fallback_when_p
         ]
     )
     assert create_data["requested_by"] == "cavadalabs-runtime"
-    assert create_data["metadata"]["source"] == "chatbot_runtime"
+    assert create_data["metadata"].data["source"] == "chatbot_runtime"
 
 
 @pytest.mark.asyncio
@@ -972,6 +976,63 @@ async def test_should_reject_model_policy_for_model_outside_project_allowlist():
 
 
 @pytest.mark.asyncio
+async def test_should_aggregate_company_daily_activity_from_cavadalabs_ledger():
+    _, prisma_client = _service()
+    prisma_client.db.cavadalabs_requestledgertable.count = AsyncMock(return_value=1)
+    prisma_client.db.cavadalabs_requestledgertable.find_many = AsyncMock(
+        return_value=[
+            _row(
+                request_id="req-usage-1",
+                company_id="company-1",
+                project_id="project-1",
+                api_key_hash="hashed-key",
+                provider="cavadalabs",
+                model="cavadalabs/qwen3-32b",
+                prompt_tokens=12,
+                completion_tokens=8,
+                total_tokens=20,
+                spend=0.12,
+                status="success",
+                metadata={"model_group": "cavadalabs/qwen3-32b", "call_type": "chat"},
+                created_at=datetime(2026, 5, 15, 12, 0, tzinfo=timezone.utc),
+            )
+        ]
+    )
+    prisma_client.db.cavadalabs_companytable.find_many = AsyncMock(
+        return_value=[_company_row()]
+    )
+    prisma_client.db.litellm_verificationtoken = MagicMock()
+    prisma_client.db.litellm_verificationtoken.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(token="hashed-key", key_alias="Widget key", team_id=None)
+        ]
+    )
+
+    response = await get_cavadalabs_daily_activity(
+        prisma_client=prisma_client,
+        entity_id_field="company_id",
+        entity_id=["company-1"],
+        start_date="2026-05-15",
+        end_date="2026-05-15",
+        model=None,
+        api_key=None,
+        page=1,
+        page_size=100,
+        timezone_offset_minutes=0,
+    )
+
+    assert response.metadata.total_spend == 0.12
+    assert response.metadata.total_api_requests == 1
+    assert response.results[0].breakdown.entities["company-1"].metadata[
+        "alias"
+    ] == "ACME Spa"
+    assert (
+        response.results[0].breakdown.api_keys["hashed-key"].metadata.key_alias
+        == "Widget key"
+    )
+
+
+@pytest.mark.asyncio
 async def test_should_mirror_cavadalabs_spend_log_to_request_ledger():
     _, prisma_client = _service()
     prisma_client.db.cavadalabs_requestledgertable = MagicMock()
@@ -1034,11 +1095,11 @@ async def test_should_mirror_cavadalabs_spend_log_to_request_ledger():
     assert ledger_row["provider"] == "cavadalabs"
     assert ledger_row["model"] == "cavadalabs/qwen3-32b"
     assert ledger_row["total_tokens"] == 15
-    assert ledger_row["metadata"]["cavadalabs"]["policy_id"] == "policy-1"
-    assert ledger_row["metadata"]["cavadalabs"]["guardrails"] == ["safe-widget"]
-    assert ledger_row["metadata"]["cavadalabs"]["rag"]["collection_ids"] == [
-        "collection-1"
-    ]
+    assert isinstance(ledger_row["metadata"], Json)
+    ledger_metadata = ledger_row["metadata"].data
+    assert ledger_metadata["cavadalabs"]["policy_id"] == "policy-1"
+    assert ledger_metadata["cavadalabs"]["guardrails"] == ["safe-widget"]
+    assert ledger_metadata["cavadalabs"]["rag"]["collection_ids"] == ["collection-1"]
 
 
 @pytest.mark.asyncio

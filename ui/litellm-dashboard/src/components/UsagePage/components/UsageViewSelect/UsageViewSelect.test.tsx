@@ -75,6 +75,7 @@ vi.mock("@ant-design/icons", async () => {
   return {
     GlobalOutlined: Icon,
     BankOutlined: Icon,
+    FolderOutlined: Icon,
     TeamOutlined: Icon,
     ShoppingCartOutlined: Icon,
     TagsOutlined: Icon,
@@ -109,6 +110,20 @@ describe("UsageViewSelect", () => {
     });
 
     expect(mockOnChange).toHaveBeenCalledWith("team");
+  });
+
+  it("should show CavadaLabs company and project usage options for admins", () => {
+    render(<UsageViewSelect value="global" onChange={mockOnChange} isAdmin={true} />);
+
+    expect(screen.getByRole("option", { name: "Company Usage" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Project Usage" })).toBeInTheDocument();
+  });
+
+  it("should hide CavadaLabs company and project usage options for non-admin users", () => {
+    render(<UsageViewSelect value="global" onChange={mockOnChange} isAdmin={false} />);
+
+    expect(screen.queryByRole("option", { name: "Company Usage" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Project Usage" })).not.toBeInTheDocument();
   });
 
   it("should show Tag Usage for non-admin users with tag usage permission", () => {

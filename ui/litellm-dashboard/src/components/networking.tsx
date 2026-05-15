@@ -1971,6 +1971,44 @@ export const organizationDailyActivityCall = async (
   });
 };
 
+export const cavadalabsCompanyDailyActivityCall = async (
+  accessToken: string,
+  startTime: Date,
+  endTime: Date,
+  page: number = 1,
+  companyIds: string[] | null = null,
+) => {
+  return fetchDailyActivity({
+    accessToken,
+    endpoint: "/cavadalabs/companies/daily/activity",
+    startTime,
+    endTime,
+    page,
+    extraQueryParams: {
+      company_ids: companyIds,
+    },
+  });
+};
+
+export const cavadalabsProjectDailyActivityCall = async (
+  accessToken: string,
+  startTime: Date,
+  endTime: Date,
+  page: number = 1,
+  projectIds: string[] | null = null,
+) => {
+  return fetchDailyActivity({
+    accessToken,
+    endpoint: "/cavadalabs/projects/daily/activity",
+    startTime,
+    endTime,
+    page,
+    extraQueryParams: {
+      project_ids: projectIds,
+    },
+  });
+};
+
 export const customerDailyActivityCall = async (
   accessToken: string,
   startTime: Date,

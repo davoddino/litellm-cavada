@@ -37,6 +37,36 @@ describe("buildCavadaLabsResourceConfigs", () => {
     expect(configs.modelPolicies.filters?.map((item) => item.name)).toContain("project_id");
   });
 
+  it("should configure editable and archivable companies and projects", () => {
+    const configs = buildCavadaLabsResourceConfigs(context);
+
+    expect(configs.companies.updatePath?.({ company_id: "company-1" })).toBe("/cavadalabs/companies/company-1");
+    expect(configs.companies.updateFields?.map((item) => item.name)).toContain("legal_name");
+    expect(
+      configs.companies.rowActions?.find((action) => action.key === "archive")?.request({ company_id: "company-1" }),
+    ).toEqual({
+      method: "DELETE",
+      path: "/cavadalabs/companies/company-1",
+    });
+
+    expect(configs.projects.updatePath?.({ project_id: "project-1" })).toBe("/cavadalabs/projects/project-1");
+    expect(configs.projects.updateFields?.map((item) => item.name)).toContain("allowed_models");
+    expect(
+      configs.projects.rowActions?.find((action) => action.key === "archive")?.request({ project_id: "project-1" }),
+    ).toEqual({
+      method: "DELETE",
+      path: "/cavadalabs/projects/project-1",
+    });
+  });
+
+  it("should configure CavadaLabs usage views without legacy organizations", () => {
+    const configs = buildCavadaLabsResourceConfigs(context);
+
+    expect(Object.keys(configs)).toContain("companies");
+    expect(Object.keys(configs)).toContain("projects");
+    expect(Object.keys(configs)).not.toContain("organizations");
+  });
+
   it("should configure runtime scheduler actions with project scoped payloads", () => {
     const configs = buildCavadaLabsResourceConfigs(context);
     const schedulerAction = configs.modelLoadRequests.toolbarActions?.find((action) => action.key === "schedule");

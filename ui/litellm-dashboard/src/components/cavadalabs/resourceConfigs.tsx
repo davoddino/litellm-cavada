@@ -1,4 +1,10 @@
-import { CheckCircleOutlined, KeyOutlined, PlayCircleOutlined, UnlockOutlined } from "@ant-design/icons";
+import {
+  CheckCircleOutlined,
+  DeleteOutlined,
+  KeyOutlined,
+  PlayCircleOutlined,
+  UnlockOutlined,
+} from "@ant-design/icons";
 import type { CavadaLabsFieldConfig, CavadaLabsResourceConfig, CavadaLabsRuntimeContext } from "./types";
 import { enumOptions, toOptions } from "./utils";
 
@@ -109,6 +115,8 @@ export const buildCavadaLabsResourceConfigs = (
       rowKey: "company_id",
       createPath: "/cavadalabs/companies",
       createLabel: "New company",
+      updatePath: (row) => `/cavadalabs/companies/${row.company_id}`,
+      updateLabel: "Edit company",
       filters: [{ name: "status", label: "Status", type: "select", options: status.company }],
       createFields: [
         { name: "legal_name", label: "Legal name", type: "text", required: true },
@@ -117,6 +125,19 @@ export const buildCavadaLabsResourceConfigs = (
         { name: "plan", label: "Plan", type: "text" },
         { name: "status", label: "Status", type: "select", options: status.company, defaultValue: "active" },
         { name: "monthly_budget", label: "Monthly budget", type: "number", min: 0, step: 0.01 },
+        { name: "admin_emails", label: "Admin emails", type: "tags", fullWidth: true },
+        jsonField("billing_address", "Billing address"),
+        jsonField("retention_policy", "Retention policy"),
+        jsonField("default_billing_settings", "Default billing settings"),
+        jsonField("metadata", "Metadata"),
+      ],
+      updateFields: [
+        { name: "legal_name", label: "Legal name", type: "text", required: true },
+        { name: "billing_name", label: "Billing name", type: "text", emptyValue: "null" },
+        { name: "vat_tax_id", label: "VAT / Tax ID", type: "text", emptyValue: "null" },
+        { name: "plan", label: "Plan", type: "text", emptyValue: "null" },
+        { name: "status", label: "Status", type: "select", options: status.company },
+        { name: "monthly_budget", label: "Monthly budget", type: "number", min: 0, step: 0.01, emptyValue: "null" },
         { name: "admin_emails", label: "Admin emails", type: "tags", fullWidth: true },
         jsonField("billing_address", "Billing address"),
         jsonField("retention_policy", "Retention policy"),
@@ -132,6 +153,18 @@ export const buildCavadaLabsResourceConfigs = (
         { key: "admin_emails", title: "Admins", type: "tags", width: 240 },
         { key: "updated_at", title: "Updated", type: "datetime", width: 170 },
       ],
+      rowActions: [
+        {
+          key: "archive",
+          label: "Archive",
+          danger: true,
+          icon: <DeleteOutlined />,
+          confirmTitle: "Archive company?",
+          confirmDescription:
+            "The company will be marked archived. Existing linked audit and billing history is preserved.",
+          request: (row) => ({ method: "DELETE", path: `/cavadalabs/companies/${row.company_id}` }),
+        },
+      ],
     },
     projects: {
       key: "projects",
@@ -141,6 +174,8 @@ export const buildCavadaLabsResourceConfigs = (
       rowKey: "project_id",
       createPath: "/cavadalabs/projects",
       createLabel: "New project",
+      updatePath: (row) => `/cavadalabs/projects/${row.project_id}`,
+      updateLabel: "Edit project",
       filters: [companyFilter, { name: "status", label: "Status", type: "select", options: status.project }],
       createFields: [
         companyField(companyOptions),
@@ -160,6 +195,23 @@ export const buildCavadaLabsResourceConfigs = (
         jsonField("retention_policy_override", "Retention policy override"),
         jsonField("metadata", "Metadata"),
       ],
+      updateFields: [
+        { name: "name", label: "Name", type: "text", required: true },
+        { name: "status", label: "Status", type: "select", options: status.project },
+        { name: "budget", label: "Budget", type: "number", min: 0, step: 0.01, emptyValue: "null" },
+        { name: "allowed_models", label: "Allowed models", type: "tags", fullWidth: true },
+        {
+          name: "allowed_rag_collections",
+          label: "Allowed RAG collections",
+          type: "multiSelect",
+          options: collectionOptions,
+          fullWidth: true,
+        },
+        { name: "default_guardrail_policy", label: "Default guardrail policy", type: "text", emptyValue: "null" },
+        jsonField("default_chatbot_settings", "Default chatbot settings"),
+        jsonField("retention_policy_override", "Retention policy override"),
+        jsonField("metadata", "Metadata"),
+      ],
       columns: [
         { key: "name", title: "Name", type: "text", width: 220 },
         { key: "project_id", title: "Project ID", type: "id", width: 220 },
@@ -168,6 +220,18 @@ export const buildCavadaLabsResourceConfigs = (
         { key: "allowed_models", title: "Models", type: "tags", width: 260 },
         { key: "budget", title: "Budget", type: "currency", width: 130 },
         { key: "updated_at", title: "Updated", type: "datetime", width: 170 },
+      ],
+      rowActions: [
+        {
+          key: "archive",
+          label: "Archive",
+          danger: true,
+          icon: <DeleteOutlined />,
+          confirmTitle: "Archive project?",
+          confirmDescription:
+            "The project will be marked archived. Existing runtime, billing, and compliance history is preserved.",
+          request: (row) => ({ method: "DELETE", path: `/cavadalabs/projects/${row.project_id}` }),
+        },
       ],
     },
     chatbots: {

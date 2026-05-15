@@ -19,7 +19,7 @@ import {
   message,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { EyeOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
+import { EditOutlined, EyeOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createCavadaLabsResource,
@@ -44,6 +44,7 @@ import {
   formatDateTime,
   formatNumber,
   getCreateInitialValues,
+  getUpdateInitialValues,
   normalizeFormPayload,
   rowMatchesSearch,
   statusColor,
@@ -166,6 +167,7 @@ const renderCell = (column: CavadaLabsColumnConfig, value: any, row: CavadaLabsR
 const buildColumns = (
   config: CavadaLabsResourceConfig,
   showDetails: (row: CavadaLabsRecord) => void,
+  openEdit: (row: CavadaLabsRecord) => void,
   runRowAction: (action: CavadaLabsRowAction, row: CavadaLabsRecord) => void,
 ): ColumnsType<CavadaLabsRecord> => {
   const columns: ColumnsType<CavadaLabsRecord> = config.columns.map((column) => ({
@@ -184,11 +186,17 @@ const buildColumns = (
     render: (_value: any, row: CavadaLabsRecord) => (
       <Space size={6}>
         <Tooltip title="Details">
-          <Button size="small" icon={<EyeOutlined />} onClick={() => showDetails(row)} />
+          <Button aria-label="Details" size="small" icon={<EyeOutlined />} onClick={() => showDetails(row)} />
         </Tooltip>
+        {config.updatePath && config.updateFields ? (
+          <Tooltip title="Edit">
+            <Button aria-label="Edit" size="small" icon={<EditOutlined />} onClick={() => openEdit(row)} />
+          </Tooltip>
+        ) : null}
         {config.rowActions?.map((action) => (
           <Button
             key={action.key}
+            aria-label={action.label}
             size="small"
             danger={action.danger}
             icon={action.icon}
@@ -236,6 +244,7 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
 }) => {
   const [filterForm] = Form.useForm();
   const [createForm] = Form.useForm();
+  const [updateForm] = Form.useForm();
   const [messageApi, messageContext] = message.useMessage();
   const [modalApi, modalContext] = Modal.useModal();
   const initialFilters = useMemo(() => emptyFilters(config.getInitialFilters?.(context) ?? {}), [config, context]);
@@ -248,6 +257,7 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [updateRow, setUpdateRow] = useState<CavadaLabsRecord | null>(null);
   const [detailsRow, setDetailsRow] = useState<CavadaLabsRecord | null>(null);
   const [operationResult, setOperationResult] = useState<OperationResult | null>(null);
   const mountedRef = useRef(true);
@@ -263,6 +273,12 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
       createForm.setFieldsValue(getCreateInitialValues(config.createFields));
     }
   }, [config.createFields, createForm, createOpen]);
+
+  useEffect(() => {
+    if (updateRow) {
+      updateForm.setFieldsValue(getUpdateInitialValues(updateRow, config.updateFields));
+    }
+  }, [config.updateFields, updateForm, updateRow]);
 
   useEffect(() => {
     setFilters(initialFilters);
@@ -305,16 +321,15 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
 
   const visibleRows = useMemo(() => rows.filter((row) => rowMatchesSearch(row, search)), [rows, search]);
 
-  const executeRequest = useCallback(async (spec: {
-    method: "POST" | "PATCH" | "DELETE";
-    path: string;
-    body?: CavadaLabsRecord;
-  }) => {
-    if (spec.method === "POST") return postCavadaLabsAction(accessToken, spec.path, spec.body ?? {});
-    if (spec.method === "PATCH") return patchCavadaLabsResource(accessToken, spec.path, spec.body ?? {});
-    if (spec.method === "DELETE") return deleteCavadaLabsResource(accessToken, spec.path);
-    return cavadalabsRequest(accessToken, spec.path, { method: spec.method, body: spec.body });
-  }, [accessToken]);
+  const executeRequest = useCallback(
+    async (spec: { method: "POST" | "PATCH" | "DELETE"; path: string; body?: CavadaLabsRecord }) => {
+      if (spec.method === "POST") return postCavadaLabsAction(accessToken, spec.path, spec.body ?? {});
+      if (spec.method === "PATCH") return patchCavadaLabsResource(accessToken, spec.path, spec.body ?? {});
+      if (spec.method === "DELETE") return deleteCavadaLabsResource(accessToken, spec.path);
+      return cavadalabsRequest(accessToken, spec.path, { method: spec.method, body: spec.body });
+    },
+    [accessToken],
+  );
 
   const handleCreate = async () => {
     if (!config.createPath || !config.createFields) return;
@@ -339,33 +354,59 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
     }
   };
 
-  const runRowAction = useCallback((action: CavadaLabsRowAction, row: CavadaLabsRecord) => {
-    const execute = async () => {
-      try {
-        setSubmitting(true);
-        const response = await executeRequest(action.request(row));
-        messageApi.success(`${action.label} completed`);
-        setOperationResult({ title: action.label, response });
-        await loadRows();
-        onMutated?.();
-      } catch (err) {
-        messageApi.error(err instanceof Error ? err.message : String(err));
-      } finally {
-        setSubmitting(false);
-      }
-    };
+  const handleUpdate = async () => {
+    if (!config.updatePath || !config.updateFields || !updateRow) return;
 
-    if (action.confirmTitle) {
-      modalApi.confirm({
-        title: action.confirmTitle,
-        content: action.confirmDescription,
-        okButtonProps: { danger: action.danger },
-        onOk: execute,
-      });
-      return;
+    try {
+      const values = await updateForm.validateFields();
+      const payload = normalizeFormPayload(values, config.updateFields);
+      setSubmitting(true);
+      const response = await patchCavadaLabsResource(accessToken, config.updatePath(updateRow), payload);
+      messageApi.success(`${config.title} updated`);
+      setUpdateRow(null);
+      updateForm.resetFields();
+      setOperationResult({ title: config.updateLabel ?? `Update ${config.title}`, response });
+      await loadRows();
+      onMutated?.();
+    } catch (err) {
+      if (err && typeof err === "object" && "errorFields" in err) return;
+      const messageText = err instanceof Error ? err.message : String(err);
+      messageApi.error(messageText);
+    } finally {
+      setSubmitting(false);
     }
-    execute();
-  }, [executeRequest, loadRows, messageApi, modalApi, onMutated]);
+  };
+
+  const runRowAction = useCallback(
+    (action: CavadaLabsRowAction, row: CavadaLabsRecord) => {
+      const execute = async () => {
+        try {
+          setSubmitting(true);
+          const response = await executeRequest(action.request(row));
+          messageApi.success(`${action.label} completed`);
+          setOperationResult({ title: action.label, response });
+          await loadRows();
+          onMutated?.();
+        } catch (err) {
+          messageApi.error(err instanceof Error ? err.message : String(err));
+        } finally {
+          setSubmitting(false);
+        }
+      };
+
+      if (action.confirmTitle) {
+        modalApi.confirm({
+          title: action.confirmTitle,
+          content: action.confirmDescription,
+          okButtonProps: { danger: action.danger },
+          onOk: execute,
+        });
+        return;
+      }
+      execute();
+    },
+    [executeRequest, loadRows, messageApi, modalApi, onMutated],
+  );
 
   const runToolbarAction = async (action: CavadaLabsToolbarAction) => {
     try {
@@ -382,7 +423,10 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
     }
   };
 
-  const columns = useMemo(() => buildColumns(config, setDetailsRow, runRowAction), [config, runRowAction]);
+  const columns = useMemo(
+    () => buildColumns(config, setDetailsRow, setUpdateRow, runRowAction),
+    [config, runRowAction],
+  );
 
   const openCreate = () => {
     setCreateOpen(true);
@@ -498,6 +542,33 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
         <Form form={createForm} layout="vertical" initialValues={getCreateInitialValues(config.createFields)}>
           <div className="grid grid-cols-1 gap-x-4 md:grid-cols-2">
             {(config.createFields ?? []).map((field) => (
+              <div key={field.name} className={field.fullWidth ? "md:col-span-2" : undefined}>
+                <Form.Item
+                  name={field.name}
+                  label={field.label}
+                  valuePropName={field.type === "switch" ? "checked" : "value"}
+                  rules={field.required ? [{ required: true, message: `${field.label} is required` }] : undefined}
+                >
+                  {renderField(field)}
+                </Form.Item>
+              </div>
+            ))}
+          </div>
+        </Form>
+      </Modal>
+
+      <Modal
+        open={Boolean(updateRow)}
+        title={config.updateLabel ?? `Edit ${config.title}`}
+        onCancel={() => setUpdateRow(null)}
+        onOk={handleUpdate}
+        confirmLoading={submitting}
+        width={920}
+        destroyOnHidden
+      >
+        <Form form={updateForm} layout="vertical">
+          <div className="grid grid-cols-1 gap-x-4 md:grid-cols-2">
+            {(config.updateFields ?? []).map((field) => (
               <div key={field.name} className={field.fullWidth ? "md:col-span-2" : undefined}>
                 <Form.Item
                   name={field.name}
