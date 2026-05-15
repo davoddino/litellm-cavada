@@ -3,6 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 import { renderWithProviders } from "../../tests/test-utils";
 import Sidebar from "./leftnav";
 
+vi.mock("./UsageIndicator", () => ({
+  default: () => <div data-testid="usage-indicator" />,
+}));
+
 vi.mock("../utils/roles", () => {
   return {
     all_admin_roles: ["admin", "admin_viewer"],
@@ -63,8 +67,17 @@ describe("Sidebar (leftnav)", () => {
     collapsed: false,
   };
 
-  it("renders all top-level (non-nested) tabs for admin", () => {
-    renderWithProviders(<Sidebar {...defaultProps} />);
+  const renderSidebar = async () => {
+    let result: ReturnType<typeof renderWithProviders> | undefined;
+    await act(async () => {
+      result = renderWithProviders(<Sidebar {...defaultProps} />);
+    });
+    if (!result) throw new Error("Sidebar render failed");
+    return result;
+  };
+
+  it("renders all top-level (non-nested) tabs for admin", async () => {
+    await renderSidebar();
 
     const topLevelLabels = [
       "Virtual Keys",
@@ -74,6 +87,7 @@ describe("Sidebar (leftnav)", () => {
       "MCP Servers",
       "Guardrails",
       "Policies",
+      "CavadaLabs",
       "Tools",
       "Usage",
       "Logs",
@@ -96,7 +110,7 @@ describe("Sidebar (leftnav)", () => {
   });
 
   it("expands a nested tab to reveal its children (Tools > Search Tools)", async () => {
-    renderWithProviders(<Sidebar {...defaultProps} />);
+    await renderSidebar();
 
     expect(screen.queryByText("Search Tools")).not.toBeInTheDocument();
     act(() => {
@@ -106,7 +120,7 @@ describe("Sidebar (leftnav)", () => {
       expect(screen.getByText("Search Tools")).toBeInTheDocument();
     });
   });
-  it("has no duplicate keys among all menu items and their children", () => {
+  it("has no duplicate keys among all menu items and their children", async () => {
     // Helper to recursively extract all keys from Ant Design Menu items
     function getAllKeysFromMenu(wrapper: HTMLElement): string[] {
       const allKeys: string[] = [];
@@ -122,7 +136,7 @@ describe("Sidebar (leftnav)", () => {
       return allKeys;
     }
 
-    const { container } = renderWithProviders(<Sidebar {...defaultProps} />);
+    const { container } = await renderSidebar();
     const allRenderedKeys = getAllKeysFromMenu(container);
 
     const keySet = new Set<string>();
@@ -151,21 +165,21 @@ describe("Sidebar (leftnav)", () => {
       showSSOBanner: false,
     };
 
-    it("hides Playground from Admin Viewer (cost-incurring action)", () => {
+    it("hides Playground from Admin Viewer (cost-incurring action)", async () => {
       mockUseAuthorized.mockReturnValueOnce(adminViewerAuth);
-      renderWithProviders(<Sidebar {...defaultProps} />);
+      await renderSidebar();
       expect(screen.queryByText("Playground")).not.toBeInTheDocument();
     });
 
-    it("shows Models + Endpoints to Admin Viewer (read-only)", () => {
+    it("shows Models + Endpoints to Admin Viewer (read-only)", async () => {
       mockUseAuthorized.mockReturnValueOnce(adminViewerAuth);
-      renderWithProviders(<Sidebar {...defaultProps} />);
+      await renderSidebar();
       expect(screen.getByText("Models + Endpoints")).toBeInTheDocument();
     });
 
     it("shows Agents (under Agentic) to Admin Viewer (read-only)", async () => {
       mockUseAuthorized.mockReturnValueOnce(adminViewerAuth);
-      renderWithProviders(<Sidebar {...defaultProps} />);
+      await renderSidebar();
       // Agents is now nested under the "Agentic" submenu — expand parent
       // first to render the children, then assert Agents is visible.
       act(() => {
@@ -176,14 +190,14 @@ describe("Sidebar (leftnav)", () => {
       });
     });
 
-    it("shows Logs to Admin Viewer", () => {
+    it("shows Logs to Admin Viewer", async () => {
       mockUseAuthorized.mockReturnValueOnce(adminViewerAuth);
-      renderWithProviders(<Sidebar {...defaultProps} />);
+      await renderSidebar();
       expect(screen.getByText("Logs")).toBeInTheDocument();
     });
   });
 
-  it("should show Organizations tab for organization admins", () => {
+  it("should show Organizations tab for organization admins", async () => {
     mockUseAuthorized.mockReturnValueOnce({
       userId: "org-admin-user-id",
       accessToken: "test-access-token",
@@ -217,7 +231,7 @@ describe("Sidebar (leftnav)", () => {
       error: null,
     } as any);
 
-    renderWithProviders(<Sidebar {...defaultProps} />);
+    await renderSidebar();
 
     expect(screen.getByText("Organizations")).toBeInTheDocument();
   });

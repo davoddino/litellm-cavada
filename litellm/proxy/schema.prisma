@@ -182,6 +182,793 @@ model LiteLLM_ProjectTable {
   object_permission    LiteLLM_ObjectPermissionTable? @relation(fields: [object_permission_id], references: [object_permission_id])
 }
 
+model CavadaLabs_CompanyTable {
+  company_id                 String   @id @default(uuid())
+  legal_name                 String
+  billing_name               String?
+  vat_tax_id                 String?
+  billing_address            Json     @default("{}")
+  admin_emails               String[] @default([])
+  plan                       String?
+  status                     String   @default("active")
+  monthly_budget             Float?
+  metadata                   Json     @default("{}")
+  retention_policy           Json     @default("{}")
+  default_guardrail_policy   String?
+  default_billing_settings   Json     @default("{}")
+  created_at                 DateTime @default(now()) @map("created_at")
+  created_by                 String
+  updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                 String
+
+  projects                   CavadaLabs_ProjectTable[]
+  chatbots                   CavadaLabs_ChatbotTable[]
+  web_tokens                 CavadaLabs_WebTokenTable[]
+  model_policies             CavadaLabs_ProjectModelPolicyTable[]
+  model_load_requests        CavadaLabs_ModelLoadRequestTable[]
+  billing_reports            CavadaLabs_BillingReportTable[]
+  rag_collections            CavadaLabs_RAGCollectionTable[]
+  rag_documents              CavadaLabs_RAGDocumentTable[]
+  rag_assignments            CavadaLabs_ChatbotRAGAssignmentTable[]
+  compliance_documents       CavadaLabs_ComplianceDocumentTable[]
+  compliance_evidence        CavadaLabs_ComplianceEvidenceTable[]
+  processing_activities      CavadaLabs_ProcessingActivityTable[]
+  data_subject_requests      CavadaLabs_DataSubjectRequestTable[]
+  ai_system_assessments      CavadaLabs_AISystemAssessmentTable[]
+  guardrail_policies         CavadaLabs_GuardrailPolicyTable[]
+  guardrail_decisions        CavadaLabs_GuardrailDecisionLogTable[]
+
+  @@index([status])
+  @@index([legal_name])
+}
+
+model CavadaLabs_ProjectTable {
+  project_id                 String   @id @default(uuid())
+  company_id                 String
+  name                       String
+  status                     String   @default("dev")
+  allowed_models             String[] @default([])
+  allowed_rag_collections    String[] @default([])
+  default_chatbot_settings   Json     @default("{}")
+  default_guardrail_policy   String?
+  budget                     Float?
+  retention_policy_override Json     @default("{}")
+  metadata                   Json     @default("{}")
+  created_at                 DateTime @default(now()) @map("created_at")
+  created_by                 String
+  updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                 String
+
+  company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
+  chatbots                   CavadaLabs_ChatbotTable[]
+  web_tokens                 CavadaLabs_WebTokenTable[]
+  model_policies             CavadaLabs_ProjectModelPolicyTable[]
+  model_load_requests        CavadaLabs_ModelLoadRequestTable[]
+  gpu_locks                  CavadaLabs_GPULockTable[]
+  rag_collections            CavadaLabs_RAGCollectionTable[]
+  rag_documents              CavadaLabs_RAGDocumentTable[]
+  rag_assignments            CavadaLabs_ChatbotRAGAssignmentTable[]
+  compliance_documents       CavadaLabs_ComplianceDocumentTable[]
+  compliance_evidence        CavadaLabs_ComplianceEvidenceTable[]
+  processing_activities      CavadaLabs_ProcessingActivityTable[]
+  data_subject_requests      CavadaLabs_DataSubjectRequestTable[]
+  ai_system_assessments      CavadaLabs_AISystemAssessmentTable[]
+  guardrail_policies         CavadaLabs_GuardrailPolicyTable[]
+  guardrail_decisions        CavadaLabs_GuardrailDecisionLogTable[]
+
+  @@unique([company_id, name])
+  @@index([company_id, status])
+}
+
+model CavadaLabs_ChatbotTable {
+  chatbot_id                 String   @id @default(uuid())
+  company_id                 String
+  project_id                 String
+  name                       String
+  status                     String   @default("draft")
+  system_prompt              String   @default("")
+  prompt_version             Int      @default(1)
+  default_language           String   @default("it")
+  model_policy_id            String?
+  assigned_rag_collections   String[] @default([])
+  assigned_guardrail_policy  String?
+  allowed_domains            String[] @default([])
+  widget_theme_config        Json     @default("{}")
+  fallback_message           String?
+  transcript_retention_policy Json    @default("{}")
+  metadata                   Json     @default("{}")
+  created_at                 DateTime @default(now()) @map("created_at")
+  created_by                 String
+  updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                 String
+
+  company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
+  project                    CavadaLabs_ProjectTable @relation(fields: [project_id], references: [project_id])
+  web_tokens                 CavadaLabs_WebTokenTable[]
+  rag_assignments            CavadaLabs_ChatbotRAGAssignmentTable[]
+  compliance_documents       CavadaLabs_ComplianceDocumentTable[]
+  compliance_evidence        CavadaLabs_ComplianceEvidenceTable[]
+  ai_system_assessments      CavadaLabs_AISystemAssessmentTable[]
+  guardrail_policies         CavadaLabs_GuardrailPolicyTable[]
+  guardrail_decisions        CavadaLabs_GuardrailDecisionLogTable[]
+
+  @@unique([project_id, name])
+  @@index([company_id, project_id, status])
+}
+
+model CavadaLabs_WebTokenTable {
+  web_token_id               String   @id @default(uuid())
+  company_id                 String
+  project_id                 String
+  chatbot_id                 String
+  name                       String?
+  token_prefix               String
+  token_hash                 String   @unique
+  status                     String   @default("active")
+  allowed_domains            String[] @default([])
+  allowed_origins            String[] @default([])
+  route_allowlist            String[] @default([])
+  ip_rpm_limit               Int?
+  session_rpm_limit          Int?
+  session_budget             Float?
+  expires_at                 DateTime
+  revoked_at                 DateTime?
+  last_used_at               DateTime?
+  metadata                   Json     @default("{}")
+  created_at                 DateTime @default(now()) @map("created_at")
+  created_by                 String
+  updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                 String
+
+  company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
+  project                    CavadaLabs_ProjectTable @relation(fields: [project_id], references: [project_id])
+  chatbot                    CavadaLabs_ChatbotTable @relation(fields: [chatbot_id], references: [chatbot_id])
+  guardrail_decisions        CavadaLabs_GuardrailDecisionLogTable[]
+
+  @@index([company_id, project_id, chatbot_id])
+  @@index([status, expires_at])
+  @@index([token_prefix])
+}
+
+model CavadaLabs_ProjectModelPolicyTable {
+  policy_id                  String   @id @default(uuid())
+  company_id                 String
+  project_id                 String
+  model_alias                String
+  provider                   String
+  deployment_id              String?
+  priority                   Int
+  enabled                    Boolean  @default(true)
+  fallback_enabled           Boolean  @default(true)
+  require_json_output        Boolean  @default(false)
+  force_json_output          Boolean  @default(false)
+  json_schema                Json?
+  strict_json                Boolean  @default(false)
+  repair_invalid_json        Boolean  @default(false)
+  retry_on_invalid_json      Boolean  @default(false)
+  require_no_think           Boolean  @default(false)
+  no_think                   Boolean  @default(false)
+  reasoning_mode             String?
+  hide_reasoning             Boolean  @default(false)
+  strip_thinking_tags        Boolean  @default(false)
+  prefer_loaded_model        Boolean  @default(true)
+  max_cost_input             Float?
+  max_cost_output            Float?
+  required_capabilities      String[] @default([])
+  metadata                   Json     @default("{}")
+  created_at                 DateTime @default(now()) @map("created_at")
+  created_by                 String
+  updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                 String
+
+  company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
+  project                    CavadaLabs_ProjectTable @relation(fields: [project_id], references: [project_id])
+
+  @@unique([project_id, priority])
+  @@index([company_id, project_id, enabled, priority])
+  @@index([provider, model_alias])
+}
+
+model CavadaLabs_RequestLedgerTable {
+  ledger_id                  String   @id @default(uuid())
+  request_id                 String   @unique
+  company_id                 String
+  project_id                 String
+  chatbot_id                 String?
+  web_token_id               String?
+  session_id                 String?
+  api_key_hash               String?
+  provider                   String
+  model                      String
+  node_id                    String?
+  gpu_id                     String?
+  loaded_model_id            String?
+  model_load_request_id      String?
+  prompt_tokens              Int      @default(0)
+  completion_tokens          Int      @default(0)
+  total_tokens               Int      @default(0)
+  spend                      Float    @default(0.0)
+  status                     String
+  metadata                   Json     @default("{}")
+  created_at                 DateTime @default(now()) @map("created_at")
+
+  @@index([company_id, created_at])
+  @@index([project_id, created_at])
+  @@index([chatbot_id, created_at])
+  @@index([web_token_id, created_at])
+  @@index([provider, model])
+  @@index([node_id, gpu_id])
+}
+
+model CavadaLabs_AuditLogTable {
+  audit_log_id               String   @id @default(uuid())
+  actor_user_id              String?
+  actor_api_key_hash         String?
+  action                     String
+  resource_type              String
+  resource_id                String
+  company_id                 String?
+  project_id                 String?
+  before_value               Json?
+  after_value                Json?
+  created_at                 DateTime @default(now()) @map("created_at")
+
+  @@index([company_id, created_at])
+  @@index([project_id, created_at])
+  @@index([resource_type, resource_id])
+  @@index([actor_user_id, created_at])
+}
+
+model CavadaLabs_BillingReportTable {
+  report_id                  String   @id @default(uuid())
+  company_id                 String
+  report_version             Int
+  period_start               DateTime
+  period_end                 DateTime
+  currency                   String   @default("EUR")
+  status                     String   @default("generated")
+  formats                    String[] @default([])
+  total_requests             Int      @default(0)
+  total_tokens               Int      @default(0)
+  total_spend                Float    @default(0.0)
+  provider_cost              Float    @default(0.0)
+  cavadalabs_node_cost       Float    @default(0.0)
+  tax_rate                   Float?
+  tax_amount                 Float?
+  grand_total                Float    @default(0.0)
+  checksum                   String   @unique
+  inputs_snapshot            Json     @default("{}")
+  totals                     Json     @default("{}")
+  breakdowns                 Json     @default("{}")
+  artifacts                  Json     @default("{}")
+  metadata                   Json     @default("{}")
+  generated_at               DateTime @default(now())
+  generated_by               String
+  created_at                 DateTime @default(now()) @map("created_at")
+  updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
+
+  company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
+
+  @@unique([company_id, period_start, period_end, report_version])
+  @@index([company_id, period_start, period_end])
+  @@index([generated_at])
+}
+
+model CavadaLabs_GuardrailPolicyTable {
+  policy_id                         String   @id @default(uuid())
+  company_id                        String
+  project_id                        String?
+  chatbot_id                        String?
+  name                              String
+  version                           Int      @default(1)
+  scope                             String   @default("company")
+  status                            String   @default("draft")
+  enforcement_mode                  String   @default("enforce")
+  description                       String?
+  categories                        String[] @default([])
+  rules                             Json     @default("{}")
+  blocked_patterns                  String[] @default([])
+  redaction_patterns                Json     @default("{}")
+  pii_detection_enabled             Boolean  @default(true)
+  prompt_injection_detection_enabled Boolean @default(true)
+  log_raw_content                   Boolean  @default(false)
+  metadata                          Json     @default("{}")
+  created_at                        DateTime @default(now()) @map("created_at")
+  created_by                        String
+  updated_at                        DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                        String
+
+  company                           CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
+  project                           CavadaLabs_ProjectTable? @relation(fields: [project_id], references: [project_id])
+  chatbot                           CavadaLabs_ChatbotTable? @relation(fields: [chatbot_id], references: [chatbot_id])
+  decision_logs                     CavadaLabs_GuardrailDecisionLogTable[]
+
+  @@unique([company_id, project_id, chatbot_id, name, version])
+  @@index([company_id, scope, status])
+  @@index([project_id, status])
+  @@index([chatbot_id, status])
+  @@index([name, version])
+}
+
+model CavadaLabs_GuardrailDecisionLogTable {
+  decision_id           String   @id @default(uuid())
+  policy_id             String?
+  policy_name           String?
+  company_id            String
+  project_id            String?
+  chatbot_id            String?
+  web_token_id          String?
+  session_id            String?
+  request_id            String?
+  phase                 String   @default("pre_call")
+  decision              String
+  action                String
+  confidence            Float?
+  reason_code           String?
+  triggered_rules       Json     @default("[]")
+  redaction_summary     Json     @default("{}")
+  latency_ms            Int      @default(0)
+  metadata              Json     @default("{}")
+  created_at            DateTime @default(now()) @map("created_at")
+
+  policy                CavadaLabs_GuardrailPolicyTable? @relation(fields: [policy_id], references: [policy_id])
+  company               CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
+  project               CavadaLabs_ProjectTable? @relation(fields: [project_id], references: [project_id])
+  chatbot               CavadaLabs_ChatbotTable? @relation(fields: [chatbot_id], references: [chatbot_id])
+  web_token             CavadaLabs_WebTokenTable? @relation(fields: [web_token_id], references: [web_token_id])
+
+  @@index([policy_id, created_at])
+  @@index([company_id, created_at])
+  @@index([project_id, created_at])
+  @@index([chatbot_id, created_at])
+  @@index([decision, created_at])
+  @@index([request_id])
+}
+
+model CavadaLabs_RAGCollectionTable {
+  collection_id              String   @id @default(uuid())
+  company_id                 String
+  project_id                 String?
+  name                       String
+  description                String?
+  scope                      String   @default("project")
+  status                     String   @default("draft")
+  source_type                String?
+  vector_store_provider      String?
+  vector_store_id            String?
+  embedding_model            String?
+  chunking_strategy          Json     @default("{}")
+  access_policy              Json     @default("{}")
+  retention_policy           Json     @default("{}")
+  metadata                   Json     @default("{}")
+  created_at                 DateTime @default(now()) @map("created_at")
+  created_by                 String
+  updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                 String
+
+  company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
+  project                    CavadaLabs_ProjectTable? @relation(fields: [project_id], references: [project_id])
+  documents                  CavadaLabs_RAGDocumentTable[]
+  chatbot_assignments        CavadaLabs_ChatbotRAGAssignmentTable[]
+  compliance_documents       CavadaLabs_ComplianceDocumentTable[]
+  compliance_evidence        CavadaLabs_ComplianceEvidenceTable[]
+
+  @@unique([company_id, name])
+  @@index([company_id, status])
+  @@index([project_id, status])
+  @@index([vector_store_provider, vector_store_id])
+}
+
+model CavadaLabs_RAGDocumentTable {
+  document_id                String   @id @default(uuid())
+  collection_id              String
+  company_id                 String
+  project_id                 String?
+  source_uri                 String?
+  file_name                  String?
+  mime_type                  String?
+  status                     String   @default("queued")
+  content_hash               String?
+  byte_size                  Int?
+  token_count                Int?
+  chunk_count                Int      @default(0)
+  last_indexed_at            DateTime?
+  failure_reason             String?
+  version                    Int      @default(1)
+  metadata                   Json     @default("{}")
+  created_at                 DateTime @default(now()) @map("created_at")
+  created_by                 String
+  updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                 String
+
+  collection                 CavadaLabs_RAGCollectionTable @relation(fields: [collection_id], references: [collection_id])
+  company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
+  project                    CavadaLabs_ProjectTable? @relation(fields: [project_id], references: [project_id])
+
+  @@index([collection_id, status])
+  @@index([company_id, created_at])
+  @@index([project_id, created_at])
+  @@index([content_hash])
+}
+
+model CavadaLabs_ChatbotRAGAssignmentTable {
+  assignment_id              String   @id @default(uuid())
+  company_id                 String
+  project_id                 String
+  chatbot_id                 String
+  collection_id              String
+  status                     String   @default("active")
+  priority                   Int      @default(100)
+  retrieval_config           Json     @default("{}")
+  metadata                   Json     @default("{}")
+  created_at                 DateTime @default(now()) @map("created_at")
+  created_by                 String
+  updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                 String
+
+  company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
+  project                    CavadaLabs_ProjectTable @relation(fields: [project_id], references: [project_id])
+  chatbot                    CavadaLabs_ChatbotTable @relation(fields: [chatbot_id], references: [chatbot_id])
+  collection                 CavadaLabs_RAGCollectionTable @relation(fields: [collection_id], references: [collection_id])
+
+  @@unique([chatbot_id, collection_id])
+  @@index([company_id, project_id, status])
+  @@index([collection_id, status])
+  @@index([priority])
+}
+
+model CavadaLabs_ComplianceDocumentTable {
+  document_id                String   @id @default(uuid())
+  company_id                 String
+  project_id                 String?
+  chatbot_id                 String?
+  collection_id              String?
+  framework                  String   @default("gdpr")
+  document_type              String
+  title                      String
+  version                    Int      @default(1)
+  status                     String   @default("draft")
+  locale                     String   @default("en")
+  content                    String   @default("")
+  content_format             String   @default("markdown")
+  checksum                   String
+  generated_from             Json     @default("{}")
+  metadata                   Json     @default("{}")
+  approved_by                String?
+  approved_at                DateTime?
+  published_at               DateTime?
+  valid_from                 DateTime?
+  valid_until                DateTime?
+  created_at                 DateTime @default(now()) @map("created_at")
+  created_by                 String
+  updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                 String
+
+  company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
+  project                    CavadaLabs_ProjectTable? @relation(fields: [project_id], references: [project_id])
+  chatbot                    CavadaLabs_ChatbotTable? @relation(fields: [chatbot_id], references: [chatbot_id])
+  collection                 CavadaLabs_RAGCollectionTable? @relation(fields: [collection_id], references: [collection_id])
+
+  @@unique([company_id, project_id, chatbot_id, collection_id, framework, document_type, version])
+  @@index([company_id, framework, document_type])
+  @@index([project_id, framework])
+  @@index([chatbot_id, framework])
+  @@index([collection_id, framework])
+  @@index([status, published_at])
+  @@index([checksum])
+}
+
+model CavadaLabs_ComplianceEvidenceTable {
+  evidence_id                String   @id @default(uuid())
+  company_id                 String
+  project_id                 String?
+  chatbot_id                 String?
+  collection_id              String?
+  framework                  String
+  evidence_type              String
+  title                      String
+  status                     String   @default("active")
+  source_type                String?
+  source_id                  String?
+  content                    Json     @default("{}")
+  checksum                   String
+  captured_at                DateTime @default(now())
+  expires_at                 DateTime?
+  metadata                   Json     @default("{}")
+  created_at                 DateTime @default(now()) @map("created_at")
+  created_by                 String
+  updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                 String
+
+  company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
+  project                    CavadaLabs_ProjectTable? @relation(fields: [project_id], references: [project_id])
+  chatbot                    CavadaLabs_ChatbotTable? @relation(fields: [chatbot_id], references: [chatbot_id])
+  collection                 CavadaLabs_RAGCollectionTable? @relation(fields: [collection_id], references: [collection_id])
+
+  @@index([company_id, framework, evidence_type])
+  @@index([project_id, framework])
+  @@index([chatbot_id, framework])
+  @@index([collection_id, framework])
+  @@index([source_type, source_id])
+  @@index([status, captured_at])
+  @@index([checksum])
+}
+
+model CavadaLabs_ProcessingActivityTable {
+  activity_id                String   @id @default(uuid())
+  company_id                 String
+  project_id                 String?
+  name                       String
+  status                     String   @default("active")
+  controller                 String?
+  processor                  String?
+  purpose                    String
+  legal_basis                String?
+  data_categories            String[] @default([])
+  data_subject_categories    String[] @default([])
+  recipients                 String[] @default([])
+  transfer_countries         String[] @default([])
+  retention_period           String?
+  security_measures          String[] @default([])
+  metadata                   Json     @default("{}")
+  created_at                 DateTime @default(now()) @map("created_at")
+  created_by                 String
+  updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                 String
+
+  company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
+  project                    CavadaLabs_ProjectTable? @relation(fields: [project_id], references: [project_id])
+
+  @@unique([company_id, project_id, name])
+  @@index([company_id, status])
+  @@index([project_id, status])
+}
+
+model CavadaLabs_DataSubjectRequestTable {
+  dsr_id                     String   @id @default(uuid())
+  company_id                 String
+  project_id                 String?
+  requester_email            String
+  request_type               String
+  status                     String   @default("received")
+  received_at                DateTime @default(now())
+  due_at                     DateTime
+  identity_verified_at       DateTime?
+  completed_at               DateTime?
+  assigned_to                String?
+  scope                      Json     @default("{}")
+  result                     Json     @default("{}")
+  metadata                   Json     @default("{}")
+  created_at                 DateTime @default(now()) @map("created_at")
+  created_by                 String
+  updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                 String
+
+  company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
+  project                    CavadaLabs_ProjectTable? @relation(fields: [project_id], references: [project_id])
+
+  @@index([company_id, status, due_at])
+  @@index([project_id, status])
+  @@index([requester_email])
+  @@index([request_type, status])
+}
+
+model CavadaLabs_AISystemAssessmentTable {
+  assessment_id              String   @id @default(uuid())
+  company_id                 String
+  project_id                 String?
+  chatbot_id                 String?
+  name                       String
+  version                    Int      @default(1)
+  status                     String   @default("draft")
+  risk_classification        String   @default("unknown")
+  intended_purpose           String
+  prohibited_practice_review Json     @default("{}")
+  human_oversight            Json     @default("{}")
+  transparency_notice        String?
+  model_provider_metadata    Json     @default("{}")
+  evaluation_evidence        Json     @default("{}")
+  approved_by                String?
+  approved_at                DateTime?
+  metadata                   Json     @default("{}")
+  created_at                 DateTime @default(now()) @map("created_at")
+  created_by                 String
+  updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                 String
+
+  company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
+  project                    CavadaLabs_ProjectTable? @relation(fields: [project_id], references: [project_id])
+  chatbot                    CavadaLabs_ChatbotTable? @relation(fields: [chatbot_id], references: [chatbot_id])
+
+  @@unique([company_id, project_id, chatbot_id, name, version])
+  @@index([company_id, status])
+  @@index([project_id, status])
+  @@index([chatbot_id, status])
+  @@index([risk_classification, status])
+}
+
+model CavadaLabs_NodeTable {
+  node_id                          String   @id @default(uuid())
+  display_name                     String
+  hostname                         String?
+  location                         String?
+  status                           String   @default("pending")
+  public_key                       String?
+  public_key_fingerprint           String?
+  agent_version                    String?
+  allowed_project_ids              String[] @default([])
+  pools                            String[] @default([])
+  default_electricity_cost_per_kwh Float?
+  fixed_hourly_cost                Float?
+  hardware_amortization_hourly_cost Float?
+  last_heartbeat_at                DateTime?
+  metadata                         Json     @default("{}")
+  created_at                       DateTime @default(now()) @map("created_at")
+  created_by                       String
+  updated_at                       DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                       String
+
+  gpus                             CavadaLabs_GPUTable[]
+  enrollments                      CavadaLabs_NodeEnrollmentTable[]
+  daily_reports                    CavadaLabs_NodeDailyReportTable[]
+  model_load_requests              CavadaLabs_ModelLoadRequestTable[]
+  loaded_models                    CavadaLabs_LoadedModelTable[]
+  gpu_locks                        CavadaLabs_GPULockTable[]
+
+  @@index([status])
+  @@index([location])
+}
+
+model CavadaLabs_GPUTable {
+  gpu_id                           String   @id @default(uuid())
+  node_id                          String
+  vendor                           String
+  model                            String
+  uuid                             String?
+  vram_total_mb                    Int
+  status                           String   @default("available")
+  loaded_model_ids                 String[] @default([])
+  metadata                         Json     @default("{}")
+  created_at                       DateTime @default(now()) @map("created_at")
+  created_by                       String
+  updated_at                       DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                       String
+
+  node                             CavadaLabs_NodeTable @relation(fields: [node_id], references: [node_id])
+  model_load_requests              CavadaLabs_ModelLoadRequestTable[]
+  loaded_models                    CavadaLabs_LoadedModelTable[]
+  gpu_locks                        CavadaLabs_GPULockTable[]
+
+  @@unique([node_id, uuid])
+  @@index([node_id, status])
+  @@index([vendor, model])
+}
+
+model CavadaLabs_NodeEnrollmentTable {
+  enrollment_id                    String   @id @default(uuid())
+  node_id                          String
+  secret_prefix                    String
+  secret_hash                      String   @unique
+  status                           String   @default("active")
+  expires_at                       DateTime
+  used_at                          DateTime?
+  metadata                         Json     @default("{}")
+  created_at                       DateTime @default(now()) @map("created_at")
+  created_by                       String
+  updated_at                       DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                       String
+
+  node                             CavadaLabs_NodeTable @relation(fields: [node_id], references: [node_id])
+
+  @@index([node_id, status])
+  @@index([status, expires_at])
+  @@index([secret_prefix])
+}
+
+model CavadaLabs_NodeDailyReportTable {
+  report_id                        String   @id @default(uuid())
+  node_id                          String
+  report_date                      DateTime
+  samples                          Json     @default("[]")
+  total_kwh                        Float    @default(0.0)
+  total_model_runtime_seconds      Int      @default(0)
+  total_loaded_model_seconds       Int      @default(0)
+  total_requests                   Int      @default(0)
+  total_tokens                     Int      @default(0)
+  node_cost_estimate               Float    @default(0.0)
+  errors                           Json     @default("[]")
+  metadata                         Json     @default("{}")
+  created_at                       DateTime @default(now()) @map("created_at")
+  updated_at                       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  node                             CavadaLabs_NodeTable @relation(fields: [node_id], references: [node_id])
+
+  @@unique([node_id, report_date])
+  @@index([node_id, report_date])
+}
+
+model CavadaLabs_ModelLoadRequestTable {
+  model_load_request_id            String   @id @default(uuid())
+  company_id                       String?
+  project_id                       String
+  model_alias                      String
+  provider                         String   @default("cavadalabs")
+  node_id                          String?
+  gpu_id                           String?
+  loaded_model_id                  String?
+  status                           String   @default("queued")
+  priority                         Int      @default(100)
+  requested_by                     String
+  requested_at                     DateTime @default(now())
+  expires_at                       DateTime?
+  last_error                       String?
+  metadata                         Json     @default("{}")
+  created_at                       DateTime @default(now()) @map("created_at")
+  updated_at                       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  company                          CavadaLabs_CompanyTable? @relation(fields: [company_id], references: [company_id])
+  project                          CavadaLabs_ProjectTable @relation(fields: [project_id], references: [project_id])
+  node                             CavadaLabs_NodeTable? @relation(fields: [node_id], references: [node_id])
+  gpu                              CavadaLabs_GPUTable? @relation(fields: [gpu_id], references: [gpu_id])
+
+  @@index([company_id, project_id, status])
+  @@index([project_id, status, priority])
+  @@index([node_id, gpu_id, status])
+  @@index([model_alias, status])
+}
+
+model CavadaLabs_LoadedModelTable {
+  loaded_model_id                  String   @id @default(uuid())
+  node_id                          String
+  gpu_id                           String?
+  model_alias                      String
+  provider                         String   @default("cavadalabs")
+  status                           String   @default("loading")
+  load_request_id                  String?
+  context_window                   Int?
+  capabilities                     String[] @default([])
+  loaded_at                        DateTime?
+  unloaded_at                      DateTime?
+  last_used_at                     DateTime?
+  metadata                         Json     @default("{}")
+  created_at                       DateTime @default(now()) @map("created_at")
+  updated_at                       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  node                             CavadaLabs_NodeTable @relation(fields: [node_id], references: [node_id])
+  gpu                              CavadaLabs_GPUTable? @relation(fields: [gpu_id], references: [gpu_id])
+
+  @@index([node_id, gpu_id, status])
+  @@index([model_alias, status])
+  @@index([load_request_id])
+}
+
+model CavadaLabs_GPULockTable {
+  lock_id                          String   @id @default(uuid())
+  node_id                          String
+  gpu_id                           String
+  model_id                         String
+  project_id                       String
+  owner_type                       String
+  owner_id                         String
+  priority                         Int
+  expires_at                       DateTime
+  released_at                      DateTime?
+  status                           String   @default("active")
+  lock_key                         String?  @unique
+  metadata                         Json     @default("{}")
+  created_at                       DateTime @default(now()) @map("created_at")
+  updated_at                       DateTime @default(now()) @updatedAt @map("updated_at")
+
+  node                             CavadaLabs_NodeTable @relation(fields: [node_id], references: [node_id])
+  gpu                              CavadaLabs_GPUTable @relation(fields: [gpu_id], references: [gpu_id])
+  project                          CavadaLabs_ProjectTable @relation(fields: [project_id], references: [project_id])
+
+  @@index([node_id, gpu_id, status])
+  @@index([project_id, status])
+  @@index([expires_at, status])
+  @@index([owner_type, owner_id])
+}
+
 // Audit table for deleted teams - preserves spend and team information for historical tracking
 model LiteLLM_DeletedTeamTable {
     id                      String   @id @default(uuid())

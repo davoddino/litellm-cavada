@@ -20,6 +20,7 @@ import {
   ToolOutlined,
   TagsOutlined,
   AuditOutlined,
+  ClusterOutlined,
 } from "@ant-design/icons";
 // import {
 //   all_admin_roles,
@@ -108,6 +109,8 @@ const routeFor = (slug: string): string => {
       return "policies";
     case "chat":
       return "chat";
+    case "cavadalabs":
+      return "cavadalabs";
 
     // tools
     case "mcp-servers":
@@ -215,6 +218,13 @@ const menuItems: MenuItemCfg[] = [
     page: "policies",
     label: "Policies",
     icon: <AuditOutlined style={{ fontSize: 18 }} />,
+    roles: all_admin_roles,
+  },
+  {
+    key: "29",
+    page: "cavadalabs",
+    label: "CavadaLabs",
+    icon: <ClusterOutlined style={{ fontSize: 18 }} />,
     roles: all_admin_roles,
   },
   {
@@ -464,7 +474,6 @@ const Sidebar2: React.FC<SidebarProps> = ({ accessToken, userRole, defaultSelect
           />
         </ConfigProvider>
         {isAdminRole(userRole) && !collapsed && <UsageIndicator accessToken={accessToken} width={220} />}
-
       </Sider>
     </Layout>
   );

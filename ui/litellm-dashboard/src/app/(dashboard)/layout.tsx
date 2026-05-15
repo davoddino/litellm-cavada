@@ -32,6 +32,7 @@ function withBase(path: string): string {
  */
 const MIGRATED_PAGES: Record<string, string> = {
   "api-reference": "api-reference",
+  cavadalabs: "cavadalabs",
 };
 
 function LayoutContent({ children }: { children: React.ReactNode }) {
@@ -75,19 +76,15 @@ function LayoutContent({ children }: { children: React.ReactNode }) {
           userRole={userRole}
           premiumUser={premiumUser}
           proxySettings={undefined}
-          setProxySettings={() => { }}
+          setProxySettings={() => {}}
           accessToken={accessToken}
           isDarkMode={false}
-          toggleDarkMode={() => { }}
+          toggleDarkMode={() => {}}
         />
         <DebugWarningBanner />
         <div className="flex flex-1 overflow-auto">
           <div className="mt-2">
-            <SidebarProvider
-              setPage={handleSetPage}
-              defaultSelectedKey={page}
-              sidebarCollapsed={sidebarCollapsed}
-            />
+            <SidebarProvider setPage={handleSetPage} defaultSelectedKey={page} sidebarCollapsed={sidebarCollapsed} />
           </div>
           <main className="flex-1">{children}</main>
         </div>

@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+from typing import Optional
+
+from fastapi import APIRouter, Depends, Query, Request
+
+from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
+from litellm.proxy.management_endpoints.cavadalabs_dispatcher_utils import (
+    dispatcher_service,
+    require_admin_view,
+    require_proxy_admin,
+)
+from litellm.proxy.management_helpers.utils import management_endpoint_wrapper
+from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
+    CavadaLabsCompanyCreateRequest,
+    CavadaLabsCompanyListResponse,
+    CavadaLabsCompanyResponse,
+    CavadaLabsCompanyUpdateRequest,
+    CavadaLabsStatus,
+)
+
+router = APIRouter(tags=["cavadalabs-companies"])
+
+
+@router.post(
+    "/companies",
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=CavadaLabsCompanyResponse,
+)
+@management_endpoint_wrapper
+async def create_company(
+    data: CavadaLabsCompanyCreateRequest,
+    http_request: Request,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+) -> CavadaLabsCompanyResponse:
+    require_proxy_admin(user_api_key_dict)
+    return await dispatcher_service().create_company(data, user_api_key_dict)
+
+
+@router.get(
+    "/companies",
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=CavadaLabsCompanyListResponse,
+)
+@management_endpoint_wrapper
+async def list_companies(
+    http_request: Request,
+    status_filter: Optional[CavadaLabsStatus] = Query(default=None, alias="status"),
+    take: int = Query(default=100, ge=1, le=1000),
+    skip: int = Query(default=0, ge=0),
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+) -> CavadaLabsCompanyListResponse:
+    require_admin_view(user_api_key_dict)
+    companies = await dispatcher_service().list_companies(
+        status_filter=status_filter,
+        take=take,
+        skip=skip,
+    )
+    return CavadaLabsCompanyListResponse(companies=companies, count=len(companies))
+
+
+@router.get(
+    "/companies/{company_id}",
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=CavadaLabsCompanyResponse,
+)
+@management_endpoint_wrapper
+async def get_company(
+    company_id: str,
+    http_request: Request,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+) -> CavadaLabsCompanyResponse:
+    require_admin_view(user_api_key_dict)
+    return await dispatcher_service().get_company(company_id)
+
+
+@router.patch(
+    "/companies/{company_id}",
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=CavadaLabsCompanyResponse,
+)
+@management_endpoint_wrapper
+async def update_company(
+    company_id: str,
+    data: CavadaLabsCompanyUpdateRequest,
+    http_request: Request,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+) -> CavadaLabsCompanyResponse:
+    require_proxy_admin(user_api_key_dict)
+    return await dispatcher_service().update_company(
+        company_id, data, user_api_key_dict
+    )
+
+
+@router.delete(
+    "/companies/{company_id}",
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=CavadaLabsCompanyResponse,
+)
+@management_endpoint_wrapper
+async def archive_company(
+    company_id: str,
+    http_request: Request,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+) -> CavadaLabsCompanyResponse:
+    require_proxy_admin(user_api_key_dict)
+    return await dispatcher_service().archive_company(company_id, user_api_key_dict)

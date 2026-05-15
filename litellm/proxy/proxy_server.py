@@ -302,6 +302,12 @@ from litellm.proxy.common_utils.proxy_state import ProxyState
 from litellm.proxy.common_utils.reset_budget_job import ResetBudgetJob
 from litellm.proxy.common_utils.swagger_utils import ERROR_RESPONSES
 from litellm.proxy.container_endpoints.endpoints import router as container_router
+from litellm.proxy.cavadalabs.chatbot_endpoints import (
+    router as cavadalabs_chatbot_router,
+)
+from litellm.proxy.cavadalabs.node_endpoints import (
+    router as cavadalabs_node_router,
+)
 from litellm.proxy.credential_endpoints.endpoints import router as credential_router
 from litellm.proxy.db.db_transaction_queue.spend_log_cleanup import SpendLogCleanup
 from litellm.proxy.db.exception_handler import PrismaDBExceptionHandler
@@ -330,6 +336,24 @@ from litellm.proxy.management_endpoints.budget_management_endpoints import (
 )
 from litellm.proxy.management_endpoints.cache_settings_endpoints import (
     router as cache_settings_router,
+)
+from litellm.proxy.management_endpoints.cavadalabs_dispatcher_endpoints import (
+    router as cavadalabs_dispatcher_router,
+)
+from litellm.proxy.management_endpoints.cavadalabs_billing_endpoints import (
+    router as cavadalabs_billing_router,
+)
+from litellm.proxy.management_endpoints.cavadalabs_compliance_endpoints import (
+    router as cavadalabs_compliance_router,
+)
+from litellm.proxy.management_endpoints.cavadalabs_node_admin_endpoints import (
+    router as cavadalabs_node_admin_router,
+)
+from litellm.proxy.management_endpoints.cavadalabs_guardrail_endpoints import (
+    router as cavadalabs_guardrail_router,
+)
+from litellm.proxy.management_endpoints.cavadalabs_rag_endpoints import (
+    router as cavadalabs_rag_router,
 )
 from litellm.proxy.management_endpoints.callback_management_endpoints import (
     router as callback_management_endpoints_router,
@@ -14961,6 +14985,14 @@ app.include_router(router_settings_router)
 app.include_router(fallback_management_router)
 app.include_router(cache_settings_router)
 app.include_router(user_agent_analytics_router)
+app.include_router(cavadalabs_dispatcher_router)
+app.include_router(cavadalabs_billing_router)
+app.include_router(cavadalabs_compliance_router)
+app.include_router(cavadalabs_node_admin_router)
+app.include_router(cavadalabs_guardrail_router)
+app.include_router(cavadalabs_rag_router)
+app.include_router(cavadalabs_chatbot_router)
+app.include_router(cavadalabs_node_router)
 app.include_router(enterprise_router)
 app.include_router(ui_discovery_endpoints_router)
 # Eager: /models/{name}:method overlaps with the OpenAI /models endpoint.

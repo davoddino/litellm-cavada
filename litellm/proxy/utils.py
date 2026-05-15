@@ -5277,6 +5277,22 @@ async def update_spend_logs_job(
             tool_tracking_err,
         )
 
+    # CavadaLabs product ledger (same batch): opt-in via explicit Cavada metadata
+    try:
+        from litellm.proxy.cavadalabs.usage_tracking import (
+            process_spend_logs_cavadalabs_ledger,
+        )
+
+        await process_spend_logs_cavadalabs_ledger(
+            prisma_client=prisma_client,
+            logs_to_process=logs_to_process,
+        )
+    except Exception as cavadalabs_tracking_err:
+        verbose_proxy_logger.warning(
+            "Spend tracking - CavadaLabs ledger tracking failed (non-fatal): %s",
+            cavadalabs_tracking_err,
+        )
+
 
 async def _monitor_spend_logs_queue(
     prisma_client: PrismaClient,

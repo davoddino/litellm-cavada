@@ -12,7 +12,10 @@ set -u
 #   USERS=3
 #   DURATION_SECONDS=60      # 0 = run until Ctrl+C
 #   SLEEP_SECONDS=0          # pause between requests per user
-#   MAX_TOKENS=2000          # output budget per request
+#   OUTPUT_MODE=short        # short = bounded words, long = long completions
+#   MIN_WORDS=600
+#   MAX_WORDS=800
+#   MAX_TOKENS=1200          # output budget per request
 #   OUTPUT_TARGET_TOKENS=2000
 #   PROMPT_REPEAT=1          # keep 1-2 to stay roughly in 100-1000 input tokens
 #   REQUEST_TIMEOUT_SECONDS=120
@@ -39,7 +42,16 @@ MODEL="${MODEL:-Qwen3.6-35B-A3B}"
 USERS="${USERS:-3}"
 DURATION_SECONDS="${DURATION_SECONDS:-0}"
 SLEEP_SECONDS="${SLEEP_SECONDS:-0}"
-MAX_TOKENS="${MAX_TOKENS:-2000}"
+OUTPUT_MODE="${OUTPUT_MODE:-short}"
+MIN_WORDS="${MIN_WORDS:-600}"
+MAX_WORDS="${MAX_WORDS:-800}"
+if [ -z "${MAX_TOKENS+x}" ]; then
+  if [ "$OUTPUT_MODE" = "long" ]; then
+    MAX_TOKENS=2000
+  else
+    MAX_TOKENS=1200
+  fi
+fi
 OUTPUT_TARGET_TOKENS="${OUTPUT_TARGET_TOKENS:-2000}"
 PROMPT_REPEAT="${PROMPT_REPEAT:-1}"
 REQUEST_TIMEOUT_SECONDS="${REQUEST_TIMEOUT_SECONDS:-120}"
@@ -183,13 +195,9 @@ run_user() {
         ;;
     esac
 
-    prompt_text="Stress test: utente ${user_number}, richiesta ${request_count}.
-
-Scenario:
-${scenario}
-
-Vincoli di output:
-- Devi produrre una risposta lunga, densa e strutturata.
+    if [ "$OUTPUT_MODE" = "long" ]; then
+      system_prompt="Rispondi in italiano. Non essere conciso: quando l utente chiede una risposta lunga, usa quasi tutto il budget di token disponibile. Segui esattamente la struttura richiesta."
+      output_constraints="- Devi produrre una risposta lunga, densa e strutturata.
 - Mira a usare quasi tutto il budget disponibile, circa ${OUTPUT_TARGET_TOKENS} token di completamento.
 - Non rispondere in modo breve e non fermarti dopo poche frasi.
 - Scrivi 12 sezioni numerate, ognuna con 2 paragrafi corposi.
@@ -197,6 +205,25 @@ Vincoli di output:
 - Mantieni l italiano tecnico, chiaro e operativo.
 - Non dire che non puoi sapere i dati reali: quando servono metriche, descrivi come leggerle dal benchmark.
 - Concludi solo dopo aver coperto tutti i punti richiesti."
+      prompt_objective="output lungo, utile per misurare generazione sostenuta e token/s"
+    else
+      system_prompt="Rispondi in italiano. Devi produrre almeno ${MIN_WORDS} parole e non superare ${MAX_WORDS} parole. Non fermarti prima del minimo richiesto."
+      output_constraints="- Rispondi con almeno ${MIN_WORDS} parole.
+- Non superare ${MAX_WORDS} parole.
+- Usa sezioni brevi e paragrafi chiari.
+- Non aggiungere preamboli inutili.
+- Mantieni il contenuto tecnico e concreto.
+- Se servono metriche, nomina solo quelle che lo script misura."
+      prompt_objective="output medio di almeno ${MIN_WORDS} parole, utile per misurare la latenza per messaggio"
+    fi
+
+    prompt_text="Stress test: utente ${user_number}, richiesta ${request_count}.
+
+Scenario:
+${scenario}
+
+Vincoli di output:
+${output_constraints}"
 
     prompt_block="
 
@@ -204,7 +231,7 @@ Contesto extra per rendere la richiesta realistica:
 - Proxy: LiteLLM.
 - Modello pubblico: ${MODEL}.
 - Utenti concorrenti simulati: ${USERS}.
-- Obiettivo: output lungo, utile per misurare generazione sostenuta e token/s.
+- Obiettivo: ${prompt_objective}.
 - Non includere codice a meno che sia strettamente necessario."
 
     repeat_index=1
@@ -220,7 +247,7 @@ Contesto extra per rendere la richiesta realistica:
       "messages": [
         {
           "role": "system",
-          "content": "Rispondi in italiano. Non essere conciso: quando l utente chiede una risposta lunga, usa quasi tutto il budget di token disponibile. Segui esattamente la struttura richiesta."
+          "content": '"$(jq -Rs . <<< "$system_prompt")"'
         },
         {
           "role": "user",
@@ -295,6 +322,10 @@ echo "URL: $LITELLM_URL"
 echo "Model: $MODEL"
 echo "Users: $USERS"
 echo "Duration seconds: $DURATION_SECONDS (0 means until Ctrl+C)"
+echo "Output mode: $OUTPUT_MODE"
+echo "Min words: $MIN_WORDS"
+echo "Max words: $MAX_WORDS"
+echo "Max tokens: $MAX_TOKENS"
 echo "Prompt repeat: $PROMPT_REPEAT"
 echo "Output: $OUT_DIR"
 echo

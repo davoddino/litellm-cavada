@@ -223,7 +223,9 @@ build-backend = "uv_build"
 [tool.uv]
 default-groups = ["dev"]
 required-version = ">=0.10.9"
-exclude-newer = "3 days"
+# Use an absolute cutoff so older uv binaries on PATH do not warn while
+# parsing the workspace settings.
+exclude-newer = "2026-05-12T00:00:00Z"
 
 [tool.uv.sources]
 litellm-proxy-extras = { workspace = true }
