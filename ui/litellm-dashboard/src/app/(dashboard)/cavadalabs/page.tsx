@@ -1,16 +1,7 @@
-"use client";
-
-import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
-import CavadaLabsDashboard from "@/components/cavadalabs/CavadaLabsDashboard";
-import { Suspense } from "react";
+import CavadaLabsRoute from "./CavadaLabsRoute";
 
 const CavadaLabsPage = () => {
-  const { accessToken, userRole } = useAuthorized();
-  return (
-    <Suspense fallback={null}>
-      <CavadaLabsDashboard accessToken={accessToken} userRole={userRole} />
-    </Suspense>
-  );
+  return <CavadaLabsRoute />;
 };
 
 export default CavadaLabsPage;

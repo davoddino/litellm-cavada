@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders, screen, waitFor } from "../../../../tests/test-utils";
+import CavadaLabsCompaniesPage from "./companies/page";
 import CavadaLabsPage from "./page";
 
 const { mockUseSearchParams } = vi.hoisted(() => ({
@@ -164,6 +165,21 @@ describe("CavadaLabsPage", () => {
     global.fetch = mockFetch as any;
 
     renderWithProviders(<CavadaLabsPage />);
+
+    const tenantsTab = await screen.findByRole("tab", { name: "Tenants" });
+    expect(tenantsTab).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByText("New company")).toBeInTheDocument();
+    expect(await screen.findByText("New project")).toBeInTheDocument();
+  });
+
+  it("should open the tenants tab from the Companies route", async () => {
+    const mockFetch = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://proxy.test");
+      return Promise.resolve(jsonResponse(payloadForPath(url.pathname)));
+    });
+    global.fetch = mockFetch as any;
+
+    renderWithProviders(<CavadaLabsCompaniesPage />);
 
     const tenantsTab = await screen.findByRole("tab", { name: "Tenants" });
     expect(tenantsTab).toHaveAttribute("aria-selected", "true");

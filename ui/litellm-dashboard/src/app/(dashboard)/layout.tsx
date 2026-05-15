@@ -33,6 +33,8 @@ function withBase(path: string): string {
 const MIGRATED_PAGES: Record<string, string> = {
   "api-reference": "api-reference",
   cavadalabs: "cavadalabs",
+  "cavadalabs-companies": "cavadalabs/companies",
+  "cavadalabs-projects": "cavadalabs/projects",
 };
 
 function LayoutContent({ children }: { children: React.ReactNode }) {

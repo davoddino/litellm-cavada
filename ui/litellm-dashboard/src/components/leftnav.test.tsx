@@ -110,6 +110,25 @@ describe("Sidebar (leftnav)", () => {
     });
   });
 
+  it("should route Companies and Projects through CavadaLabs access-control pages", async () => {
+    const setPage = vi.fn();
+    let result: ReturnType<typeof renderWithProviders> | undefined;
+    await act(async () => {
+      result = renderWithProviders(<Sidebar {...defaultProps} setPage={setPage} />);
+    });
+    if (!result) throw new Error("Sidebar render failed");
+
+    act(() => {
+      fireEvent.click(screen.getByText("Companies"));
+    });
+    expect(setPage).toHaveBeenCalledWith("cavadalabs-companies");
+
+    act(() => {
+      fireEvent.click(screen.getByText("Projects"));
+    });
+    expect(setPage).toHaveBeenCalledWith("cavadalabs-projects");
+  });
+
   it("expands a nested tab to reveal its children (Tools > Search Tools)", async () => {
     await renderSidebar();
 

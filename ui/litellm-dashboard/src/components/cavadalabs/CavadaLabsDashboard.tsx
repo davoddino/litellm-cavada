@@ -14,6 +14,8 @@ const { Title, Text } = Typography;
 interface CavadaLabsDashboardProps {
   accessToken: string | null;
   userRole?: string | null;
+  initialResource?: string;
+  initialTab?: string;
 }
 
 const emptyContext: CavadaLabsRuntimeContext = {
@@ -54,12 +56,19 @@ const resourceTabMap: Record<string, string> = {
   aiSystemAssessments: "compliance",
 };
 
-const resolveActiveTab = (searchParams: Pick<URLSearchParams, "get">): string => {
+const resolveActiveTab = (
+  searchParams: Pick<URLSearchParams, "get">,
+  initialTab?: string,
+  initialResource?: string,
+): string => {
   const tab = searchParams.get("tab");
   if (tab && tabKeys.has(tab)) return tab;
 
   const resource = searchParams.get("resource");
   if (resource && resourceTabMap[resource]) return resourceTabMap[resource];
+
+  if (initialResource && resourceTabMap[initialResource]) return resourceTabMap[initialResource];
+  if (initialTab && tabKeys.has(initialTab)) return initialTab;
 
   return "overview";
 };
@@ -88,7 +97,7 @@ const PanelStack = ({
   </Space>
 );
 
-const CavadaLabsDashboard: React.FC<CavadaLabsDashboardProps> = ({ accessToken }) => {
+const CavadaLabsDashboard: React.FC<CavadaLabsDashboardProps> = ({ accessToken, initialResource, initialTab }) => {
   const searchParams = useSearchParams();
   const [context, setContext] = useState<CavadaLabsRuntimeContext>(emptyContext);
   const [referenceLoading, setReferenceLoading] = useState(false);
@@ -96,7 +105,10 @@ const CavadaLabsDashboard: React.FC<CavadaLabsDashboardProps> = ({ accessToken }
   const [overviewCounts, setOverviewCounts] = useState<Record<string, number>>({});
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [refreshNonce, setRefreshNonce] = useState(0);
-  const requestedTab = useMemo(() => resolveActiveTab(searchParams), [searchParams]);
+  const requestedTab = useMemo(
+    () => resolveActiveTab(searchParams, initialTab, initialResource),
+    [initialResource, initialTab, searchParams],
+  );
   const [activeTabKey, setActiveTabKey] = useState(requestedTab);
 
   const refreshAll = useCallback(() => setRefreshNonce((value) => value + 1), []);

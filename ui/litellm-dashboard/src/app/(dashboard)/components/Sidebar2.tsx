@@ -94,9 +94,9 @@ const routeFor = (slug: string): string => {
     case "teams":
       return "teams";
     case "cavadalabs-companies":
-      return "cavadalabs?tab=tenants&resource=companies";
+      return "cavadalabs/companies";
     case "cavadalabs-projects":
-      return "cavadalabs?tab=tenants&resource=projects";
+      return "cavadalabs/projects";
     case "users":
       return "users";
     case "api_ref":

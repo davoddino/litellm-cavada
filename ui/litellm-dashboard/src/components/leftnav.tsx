@@ -56,8 +56,8 @@ const { Sider } = Layout;
 const MIGRATED_PAGES: Record<string, string> = {
   "api-reference": "api-reference",
   cavadalabs: "cavadalabs",
-  "cavadalabs-companies": "cavadalabs?tab=tenants&resource=companies",
-  "cavadalabs-projects": "cavadalabs?tab=tenants&resource=projects",
+  "cavadalabs-companies": "cavadalabs/companies",
+  "cavadalabs-projects": "cavadalabs/projects",
 };
 
 /** Build an absolute href for a migrated page, respecting base URL + serverRootPath. */
