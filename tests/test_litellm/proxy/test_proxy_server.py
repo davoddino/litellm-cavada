@@ -668,6 +668,80 @@ def test_ui_entrypoint_route_is_registered_before_next_static_assets(tmp_path):
     assert asset_response.status_code == 404
 
 
+def test_ui_static_assets_fall_back_to_packaged_export(tmp_path):
+    """
+    Runtime UI paths can contain index.html without the generated _next assets.
+
+    In that case the proxy should still serve the selected HTML entrypoint while
+    resolving browser asset requests from the packaged static export.
+    """
+
+    from litellm.proxy import proxy_server
+
+    runtime_ui_root = tmp_path / "runtime-ui"
+    runtime_ui_root.mkdir()
+    (runtime_ui_root / "index.html").write_text("LiteLLM Dashboard")
+
+    packaged_ui_root = tmp_path / "packaged-ui"
+    asset_path = packaged_ui_root / "_next" / "static" / "chunks" / "app.css"
+    asset_path.parent.mkdir(parents=True)
+    asset_path.write_text("body{color:#111827}")
+
+    fastapi_app = FastAPI()
+    proxy_server._register_ui_static_routes(
+        fastapi_app,
+        str(runtime_ui_root),
+        "/litellm-asset-prefix",
+        [str(packaged_ui_root)],
+    )
+    client = TestClient(fastapi_app, follow_redirects=False)
+
+    response = client.get("/ui")
+    assert response.status_code == 200
+    assert response.text == "LiteLLM Dashboard"
+
+    asset_response = client.get("/litellm-asset-prefix/_next/static/chunks/app.css")
+    assert asset_response.status_code == 200
+    assert asset_response.text == "body{color:#111827}"
+
+
+def test_ui_static_assets_fall_back_to_dashboard_export_when_packaged_export_is_incomplete(
+    tmp_path,
+):
+    """
+    Source-tree deployments may have ui/litellm-dashboard/out built while the
+    packaged proxy out directory is missing _next assets.
+    """
+
+    from litellm.proxy import proxy_server
+
+    packaged_ui_root = tmp_path / "packaged-ui"
+    packaged_ui_root.mkdir()
+    (packaged_ui_root / "index.html").write_text("LiteLLM Dashboard")
+
+    dashboard_export_root = tmp_path / "dashboard-out"
+    asset_path = dashboard_export_root / "_next" / "static" / "chunks" / "app.js"
+    asset_path.parent.mkdir(parents=True)
+    asset_path.write_text("window.__litellm_dashboard__=true")
+
+    fastapi_app = FastAPI()
+    proxy_server._register_ui_static_routes(
+        fastapi_app,
+        str(packaged_ui_root),
+        "/litellm-asset-prefix",
+        [str(packaged_ui_root), str(dashboard_export_root)],
+    )
+    client = TestClient(fastapi_app, follow_redirects=False)
+
+    response = client.get("/ui")
+    assert response.status_code == 200
+    assert response.text == "LiteLLM Dashboard"
+
+    asset_response = client.get("/litellm-asset-prefix/_next/static/chunks/app.js")
+    assert asset_response.status_code == 200
+    assert asset_response.text == "window.__litellm_dashboard__=true"
+
+
 def test_restructure_always_happens(monkeypatch):
     """
     Test that restructuring logic always executes regardless of LITELLM_NON_ROOT setting.

@@ -1290,6 +1290,9 @@ origins, allow_cors_credentials = _get_cors_config()
 try:
     current_dir = os.path.dirname(os.path.abspath(__file__))
     packaged_ui_path = os.path.join(current_dir, "_experimental", "out")
+    dashboard_export_path = os.path.abspath(
+        os.path.join(current_dir, "..", "..", "ui", "litellm-dashboard", "out")
+    )
     ui_path = packaged_ui_path
     litellm_asset_prefix = "/litellm-asset-prefix"
 
@@ -1297,6 +1300,7 @@ try:
         fastapi_app: FastAPI,
         selected_ui_path: str,
         asset_prefix: str,
+        fallback_ui_paths: Optional[List[str]] = None,
     ) -> None:
         @fastapi_app.get("/ui", include_in_schema=False)
         async def serve_ui_without_trailing_slash():
@@ -1311,6 +1315,23 @@ try:
             return FileResponse(index_path, media_type="text/html")
 
         next_static_path = os.path.join(selected_ui_path, "_next")
+        if not os.path.isdir(next_static_path) and fallback_ui_paths is not None:
+            for fallback_ui_path in fallback_ui_paths:
+                fallback_next_static_path = os.path.join(fallback_ui_path, "_next")
+                if os.path.abspath(fallback_next_static_path) == os.path.abspath(
+                    next_static_path
+                ):
+                    continue
+                if not os.path.isdir(fallback_next_static_path):
+                    continue
+
+                verbose_proxy_logger.warning(
+                    f"LiteLLM UI static assets not found at {next_static_path}. "
+                    f"Serving dashboard assets from {fallback_next_static_path}."
+                )
+                next_static_path = fallback_next_static_path
+                break
+
         if os.path.isdir(next_static_path):
             # # Mount the _next directory at the root level
             fastapi_app.mount(
@@ -1571,7 +1592,12 @@ try:
                         # Skip binary files or files we can't write to
                         continue
 
-    _register_ui_static_routes(app, ui_path, litellm_asset_prefix)
+    _register_ui_static_routes(
+        app,
+        ui_path,
+        litellm_asset_prefix,
+        [packaged_ui_path, dashboard_export_path],
+    )
 
     def _restructure_ui_html_files(ui_root: str) -> None:
         """Ensure each exported HTML route is available as <route>/index.html."""
