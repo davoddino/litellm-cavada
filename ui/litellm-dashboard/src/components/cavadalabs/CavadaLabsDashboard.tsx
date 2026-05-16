@@ -4,7 +4,10 @@ import { Alert, Card, Col, Row, Space, Spin, Tabs, Tag, Typography } from "antd"
 import { useSearchParams } from "next/navigation";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { listCavadaLabsResource } from "./api";
+import CavadaLabsChatbotCreator from "./CavadaLabsChatbotCreator";
 import CavadaLabsResourcePanel from "./CavadaLabsResourcePanel";
+import CavadaLabsUsageActivityPanel from "./CavadaLabsUsageActivityPanel";
+import CavadaLabsUsageDiagnosticsPanel from "./CavadaLabsUsageDiagnosticsPanel";
 import { buildCavadaLabsResourceConfigs } from "./resourceConfigs";
 import type { CavadaLabsResourceConfig, CavadaLabsRuntimeContext } from "./types";
 import { statusColor } from "./utils";
@@ -78,11 +81,13 @@ const PanelStack = ({
   accessToken,
   context,
   onMutated,
+  initialDetailsByResource,
 }: {
   configs: CavadaLabsResourceConfig[];
   accessToken: string | null;
   context: CavadaLabsRuntimeContext;
   onMutated: () => void;
+  initialDetailsByResource?: Record<string, string | null | undefined>;
 }) => (
   <Space direction="vertical" size={16} className="w-full">
     {configs.map((config) => (
@@ -92,6 +97,7 @@ const PanelStack = ({
         config={config}
         context={context}
         onMutated={onMutated}
+        initialDetailsId={initialDetailsByResource?.[config.key] ?? null}
       />
     ))}
   </Space>
@@ -207,6 +213,13 @@ const CavadaLabsDashboard: React.FC<CavadaLabsDashboardProps> = ({ accessToken, 
   }, [loadOverview, refreshNonce]);
 
   const configs = useMemo(() => buildCavadaLabsResourceConfigs(context), [context]);
+  const initialDetailsByResource = useMemo(
+    () => ({
+      companies: searchParams.get("company_id"),
+      projects: searchParams.get("project_id"),
+    }),
+    [searchParams],
+  );
 
   const readiness: Array<{ label: string; status: "ready" | "pending"; detail: string }> = [
     {
@@ -312,12 +325,16 @@ const CavadaLabsDashboard: React.FC<CavadaLabsDashboardProps> = ({ accessToken, 
             key: "tenants",
             label: "Tenants",
             children: (
-              <PanelStack
-                configs={[configs.companies, configs.projects, configs.chatbots, configs.webTokens]}
-                accessToken={accessToken}
-                context={context}
-                onMutated={refreshAll}
-              />
+              <Space direction="vertical" size={16} className="w-full">
+                <CavadaLabsChatbotCreator accessToken={accessToken} context={context} onCreated={refreshAll} />
+                <PanelStack
+                  configs={[configs.companies, configs.projects, configs.chatbots, configs.webTokens]}
+                  accessToken={accessToken}
+                  context={context}
+                  onMutated={refreshAll}
+                  initialDetailsByResource={initialDetailsByResource}
+                />
+              </Space>
             ),
           },
           {
@@ -360,12 +377,16 @@ const CavadaLabsDashboard: React.FC<CavadaLabsDashboardProps> = ({ accessToken, 
             key: "billing",
             label: "Billing",
             children: (
-              <PanelStack
-                configs={[configs.billingReports]}
-                accessToken={accessToken}
-                context={context}
-                onMutated={refreshAll}
-              />
+              <Space direction="vertical" size={16} className="w-full">
+                <CavadaLabsUsageActivityPanel accessToken={accessToken} context={context} />
+                <CavadaLabsUsageDiagnosticsPanel accessToken={accessToken} context={context} />
+                <PanelStack
+                  configs={[configs.billingReports]}
+                  accessToken={accessToken}
+                  context={context}
+                  onMutated={refreshAll}
+                />
+              </Space>
             ),
           },
           {

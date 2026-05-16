@@ -7,7 +7,6 @@ from litellm.proxy._types import (
     LiteLLM_DeletedTeamTable,
     LiteLLM_TeamMembership,
     LiteLLM_TeamTable,
-    LiteLLM_UserTable,
     Member,
 )
 
@@ -69,6 +68,10 @@ class TeamListItem(LiteLLM_TeamTable):
     """A team item in the paginated list response, enriched with computed fields."""
 
     members_count: int = 0
+    cavadalabs_company_id: Optional[str] = None
+    cavadalabs_project_id: Optional[str] = None
+    cavadalabs_project_name: Optional[str] = None
+    cavadalabs_project_status: Optional[str] = None
     # Resources inherited from access groups (separate from direct assignments)
     access_group_models: Optional[List[str]] = None
     access_group_mcp_server_ids: Optional[List[str]] = None

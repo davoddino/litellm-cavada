@@ -13,6 +13,16 @@ import { isProxyAdminRole, isUserTeamAdminForSingleTeam, rolesWithWriteAccess } 
 import { mapDisplayToInternalNames, mapInternalToDisplayNames } from "../callback_info_helpers";
 import AutoRotationView from "../common_components/AutoRotationView";
 import DeleteResourceModal from "../common_components/DeleteResourceModal";
+import {
+  findCavadaLabsCompanyForCompatibilityOrganization,
+  findCavadaLabsProjectForCompatibilityTeam,
+  getCavadaLabsCompanyDisplayName,
+  getCavadaLabsProjectDisplayName,
+  getKeyCavadaLabsCompanyId,
+  getKeyCavadaLabsProjectId,
+  type CavadaLabsCompanyOption,
+  type CavadaLabsProjectOption,
+} from "../cavadalabs/keyContext";
 import { extractLoggingSettings, formatMetadataForDisplay, stripTagsFromMetadata } from "../key_info_utils";
 import { KeyResponse } from "../key_team_helpers/key_list";
 import LoggingSettingsView from "../logging_settings_view";
@@ -32,22 +42,16 @@ interface KeyInfoViewProps {
   onDelete?: () => void;
   teams: any[] | null;
   backButtonText?: string;
+  cavadalabsCompanies?: CavadaLabsCompanyOption[];
+  cavadalabsProjects?: CavadaLabsProjectOption[];
 }
 
 // Must stay in sync with LiteLLM_ManagementEndpoint_MetadataFields_Premium
 // in litellm/proxy/_types.py — limited to fields the key-edit form submits.
-const PREMIUM_METADATA_FIELDS = [
-  "policies",
-  "guardrails",
-  "prompts",
-  "tags",
-  "allowed_passthrough_routes",
-] as const;
+const PREMIUM_METADATA_FIELDS = ["policies", "guardrails", "prompts", "tags", "allowed_passthrough_routes"] as const;
 
 const isEmptyValue = (v: unknown): boolean =>
-  v == null ||
-  (Array.isArray(v) && v.length === 0) ||
-  (typeof v === "string" && v.trim() === "");
+  v == null || (Array.isArray(v) && v.length === 0) || (typeof v === "string" && v.trim() === "");
 
 /**
  * ─────────────────────────────────────────────────────────────────────────
@@ -63,6 +67,8 @@ export default function KeyInfoView({
   onKeyDataUpdate,
   onDelete,
   backButtonText = "Back to Keys",
+  cavadalabsCompanies = [],
+  cavadalabsProjects = [],
 }: KeyInfoViewProps) {
   const { accessToken, userId: userID, userRole, premiumUser } = useAuthorized();
   const canEditGuardrails = premiumUser || (userRole != null && rolesWithWriteAccess.includes(userRole));
@@ -113,7 +119,7 @@ export default function KeyInfoView({
               console.error(`Failed to fetch guardrails for policy ${policyName}:`, error);
               guardrailsMap[policyName] = [];
             }
-          })
+          }),
         );
         setPolicyGuardrails(guardrailsMap);
       } catch (error) {
@@ -147,6 +153,89 @@ export default function KeyInfoView({
       </div>
     );
   }
+  const cavadalabsCompanyId = getKeyCavadaLabsCompanyId(currentKeyData);
+  const cavadalabsProjectId = getKeyCavadaLabsProjectId(currentKeyData);
+  const compatibilityOrganizationId = currentKeyData.organization_id ?? currentKeyData.org_id ?? null;
+  const compatibilityTeamId = currentKeyData.team_id ?? null;
+  const cavadalabsCompanyFromMetadata = cavadalabsCompanyId
+    ? cavadalabsCompanies.find((company) => company.company_id === cavadalabsCompanyId)
+    : undefined;
+  const cavadalabsProjectFromMetadata = cavadalabsProjectId
+    ? cavadalabsProjects.find((project) => project.project_id === cavadalabsProjectId)
+    : undefined;
+  const cavadalabsCompany =
+    cavadalabsCompanyFromMetadata ??
+    findCavadaLabsCompanyForCompatibilityOrganization(cavadalabsCompanies, compatibilityOrganizationId) ??
+    undefined;
+  const cavadalabsProject =
+    cavadalabsProjectFromMetadata ??
+    findCavadaLabsProjectForCompatibilityTeam(cavadalabsProjects, compatibilityTeamId) ??
+    undefined;
+  const resolvedCavadaLabsCompanyId = cavadalabsCompanyId ?? cavadalabsCompany?.company_id ?? null;
+  const resolvedCavadaLabsProjectId = cavadalabsProjectId ?? cavadalabsProject?.project_id ?? null;
+  const hasResolvedCavadaLabsContext = Boolean(resolvedCavadaLabsCompanyId || resolvedCavadaLabsProjectId);
+  const cavadalabsCompanyDisplayValue = resolvedCavadaLabsCompanyId
+    ? cavadalabsCompany
+      ? getCavadaLabsCompanyDisplayName(cavadalabsCompany)
+      : resolvedCavadaLabsCompanyId
+    : "Not Set";
+  const cavadalabsProjectDisplayValue = resolvedCavadaLabsProjectId
+    ? cavadalabsProject
+      ? getCavadaLabsProjectDisplayName(cavadalabsProject)
+      : resolvedCavadaLabsProjectId
+    : "Not Set";
+  const hasExplicitCavadaLabsCompanyWithoutMapping = Boolean(cavadalabsCompanyId && !cavadalabsCompanyFromMetadata);
+  const hasExplicitCavadaLabsProjectWithoutMapping = Boolean(cavadalabsProjectId && !cavadalabsProjectFromMetadata);
+  const hasCavadaLabsProjectCompanyMismatch = Boolean(
+    cavadalabsCompanyId &&
+      cavadalabsProjectFromMetadata?.company_id &&
+      cavadalabsProjectFromMetadata.company_id !== cavadalabsCompanyId,
+  );
+  const currentKeyDataForEdit =
+    hasResolvedCavadaLabsContext &&
+    (currentKeyData.cavadalabs_company_id !== resolvedCavadaLabsCompanyId ||
+      currentKeyData.cavadalabs_project_id !== resolvedCavadaLabsProjectId)
+      ? {
+          ...currentKeyData,
+          cavadalabs_company_id: resolvedCavadaLabsCompanyId ?? undefined,
+          cavadalabs_project_id: resolvedCavadaLabsProjectId ?? undefined,
+        }
+      : currentKeyData;
+  const deleteModalResourceInformation = [
+    {
+      label: "Key Alias",
+      value: currentKeyData?.key_alias || "-",
+    },
+    {
+      label: "Key ID",
+      value: currentKeyData?.token_id || currentKeyData?.token || "-",
+      code: true,
+    },
+    ...(hasResolvedCavadaLabsContext
+      ? [
+          {
+            label: "Company",
+            value: cavadalabsCompanyDisplayValue,
+            code: !cavadalabsCompany,
+          },
+          {
+            label: "Project",
+            value: cavadalabsProjectDisplayValue,
+            code: !cavadalabsProject,
+          },
+        ]
+      : [
+          {
+            label: "Team ID",
+            value: currentKeyData?.team_id || "-",
+            code: true,
+          },
+        ]),
+    {
+      label: "Spend",
+      value: currentKeyData?.spend ? `$${formatNumberWithCommas(currentKeyData.spend, 4)}` : "$0.0000",
+    },
+  ];
 
   const handleKeyUpdate = async (formValues: Record<string, any>) => {
     try {
@@ -188,7 +277,11 @@ export default function KeyInfoView({
       }
 
       if (formValues.mcp_servers_and_groups !== undefined) {
-        const { servers, accessGroups, toolsets } = formValues.mcp_servers_and_groups || { servers: [], accessGroups: [], toolsets: [] };
+        const { servers, accessGroups, toolsets } = formValues.mcp_servers_and_groups || {
+          servers: [],
+          accessGroups: [],
+          toolsets: [],
+        };
         formValues.object_permission = {
           ...currentKeyData.object_permission,
           mcp_servers: servers || [],
@@ -239,11 +332,13 @@ export default function KeyInfoView({
             ...parsedMetadata,
             ...(Array.isArray(formValues.tags) && formValues.tags.length > 0 ? { tags: formValues.tags } : {}),
             ...(formValues.guardrails?.length > 0 ? { guardrails: formValues.guardrails } : {}),
-            ...(Array.isArray(formValues.logging_settings) && formValues.logging_settings.length > 0 ? { logging: formValues.logging_settings } : {}),
+            ...(Array.isArray(formValues.logging_settings) && formValues.logging_settings.length > 0
+              ? { logging: formValues.logging_settings }
+              : {}),
             ...(formValues.disabled_callbacks?.length > 0
               ? {
-                litellm_disabled_callbacks: mapDisplayToInternalNames(formValues.disabled_callbacks),
-              }
+                  litellm_disabled_callbacks: mapDisplayToInternalNames(formValues.disabled_callbacks),
+                }
               : {}),
           };
         } catch (error) {
@@ -258,11 +353,13 @@ export default function KeyInfoView({
           ...rest,
           ...(Array.isArray(formValues.tags) && formValues.tags.length > 0 ? { tags: formValues.tags } : {}),
           ...(formValues.guardrails?.length > 0 ? { guardrails: formValues.guardrails } : {}),
-          ...(Array.isArray(formValues.logging_settings) && formValues.logging_settings.length > 0 ? { logging: formValues.logging_settings } : {}),
+          ...(Array.isArray(formValues.logging_settings) && formValues.logging_settings.length > 0
+            ? { logging: formValues.logging_settings }
+            : {}),
           ...(formValues.disabled_callbacks?.length > 0
             ? {
-              litellm_disabled_callbacks: mapDisplayToInternalNames(formValues.disabled_callbacks),
-            }
+                litellm_disabled_callbacks: mapDisplayToInternalNames(formValues.disabled_callbacks),
+              }
             : {}),
         };
       }
@@ -422,9 +519,7 @@ export default function KeyInfoView({
         backButtonText={backButtonText}
         regenerateDisabled={!premiumUser}
         regenerateTooltip={
-          !premiumUser
-            ? "This is a LiteLLM Enterprise feature, and requires a valid key to use."
-            : undefined
+          !premiumUser ? "This is a LiteLLM Enterprise feature, and requires a valid key to use." : undefined
         }
       />
 
@@ -443,26 +538,7 @@ export default function KeyInfoView({
         alertMessage="This action is irreversible and will immediately revoke access for any applications using this key."
         message="Are you sure you want to delete this Virtual Key?"
         resourceInformationTitle="Key Information"
-        resourceInformation={[
-          {
-            label: "Key Alias",
-            value: currentKeyData?.key_alias || "-",
-          },
-          {
-            label: "Key ID",
-            value: currentKeyData?.token_id || currentKeyData?.token || "-",
-            code: true,
-          },
-          {
-            label: "Team ID",
-            value: currentKeyData?.team_id || "-",
-            code: true,
-          },
-          {
-            label: "Spend",
-            value: currentKeyData?.spend ? `$${formatNumberWithCommas(currentKeyData.spend, 4)}` : "$0.0000",
-          },
-        ]}
+        resourceInformation={deleteModalResourceInformation}
         onCancel={() => {
           setIsDeleteModalOpen(false);
           setDeleteConfirmInput("");
@@ -487,8 +563,8 @@ export default function KeyInfoView({
           <strong>$0</strong>?
         </p>
         <p style={{ color: "#666", fontSize: "0.875rem", marginTop: 8 }}>
-          Current spend: <strong>${formatNumberWithCommas(currentKeyData.spend, 4)}</strong>. Spend history is
-          preserved in logs. This resets the current period spend counter, the same as an automatic budget reset.
+          Current spend: <strong>${formatNumberWithCommas(currentKeyData.spend, 4)}</strong>. Spend history is preserved
+          in logs. This resets the current period spend counter, the same as an automatic budget reset.
         </p>
       </Modal>
 
@@ -623,14 +699,12 @@ export default function KeyInfoView({
             <Card>
               <div className="flex justify-between items-center mb-4">
                 <Title>Key Settings</Title>
-                {!isEditing && canModifyKey && (
-                  <Button onClick={() => setIsEditing(true)}>Edit Settings</Button>
-                )}
+                {!isEditing && canModifyKey && <Button onClick={() => setIsEditing(true)}>Edit Settings</Button>}
               </div>
 
               {isEditing ? (
                 <KeyEditView
-                  keyData={currentKeyData}
+                  keyData={currentKeyDataForEdit}
                   onCancel={() => setIsEditing(false)}
                   onSubmit={handleKeyUpdate}
                   teams={teams}
@@ -656,12 +730,36 @@ export default function KeyInfoView({
                     <Text className="font-mono">{currentKeyData.key_name}</Text>
                   </div>
 
-                  <div>
-                    <Text className="font-medium">Team ID</Text>
-                    <Text>{currentKeyData.team_id || "Not Set"}</Text>
-                  </div>
+                  {hasResolvedCavadaLabsContext ? (
+                    <>
+                      <div>
+                        <Text className="font-medium">Company</Text>
+                        <Text>{cavadalabsCompanyDisplayValue}</Text>
+                      </div>
 
-                  {enableProjectsUI && (
+                      <div>
+                        <Text className="font-medium">Project</Text>
+                        <Text>{cavadalabsProjectDisplayValue}</Text>
+                      </div>
+
+                      {(hasExplicitCavadaLabsCompanyWithoutMapping ||
+                        hasExplicitCavadaLabsProjectWithoutMapping ||
+                        hasCavadaLabsProjectCompanyMismatch) && (
+                        <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                          {hasCavadaLabsProjectCompanyMismatch
+                            ? `CavadaLabs Project belongs to Company ${cavadalabsProjectFromMetadata?.company_id}, not ${cavadalabsCompanyId}.`
+                            : "CavadaLabs key context metadata is present, but the Company or Project is not available in your current scope."}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div>
+                      <Text className="font-medium">Team ID</Text>
+                      <Text>{currentKeyData.team_id || "Not Set"}</Text>
+                    </div>
+                  )}
+
+                  {enableProjectsUI && !hasResolvedCavadaLabsContext && (
                     <div>
                       <Text className="font-medium">Project</Text>
                       <Text>
@@ -677,10 +775,12 @@ export default function KeyInfoView({
                     </div>
                   )}
 
-                  <div>
-                    <Text className="font-medium">Organization</Text>
-                    <Text>{(currentKeyData.organization_id ?? currentKeyData.org_id) || "Not Set"}</Text>
-                  </div>
+                  {!hasResolvedCavadaLabsContext && (
+                    <div>
+                      <Text className="font-medium">Organization</Text>
+                      <Text>{(currentKeyData.organization_id ?? currentKeyData.org_id) || "Not Set"}</Text>
+                    </div>
+                  )}
 
                   <div>
                     <Text className="font-medium">Created</Text>
@@ -733,10 +833,10 @@ export default function KeyInfoView({
                     <div className="flex flex-wrap gap-2 mt-1">
                       {Array.isArray(currentKeyData.metadata?.tags) && currentKeyData.metadata.tags.length > 0
                         ? currentKeyData.metadata.tags.map((tag, index) => (
-                          <span key={index} className="px-2 mr-2 py-1 bg-blue-100 rounded text-xs">
-                            {tag}
-                          </span>
-                        ))
+                            <span key={index} className="px-2 mr-2 py-1 bg-blue-100 rounded text-xs">
+                              {tag}
+                            </span>
+                          ))
                         : "No tags specified"}
                     </div>
                   </div>
@@ -746,10 +846,10 @@ export default function KeyInfoView({
                     <Text>
                       {Array.isArray(currentKeyData.metadata?.prompts) && currentKeyData.metadata.prompts.length > 0
                         ? currentKeyData.metadata.prompts.map((prompt, index) => (
-                          <span key={index} className="px-2 mr-2 py-1 bg-blue-100 rounded text-xs">
-                            {prompt}
-                          </span>
-                        ))
+                            <span key={index} className="px-2 mr-2 py-1 bg-blue-100 rounded text-xs">
+                              {prompt}
+                            </span>
+                          ))
                         : "No prompts specified"}
                     </Text>
                   </div>
@@ -773,12 +873,12 @@ export default function KeyInfoView({
                     <Text className="font-medium">Allowed Pass Through Routes</Text>
                     <Text>
                       {Array.isArray(currentKeyData.metadata?.allowed_passthrough_routes) &&
-                        currentKeyData.metadata.allowed_passthrough_routes.length > 0
+                      currentKeyData.metadata.allowed_passthrough_routes.length > 0
                         ? currentKeyData.metadata.allowed_passthrough_routes.map((route, index) => (
-                          <span key={index} className="px-2 mr-2 py-1 bg-blue-100 rounded text-xs">
-                            {route}
-                          </span>
-                        ))
+                            <span key={index} className="px-2 mr-2 py-1 bg-blue-100 rounded text-xs">
+                              {route}
+                            </span>
+                          ))
                         : "No pass through routes specified"}
                     </Text>
                   </div>

@@ -2,7 +2,7 @@ import { ColumnDef, flexRender, getCoreRowModel, SortingState, useReactTable } f
 import React from "react";
 import { Table, TableHead, TableHeaderCell, TableBody, TableRow, TableCell, Select, SelectItem } from "@tremor/react";
 import { SwitchVerticalIcon, ChevronUpIcon, ChevronDownIcon } from "@heroicons/react/outline";
-import { Skeleton } from "antd";
+import { Select as AntSelect, Skeleton } from "antd";
 import { UserInfo } from "./types";
 import UserInfoView from "./user_info_view";
 import { columns as createColumns } from "./columns";
@@ -10,6 +10,7 @@ import { FilterInput } from "@/components/common_components/Filters/FilterInput"
 import { FiltersButton } from "@/components/common_components/Filters/FiltersButton";
 import { ResetFiltersButton } from "@/components/common_components/Filters/ResetFiltersButton";
 import { Search, User, CircleUserRound } from "lucide-react";
+import type { CavadaLabsCompanyOption, CavadaLabsProjectOption } from "@/components/cavadalabs/keyContext";
 
 interface FilterState {
   email: string;
@@ -17,6 +18,8 @@ interface FilterState {
   user_role: string;
   sso_user_id: string;
   team: string;
+  cavadalabs_company_id: string;
+  cavadalabs_project_id: string;
   model: string;
   min_spend: number | null;
   max_spend: number | null;
@@ -47,6 +50,9 @@ interface UserDataTableProps {
   updateFilters: (update: Partial<FilterState>) => void;
   initialFilters: FilterState;
   teams: any[] | null;
+  cavadalabsCompanies: CavadaLabsCompanyOption[];
+  cavadalabsProjects: CavadaLabsProjectOption[];
+  showLiteLLMCompatibilityFields?: boolean;
   // Pagination props
   userListResponse: any;
   currentPage: number;
@@ -72,6 +78,9 @@ export function UserDataTable({
   updateFilters,
   initialFilters,
   teams,
+  cavadalabsCompanies,
+  cavadalabsProjects,
+  showLiteLLMCompatibilityFields: showLiteLLMCompatibilityFieldsProp,
   userListResponse,
   currentPage,
   handlePageChange,
@@ -123,6 +132,11 @@ export function UserDataTable({
 
   const isAllSelected = data.length > 0 && selectedUsers.length === data.length;
   const isIndeterminate = selectedUsers.length > 0 && selectedUsers.length < data.length;
+  const hasCavadaLabsProductContext = cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
+  const showLiteLLMCompatibilityFields = showLiteLLMCompatibilityFieldsProp ?? !hasCavadaLabsProductContext;
+  const filteredCavadaLabsProjects = filters.cavadalabs_company_id
+    ? cavadalabsProjects.filter((project) => project.company_id === filters.cavadalabs_company_id)
+    : cavadalabsProjects;
 
   // Create columns with the handleUserClick function
   const columns = React.useMemo(() => {
@@ -230,7 +244,15 @@ export function UserDataTable({
             <FiltersButton
               onClick={() => setShowFilters(!showFilters)}
               active={showFilters}
-              hasActiveFilters={!!(filters.user_id || filters.user_role || filters.team)}
+              hasActiveFilters={
+                !!(
+                  filters.user_id ||
+                  filters.user_role ||
+                  (showLiteLLMCompatibilityFields && filters.team) ||
+                  filters.cavadalabs_company_id ||
+                  filters.cavadalabs_project_id
+                )
+              }
             />
 
             {/* Reset Filters Button */}
@@ -275,20 +297,80 @@ export function UserDataTable({
                 </Select>
               </div>
 
-              {/* Team Dropdown */}
-              <div className="w-64">
-                <Select
-                  value={filters.team}
-                  onValueChange={(value) => updateFilters({ team: value })}
-                  placeholder="Select Team"
-                >
-                  {teams?.map((team) => (
-                    <SelectItem key={team.team_id} value={team.team_id}>
-                      {team.team_alias || team.team_id}
-                    </SelectItem>
-                  ))}
-                </Select>
-              </div>
+              {showLiteLLMCompatibilityFields && (
+                <div className="w-64">
+                  <Select
+                    value={filters.team}
+                    onValueChange={(value) => updateFilters({ team: value })}
+                    placeholder="Select Team"
+                  >
+                    {teams?.map((team) => (
+                      <SelectItem key={team.team_id} value={team.team_id}>
+                        {team.team_alias || team.team_id}
+                      </SelectItem>
+                    ))}
+                  </Select>
+                </div>
+              )}
+
+              {hasCavadaLabsProductContext && (
+                <>
+                  <div className="w-64">
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Company</label>
+                    <AntSelect
+                      aria-label="Company"
+                      allowClear
+                      showSearch
+                      value={filters.cavadalabs_company_id || undefined}
+                      onChange={(value) => {
+                        const nextCompanyId = value || "";
+                        const selectedProject = cavadalabsProjects.find(
+                          (project) => project.project_id === filters.cavadalabs_project_id,
+                        );
+                        updateFilters({
+                          cavadalabs_company_id: nextCompanyId,
+                          cavadalabs_project_id:
+                            selectedProject && selectedProject.company_id !== nextCompanyId
+                              ? ""
+                              : filters.cavadalabs_project_id,
+                        });
+                      }}
+                      placeholder="Select Company"
+                      optionFilterProp="label"
+                      style={{ width: "100%" }}
+                      options={cavadalabsCompanies.map((company) => ({
+                        label: `${company.legal_name || company.company_id} (${company.company_id})`,
+                        value: company.company_id,
+                      }))}
+                    />
+                  </div>
+
+                  <div className="w-64">
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Project</label>
+                    <AntSelect
+                      aria-label="Project"
+                      allowClear
+                      showSearch
+                      value={filters.cavadalabs_project_id || undefined}
+                      onChange={(value) => {
+                        const projectId = value || "";
+                        const selectedProject = cavadalabsProjects.find((project) => project.project_id === projectId);
+                        updateFilters({
+                          cavadalabs_project_id: projectId,
+                          cavadalabs_company_id: selectedProject?.company_id || filters.cavadalabs_company_id,
+                        });
+                      }}
+                      placeholder="Select Project"
+                      optionFilterProp="label"
+                      style={{ width: "100%" }}
+                      options={filteredCavadaLabsProjects.map((project) => ({
+                        label: `${project.name || project.project_id} (${project.project_id})`,
+                        value: project.project_id,
+                      }))}
+                    />
+                  </div>
+                </>
+              )}
             </div>
           )}
 

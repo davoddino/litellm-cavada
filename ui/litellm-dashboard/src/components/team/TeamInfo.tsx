@@ -18,13 +18,20 @@ import { useGuardrails } from "@/app/(dashboard)/hooks/guardrails/useGuardrails"
 import { formatNumberWithCommas } from "@/utils/dataUtils";
 import { mapEmptyStringToNull } from "@/utils/keyUpdateUtils";
 import { isProxyAdminRole } from "@/utils/roles";
-import { EditOutlined, GlobalOutlined, InfoCircleOutlined, MinusCircleOutlined, PlusOutlined, SaveOutlined } from "@ant-design/icons";
+import {
+  EditOutlined,
+  GlobalOutlined,
+  InfoCircleOutlined,
+  MinusCircleOutlined,
+  PlusOutlined,
+  SaveOutlined,
+} from "@ant-design/icons";
 import { ArrowLeftIcon } from "@heroicons/react/outline";
 import { Accordion, AccordionBody, AccordionHeader, Badge, Card, Grid, Text, TextInput, Title } from "@tremor/react";
 import { Button, Form, Input, InputNumber, Select, Space, Switch, Tabs, Tag, Tooltip } from "antd";
 import MessageManager from "@/components/molecules/message_manager";
 import { CheckIcon, CopyIcon } from "lucide-react";
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { copyToClipboard as utilCopyToClipboard } from "../../utils/dataUtils";
 import AccessGroupSelector from "../common_components/AccessGroupSelector";
 import AgentSelector from "../agent_management/AgentSelector";
@@ -56,6 +63,13 @@ import {
 } from "./tabVisibilityUtils";
 import TeamMembersComponent from "./TeamMemberTab";
 import { TeamVirtualKeysTable } from "./TeamVirtualKeysTable";
+import {
+  findCavadaLabsCompanyForCompatibilityOrganization,
+  getCavadaLabsCompanyDisplayName,
+  getCavadaLabsCompanyLabelForCompatibilityOrganization,
+  resolveCavadaLabsCompanyCompatibilityOrganizationId,
+  useCavadaLabsKeyContextOptions,
+} from "@/components/cavadalabs/keyContext";
 
 export interface TeamMembership {
   user_id: string;
@@ -199,11 +213,36 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isTeamSaving, setIsTeamSaving] = useState(false);
+  const [companySelectionChanged, setCompanySelectionChanged] = useState(false);
   const routerSettingsRef = React.useRef<RouterSettingsAccordionRef>(null);
   const [organization, setOrganization] = useState<Organization | null>(null);
   const { userRole, userId } = useAuthorized();
   const { data: userOrganizations = [] } = useOrganizations();
+  const { companies: cavadalabsCompanies } = useCavadaLabsKeyContextOptions(accessToken);
   const queryClient = useQueryClient();
+  const selectedTeamCompany = useMemo(
+    () => findCavadaLabsCompanyForCompatibilityOrganization(cavadalabsCompanies, teamData?.team_info?.organization_id),
+    [cavadalabsCompanies, teamData?.team_info?.organization_id],
+  );
+  const selectedCompanyIdInForm = Form.useWatch("cavadalabs_company_id", form) as string | null | undefined;
+  const selectedCompanyOrganizationIdInForm = useMemo(() => {
+    if (!companySelectionChanged) {
+      return selectedTeamCompany?.litellm_organization_id ?? teamData?.team_info?.organization_id ?? null;
+    }
+    if (selectedCompanyIdInForm) {
+      return (
+        cavadalabsCompanies.find((company) => company.company_id === selectedCompanyIdInForm)
+          ?.litellm_organization_id ?? null
+      );
+    }
+    return null;
+  }, [
+    cavadalabsCompanies,
+    companySelectionChanged,
+    selectedCompanyIdInForm,
+    selectedTeamCompany?.litellm_organization_id,
+    teamData?.team_info?.organization_id,
+  ]);
 
   // Check if user is org admin for this team's organization
   const isOrgAdminForTeam = useMemo(() => {
@@ -227,12 +266,9 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
 
   const canEditTeam = is_team_admin || is_proxy_admin || is_org_admin || isOrgAdminForTeam;
   const visibleTabs = useMemo(() => getTeamInfoVisibleTabs(canEditTeam), [canEditTeam]);
-  const defaultTabKey = useMemo(
-    () => getTeamInfoDefaultTab(editTeam, canEditTeam),
-    [editTeam, canEditTeam]
-  );
+  const defaultTabKey = useMemo(() => getTeamInfoDefaultTab(editTeam, canEditTeam), [editTeam, canEditTeam]);
 
-  const fetchTeamInfo = async () => {
+  const fetchTeamInfo = useCallback(async () => {
     try {
       setLoading(true);
       if (!accessToken) return;
@@ -244,11 +280,21 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [accessToken, teamId]);
 
   useEffect(() => {
     fetchTeamInfo();
-  }, [teamId, accessToken]);
+  }, [fetchTeamInfo]);
+
+  useEffect(() => {
+    if (!teamData?.team_info) {
+      return;
+    }
+    if (companySelectionChanged) {
+      return;
+    }
+    form.setFieldValue("cavadalabs_company_id", selectedTeamCompany?.company_id ?? null);
+  }, [companySelectionChanged, form, selectedTeamCompany?.company_id, teamData?.team_info]);
 
   // Fetch organization data when team has organization_id
   useEffect(() => {
@@ -322,7 +368,7 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
               console.error(`Failed to fetch guardrails for policy ${policyName}:`, error);
               guardrailsMap[policyName] = [];
             }
-          })
+          }),
         );
         setPolicyGuardrails(guardrailsMap);
       } catch (error) {
@@ -498,9 +544,28 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
       const killSwitchOnAtSave = values.disable_global_guardrails === true;
       const optedOutGlobalGuardrails = killSwitchOnAtSave
         ? Array.from(globalGuardrailNames)
-        : Array.from(globalGuardrailNames).filter(
-            (n) => !(values.guardrails || []).includes(n),
+        : Array.from(globalGuardrailNames).filter((n) => !(values.guardrails || []).includes(n));
+
+      let nextOrganizationId = info.organization_id;
+      try {
+        if (values.cavadalabs_company_id) {
+          nextOrganizationId = resolveCavadaLabsCompanyCompatibilityOrganizationId(
+            values.cavadalabs_company_id,
+            cavadalabsCompanies,
           );
+        } else if (companySelectionChanged) {
+          nextOrganizationId = null;
+        } else if (
+          info.organization_id &&
+          cavadalabsCompanies.length > 0 &&
+          !findCavadaLabsCompanyForCompatibilityOrganization(cavadalabsCompanies, info.organization_id)
+        ) {
+          throw new Error("Team is missing its Company compatibility mapping");
+        }
+      } catch (error) {
+        NotificationsManager.fromBackend(error instanceof Error ? error.message : "Invalid Company mapping");
+        return;
+      }
 
       const updateData: any = {
         team_id: teamId,
@@ -522,16 +587,14 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
           soft_budget_alerting_emails:
             typeof values.soft_budget_alerting_emails === "string"
               ? values.soft_budget_alerting_emails
-                .split(",")
-                .map((email: string) => email.trim())
-                .filter((email: string) => email.length > 0)
+                  .split(",")
+                  .map((email: string) => email.trim())
+                  .filter((email: string) => email.length > 0)
               : values.soft_budget_alerting_emails || [],
           ...(secretManagerSettings !== undefined ? { secret_manager_settings: secretManagerSettings } : {}),
         },
         ...(values.policies?.length > 0 ? { policies: values.policies } : {}),
-        ...(values.organization_id !== info.organization_id
-          ? { organization_id: values.organization_id ?? null }
-          : {}),
+        ...(nextOrganizationId !== info.organization_id ? { organization_id: nextOrganizationId } : {}),
       };
 
       updateData.max_budget = mapEmptyStringToNull(updateData.max_budget);
@@ -620,8 +683,7 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
           !(Array.isArray(value) && value.length === 0);
 
         const hasNewValues = Object.values(currentRouterSettings.router_settings).some(isMeaningfulValue);
-        const hadExistingSettings = info.router_settings &&
-          Object.values(info.router_settings).some(isMeaningfulValue);
+        const hadExistingSettings = info.router_settings && Object.values(info.router_settings).some(isMeaningfulValue);
 
         // Send if there are new values OR if the user is clearing existing ones
         if (hasNewValues || hadExistingSettings) {
@@ -633,6 +695,7 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
       queryClient.invalidateQueries({ queryKey: organizationKeys.all });
 
       NotificationsManager.success("Team settings updated successfully");
+      setCompanySelectionChanged(false);
       setIsEditing(false);
       fetchTeamInfo();
     } catch (error) {
@@ -656,15 +719,12 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
   const optedOutGlobals = new Set<string>(
     Array.isArray(info.metadata?.opted_out_global_guardrails) ? info.metadata.opted_out_global_guardrails : [],
   );
-  const nonGlobalOptIns: string[] = (
-    Array.isArray(info.metadata?.guardrails) ? info.metadata.guardrails : []
-  ).filter((n: string) => !globalGuardrailNames.has(n));
+  const nonGlobalOptIns: string[] = (Array.isArray(info.metadata?.guardrails) ? info.metadata.guardrails : []).filter(
+    (n: string) => !globalGuardrailNames.has(n),
+  );
   const effectiveGuardrails: string[] = initialKillSwitchOn
     ? nonGlobalOptIns
-    : [
-        ...Array.from(globalGuardrailNames).filter((n) => !optedOutGlobals.has(n)),
-        ...nonGlobalOptIns,
-      ];
+    : [...Array.from(globalGuardrailNames).filter((n) => !optedOutGlobals.has(n)), ...nonGlobalOptIns];
 
   const preventTagMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -701,12 +761,7 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
     <div className="p-4">
       <div className="flex justify-between items-center mb-6">
         <div>
-          <Button
-            type="text"
-            icon={<ArrowLeftIcon className="h-4 w-4" />}
-            onClick={onClose}
-            className="mb-4"
-          >
+          <Button type="text" icon={<ArrowLeftIcon className="h-4 w-4" />} onClick={onClose} className="mb-4">
             Back to Teams
           </Button>
           <Title>{info.team_alias}</Title>
@@ -717,10 +772,11 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
               size="small"
               icon={copiedStates["team-id"] ? <CheckIcon size={12} /> : <CopyIcon size={12} />}
               onClick={() => copyToClipboard(info.team_id, "team-id")}
-              className={`left-2 z-10 transition-all duration-200 ${copiedStates["team-id"]
-                ? "text-green-600 bg-green-50 border-green-200"
-                : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
-                }`}
+              className={`left-2 z-10 transition-all duration-200 ${
+                copiedStates["team-id"]
+                  ? "text-green-600 bg-green-50 border-green-200"
+                  : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+              }`}
             />
           </div>
         </div>
@@ -818,7 +874,11 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                   <GuardrailSettingsView
                     globalGuardrailNames={globalGuardrailNames}
                     teamGuardrails={Array.isArray(info.metadata?.guardrails) ? info.metadata.guardrails : []}
-                    optedOutGlobalGuardrails={Array.isArray(info.metadata?.opted_out_global_guardrails) ? info.metadata.opted_out_global_guardrails : []}
+                    optedOutGlobalGuardrails={
+                      Array.isArray(info.metadata?.opted_out_global_guardrails)
+                        ? info.metadata.opted_out_global_guardrails
+                        : []
+                    }
                     killSwitchOn={initialKillSwitchOn}
                     variant="inline"
                   />
@@ -870,13 +930,7 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
           {
             key: TEAM_INFO_TAB_KEYS.VIRTUAL_KEYS,
             label: TEAM_INFO_TAB_LABELS[TEAM_INFO_TAB_KEYS.VIRTUAL_KEYS],
-            children: (
-              <TeamVirtualKeysTable
-                teamId={teamId}
-                teamAlias={info.team_alias}
-                organization={organization}
-              />
-            ),
+            children: <TeamVirtualKeysTable teamId={teamId} teamAlias={info.team_alias} organization={organization} />,
           },
           {
             key: TEAM_INFO_TAB_KEYS.MEMBERS,
@@ -895,9 +949,7 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
           {
             key: TEAM_INFO_TAB_KEYS.MEMBER_PERMISSIONS,
             label: TEAM_INFO_TAB_LABELS[TEAM_INFO_TAB_KEYS.MEMBER_PERMISSIONS],
-            children: (
-              <MemberPermissions teamId={teamId} accessToken={accessToken} canEditTeam={canEditTeam} />
-            ),
+            children: <MemberPermissions teamId={teamId} accessToken={accessToken} canEditTeam={canEditTeam} />,
           },
           {
             key: TEAM_INFO_TAB_KEYS.SETTINGS,
@@ -907,7 +959,9 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                 <div className="flex justify-between items-center mb-4">
                   <Title>Team Settings</Title>
                   {canEditTeam && !isEditing && (
-                    <Button icon={<EditOutlined className="h-4 w-4" />} onClick={() => setIsEditing(true)}>Edit Settings</Button>
+                    <Button icon={<EditOutlined className="h-4 w-4" />} onClick={() => setIsEditing(true)}>
+                      Edit Settings
+                    </Button>
                   )}
                 </div>
 
@@ -955,22 +1009,28 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                       guardrails: effectiveGuardrails,
                       policies: info.policies || [],
                       disable_global_guardrails: info.metadata?.disable_global_guardrails || false,
-                      soft_budget_alerting_emails:
-                        Array.isArray(info.metadata?.soft_budget_alerting_emails)
-                          ? info.metadata.soft_budget_alerting_emails.join(", ")
-                          : "",
+                      soft_budget_alerting_emails: Array.isArray(info.metadata?.soft_budget_alerting_emails)
+                        ? info.metadata.soft_budget_alerting_emails.join(", ")
+                        : "",
                       metadata: info.metadata
                         ? JSON.stringify(
-                          (({ logging, secret_manager_settings, soft_budget_alerting_emails, model_tpm_limit, model_rpm_limit, ...rest }) => rest)(info.metadata),
-                          null,
-                          2,
-                        )
+                            (({
+                              logging,
+                              secret_manager_settings,
+                              soft_budget_alerting_emails,
+                              model_tpm_limit,
+                              model_rpm_limit,
+                              ...rest
+                            }) => rest)(info.metadata),
+                            null,
+                            2,
+                          )
                         : "",
                       logging_settings: info.metadata?.logging || [],
                       secret_manager_settings: info.metadata?.secret_manager_settings
                         ? JSON.stringify(info.metadata.secret_manager_settings, null, 2)
                         : "",
-                      organization_id: info.organization_id,
+                      cavadalabs_company_id: selectedTeamCompany?.company_id ?? null,
                       vector_stores: info.object_permission?.vector_stores || [],
                       mcp_servers: info.object_permission?.mcp_servers || [],
                       mcp_access_groups: info.object_permission?.mcp_access_groups || [],
@@ -1006,11 +1066,12 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                         value={form.getFieldValue("models") || []}
                         onChange={(values) => form.setFieldValue("models", values)}
                         teamID={teamId}
-                        organizationID={teamData?.team_info?.organization_id || undefined}
+                        organizationID={selectedCompanyOrganizationIdInForm || undefined}
                         options={{
                           includeSpecialOptions: true,
-                          includeUserModels: !teamData?.team_info?.organization_id,
-                          showAllProxyModelsOverride: isProxyAdminRole(userRole) && !teamData?.team_info?.organization_id,
+                          includeUserModels: !selectedCompanyOrganizationIdInForm,
+                          showAllProxyModelsOverride:
+                            isProxyAdminRole(userRole) && !selectedCompanyOrganizationIdInForm,
                         }}
                         context="team"
                         dataTestId="models-select"
@@ -1039,7 +1100,8 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                       </AccordionHeader>
                       <AccordionBody>
                         <Text className="text-xs text-gray-500 mb-4">
-                          Optional defaults applied when members join this team. All fields can be overridden per member.
+                          Optional defaults applied when members join this team. All fields can be overridden per
+                          member.
                         </Text>
                         <Form.Item
                           label={
@@ -1128,11 +1190,7 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                         {(fields, { add, remove }) => (
                           <>
                             {fields.map(({ key, name, ...restField }) => (
-                              <Space
-                                key={key}
-                                style={{ display: "flex", marginBottom: 8 }}
-                                align="baseline"
-                              >
+                              <Space key={key} style={{ display: "flex", marginBottom: 8 }} align="baseline">
                                 <Form.Item
                                   {...restField}
                                   name={[name, "model"]}
@@ -1142,9 +1200,7 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                                       validator: (_, value) => {
                                         if (!value) return Promise.resolve();
                                         const all = form.getFieldValue("modelLimits") ?? [];
-                                        const dupes = all.filter(
-                                          (entry: { model?: string }) => entry?.model === value,
-                                        );
+                                        const dupes = all.filter((entry: { model?: string }) => entry?.model === value);
                                         if (dupes.length > 1) {
                                           return Promise.reject(new Error("Duplicate model"));
                                         }
@@ -1184,19 +1240,11 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                                 <Form.Item {...restField} name={[name, "rpm"]}>
                                   <InputNumber placeholder="RPM Limit" min={0} />
                                 </Form.Item>
-                                <MinusCircleOutlined
-                                  onClick={() => remove(name)}
-                                  style={{ color: "#ef4444" }}
-                                />
+                                <MinusCircleOutlined onClick={() => remove(name)} style={{ color: "#ef4444" }} />
                               </Space>
                             ))}
                             <Form.Item>
-                              <Button
-                                type="dashed"
-                                onClick={() => add()}
-                                block
-                                icon={<PlusOutlined />}
-                              >
+                              <Button type="dashed" onClick={() => add()} block icon={<PlusOutlined />}>
                                 Add Model Limit
                               </Button>
                             </Form.Item>
@@ -1262,11 +1310,7 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                           {(guardrailsData?.guardrails ?? [])
                             .filter((g) => !g.litellm_params?.default_on)
                             .map((g) => (
-                              <Select.Option
-                                key={g.guardrail_name}
-                                value={g.guardrail_name}
-                                label={g.guardrail_name}
-                              >
+                              <Select.Option key={g.guardrail_name} value={g.guardrail_name} label={g.guardrail_name}>
                                 {g.guardrail_name}
                               </Select.Option>
                             ))}
@@ -1408,15 +1452,44 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                       </AccordionBody>
                     </Accordion>
 
-                    <Form.Item label="Organization" name="organization_id">
+                    <Form.Item
+                      label="Company"
+                      name="cavadalabs_company_id"
+                      tooltip="Teams inherit CavadaLabs tenant context from the selected company."
+                    >
                       <Select
                         allowClear
-                        placeholder="Select an organization"
+                        placeholder="Select a Company"
                         showSearch
                         optionFilterProp="label"
-                        options={userOrganizations.map((org) => ({
-                          value: org.organization_id,
-                          label: org.organization_alias || org.organization_id,
+                        onChange={(companyId) => {
+                          setCompanySelectionChanged(true);
+                          const selectedCompanyId = companyId ?? null;
+                          form.setFieldValue("cavadalabs_company_id", selectedCompanyId);
+
+                          let organizationId: string | null = null;
+                          try {
+                            organizationId = resolveCavadaLabsCompanyCompatibilityOrganizationId(
+                              selectedCompanyId,
+                              cavadalabsCompanies,
+                            );
+                          } catch (error) {
+                            NotificationsManager.fromBackend(
+                              error instanceof Error ? error.message : "Invalid Company mapping",
+                            );
+                            return;
+                          }
+
+                          setOrganization(
+                            organizationId
+                              ? userOrganizations.find((org) => org.organization_id === organizationId) ?? null
+                              : null,
+                          );
+                        }}
+                        options={cavadalabsCompanies.map((company) => ({
+                          value: company.company_id,
+                          label: getCavadaLabsCompanyDisplayName(company),
+                          disabled: !company.litellm_organization_id,
                         }))}
                       />
                     </Form.Item>
@@ -1468,7 +1541,12 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                         <Button onClick={() => setIsEditing(false)} disabled={isTeamSaving}>
                           Cancel
                         </Button>
-                        <Button icon={<SaveOutlined className="h-4 w-4" />} type="primary" htmlType="submit" loading={isTeamSaving}>
+                        <Button
+                          icon={<SaveOutlined className="h-4 w-4" />}
+                          type="primary"
+                          htmlType="submit"
+                          loading={isTeamSaving}
+                        >
                           Save Changes
                         </Button>
                       </div>
@@ -1547,9 +1625,7 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                       {info.metadata?.soft_budget_alerting_emails &&
                         Array.isArray(info.metadata.soft_budget_alerting_emails) &&
                         info.metadata.soft_budget_alerting_emails.length > 0 && (
-                          <div>
-                            Soft Budget Alerting Emails: {info.metadata.soft_budget_alerting_emails.join(", ")}
-                          </div>
+                          <div>Soft Budget Alerting Emails: {info.metadata.soft_budget_alerting_emails.join(", ")}</div>
                         )}
                     </div>
                     <div>
@@ -1567,14 +1643,14 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                     </div>
                     <div>
                       <Text className="font-medium">Router Settings</Text>
-                      {info.router_settings && Object.values(info.router_settings).some(
-                        (v) => v !== null && v !== undefined && v !== "" && !(Array.isArray(v) && v.length === 0)
+                      {info.router_settings &&
+                      Object.values(info.router_settings).some(
+                        (v) => v !== null && v !== undefined && v !== "" && !(Array.isArray(v) && v.length === 0),
                       ) ? (
                         <div className="mt-1 space-y-1">
                           {info.router_settings.routing_strategy && (
                             <div>
-                              Routing Strategy:{" "}
-                              <Badge color="blue">{info.router_settings.routing_strategy}</Badge>
+                              Routing Strategy: <Badge color="blue">{info.router_settings.routing_strategy}</Badge>
                             </div>
                           )}
                           {info.router_settings.num_retries != null && (
@@ -1586,26 +1662,29 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                           {info.router_settings.cooldown_time != null && (
                             <div>Cooldown Time: {info.router_settings.cooldown_time}s</div>
                           )}
-                          {info.router_settings.timeout != null && (
-                            <div>Timeout: {info.router_settings.timeout}s</div>
-                          )}
+                          {info.router_settings.timeout != null && <div>Timeout: {info.router_settings.timeout}s</div>}
                           {info.router_settings.retry_after != null && (
                             <div>Retry After: {info.router_settings.retry_after}s</div>
                           )}
-                          {info.router_settings.fallbacks && Array.isArray(info.router_settings.fallbacks) && info.router_settings.fallbacks.length > 0 && (
-                            <div>Fallbacks: {info.router_settings.fallbacks.length} configured</div>
-                          )}
-                          {info.router_settings.enable_tag_filtering && (
-                            <div>Tag Filtering: Enabled</div>
-                          )}
+                          {info.router_settings.fallbacks &&
+                            Array.isArray(info.router_settings.fallbacks) &&
+                            info.router_settings.fallbacks.length > 0 && (
+                              <div>Fallbacks: {info.router_settings.fallbacks.length} configured</div>
+                            )}
+                          {info.router_settings.enable_tag_filtering && <div>Tag Filtering: Enabled</div>}
                         </div>
                       ) : (
                         <div className="text-gray-400">No router settings configured</div>
                       )}
                     </div>
                     <div>
-                      <Text className="font-medium">Organization ID</Text>
-                      <div>{info.organization_id}</div>
+                      <Text className="font-medium">Company</Text>
+                      <div>
+                        {getCavadaLabsCompanyLabelForCompatibilityOrganization(
+                          cavadalabsCompanies,
+                          info.organization_id,
+                        )}
+                      </div>
                     </div>
                     <div>
                       <Text className="font-medium">Status</Text>
@@ -1622,7 +1701,11 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                     <GuardrailSettingsView
                       globalGuardrailNames={globalGuardrailNames}
                       teamGuardrails={Array.isArray(info.metadata?.guardrails) ? info.metadata.guardrails : []}
-                      optedOutGlobalGuardrails={Array.isArray(info.metadata?.opted_out_global_guardrails) ? info.metadata.opted_out_global_guardrails : []}
+                      optedOutGlobalGuardrails={
+                        Array.isArray(info.metadata?.opted_out_global_guardrails)
+                          ? info.metadata.opted_out_global_guardrails
+                          : []
+                      }
                       killSwitchOn={initialKillSwitchOn}
                       variant="inline"
                       className="pt-4 border-t border-gray-200"
@@ -1643,13 +1726,12 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                         </pre>
                       </div>
                     )}
-
                   </div>
                 )}
               </Card>
             ),
           },
-        ].filter(tab => visibleTabs.includes(tab.key))}
+        ].filter((tab) => visibleTabs.includes(tab.key))}
       />
 
       <MemberModal

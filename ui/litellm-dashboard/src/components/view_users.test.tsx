@@ -1,8 +1,9 @@
 import React from "react";
-import { render, waitFor, screen, fireEvent } from "@testing-library/react";
+import { act, render, waitFor, screen, fireEvent } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ViewUserDashboard from "./view_users";
+import * as Networking from "./networking";
 
 // Mock the networking module
 vi.mock("./networking", () => ({
@@ -44,6 +45,20 @@ vi.mock("./networking", () => ({
   getInternalUserSettings: vi.fn().mockResolvedValue({}),
 }));
 
+vi.mock("./cavadalabs/keyContext", () => ({
+  getCavadaLabsCompanyDisplayName: vi.fn((company) =>
+    company.legal_name ? `${company.legal_name} (${company.company_id})` : company.company_id,
+  ),
+  getCavadaLabsProjectDisplayName: vi.fn((project) =>
+    project.name ? `${project.name} (${project.project_id})` : project.project_id,
+  ),
+  useCavadaLabsKeyContextOptions: vi.fn().mockReturnValue({
+    companies: [{ company_id: "company-1", legal_name: "Acme Corp" }],
+    projects: [{ project_id: "project-1", company_id: "company-1", name: "Support" }],
+    isLoading: false,
+  }),
+}));
+
 // Mock NotificationsManager
 vi.mock("./molecules/notifications_manager", () => ({
   default: {
@@ -51,6 +66,8 @@ vi.mock("./molecules/notifications_manager", () => ({
     fromBackend: vi.fn(),
   },
 }));
+
+const mockUserListCall = vi.mocked(Networking.userListCall);
 
 const createQueryClient = () =>
   new QueryClient({
@@ -151,7 +168,9 @@ describe("ViewUserDashboard", () => {
 
     expect(clickableElement).toBeInTheDocument();
 
-    fireEvent.click(clickableElement);
+    act(() => {
+      fireEvent.click(clickableElement);
+    });
 
     await waitFor(() => {
       expect(screen.getByText("Delete User?")).toBeInTheDocument();
@@ -163,5 +182,57 @@ describe("ViewUserDashboard", () => {
     expect(screen.getByText("user-1")).toBeInTheDocument();
     const emailInstances = screen.getAllByText("test@example.com");
     expect(emailInstances.length).toBeGreaterThan(0);
+  });
+
+  it("should list users with CavadaLabs Company filter without sending legacy Organization scope", async () => {
+    const queryClient = createQueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ViewUserDashboard
+          {...defaultProps}
+          userRole="internal_user_viewer"
+          orgAdminOrgIds={[{ organization_id: "org-legacy", organization_alias: "Legacy Org" }]}
+        />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(mockUserListCall).toHaveBeenCalled();
+    });
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /^filters$/i }));
+    });
+
+    const companySelect = screen.getByRole("combobox", { name: /^company$/i });
+    act(() => {
+      fireEvent.mouseDown(companySelect);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Acme Corp (company-1)")).toBeInTheDocument();
+    });
+
+    act(() => {
+      fireEvent.click(screen.getByText("Acme Corp (company-1)"));
+    });
+
+    await waitFor(() => {
+      expect(mockUserListCall).toHaveBeenCalledWith(
+        "test-token",
+        null,
+        1,
+        25,
+        null,
+        null,
+        null,
+        null,
+        "created_at",
+        "desc",
+        null,
+        ["company-1"],
+        null,
+      );
+    });
   });
 });

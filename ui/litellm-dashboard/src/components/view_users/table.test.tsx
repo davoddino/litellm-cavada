@@ -10,6 +10,8 @@ const defaultFilters = {
   user_role: "",
   sso_user_id: "",
   team: "",
+  cavadalabs_company_id: "",
+  cavadalabs_project_id: "",
   model: "",
   min_spend: null,
   max_spend: null,
@@ -27,6 +29,8 @@ const getDefaultProps = () => ({
   updateFilters: vi.fn(),
   initialFilters: defaultFilters,
   teams: [] as any[],
+  cavadalabsCompanies: [{ company_id: "company-1", legal_name: "Acme Corp" }],
+  cavadalabsProjects: [{ project_id: "project-1", company_id: "company-1", name: "Support" }],
   handleEdit: vi.fn(),
   handleDelete: vi.fn(),
   handleResetPassword: vi.fn(),
@@ -91,6 +95,38 @@ describe("UserDataTable", () => {
     expect(screen.getByRole("button", { name: /Next/i })).toBeInTheDocument();
   });
 
+  it("should render Company and Project filters without Organization when expanded", () => {
+    render(<UserDataTable {...getDefaultProps()} />);
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /^filters$/i }));
+    });
+
+    expect(screen.getByText("Select Company")).toBeInTheDocument();
+    expect(screen.getByText("Select Project")).toBeInTheDocument();
+    expect(screen.queryByText("Select Team")).not.toBeInTheDocument();
+    expect(screen.queryByText("Select Organization")).not.toBeInTheDocument();
+  });
+
+  it("should preserve Team filter for explicit LiteLLM compatibility mode", () => {
+    render(
+      <UserDataTable
+        {...getDefaultProps()}
+        cavadalabsCompanies={[]}
+        cavadalabsProjects={[]}
+        teams={[{ team_id: "team-1", team_alias: "Legacy Team" }]}
+      />,
+    );
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /^filters$/i }));
+    });
+
+    expect(screen.getAllByText("Select Team").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Select Company")).not.toBeInTheDocument();
+    expect(screen.queryByText("Select Project")).not.toBeInTheDocument();
+  });
+
   it("should render all column headers", () => {
     const possibleUIRoles = {
       admin: { ui_label: "Admin" },
@@ -120,13 +156,7 @@ describe("UserDataTable", () => {
   it("should render the user-row Status cell as Active when scim_active is not set to false", () => {
     const possibleUIRoles = { admin: { ui_label: "Admin" } };
     const handlers = { edit: vi.fn(), del: vi.fn(), reset: vi.fn(), click: vi.fn() };
-    const cols = columns(
-      possibleUIRoles,
-      handlers.edit,
-      handlers.del,
-      handlers.reset,
-      handlers.click,
-    );
+    const cols = columns(possibleUIRoles, handlers.edit, handlers.del, handlers.reset, handlers.click);
     const statusCol = cols.find((c) => (c as { id?: string }).id === "status");
     expect(statusCol).toBeDefined();
 

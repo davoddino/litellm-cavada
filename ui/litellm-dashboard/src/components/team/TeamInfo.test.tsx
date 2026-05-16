@@ -11,6 +11,11 @@ vi.mock("@/components/networking", () => ({
   teamMemberAddCall: vi.fn(),
   teamMemberUpdateCall: vi.fn(),
   teamUpdateCall: vi.fn(),
+  vectorStoreListCall: vi.fn().mockResolvedValue({ vector_stores: [] }),
+  fetchMCPServers: vi.fn().mockResolvedValue([]),
+  getPassThroughEndpointsCall: vi.fn().mockResolvedValue({ endpoints: [] }),
+  getAgentsList: vi.fn().mockResolvedValue({ agents: [] }),
+  modelHubCall: vi.fn().mockResolvedValue({ data: [] }),
   getGuardrailsList: vi.fn(),
   getPoliciesList: vi.fn(),
   getPolicyInfoWithGuardrails: vi.fn(),
@@ -34,9 +39,18 @@ vi.mock("@/app/(dashboard)/hooks/teams/useTeams", () => ({
 }));
 
 vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
+  organizationKeys: { all: ["organizations"] },
   useOrganization: vi.fn(),
   useOrganizations: vi.fn().mockReturnValue({ data: [], isLoading: false }),
 }));
+
+vi.mock("@/components/cavadalabs/keyContext", async () => {
+  const actual = await vi.importActual<any>("@/components/cavadalabs/keyContext");
+  return {
+    ...actual,
+    useCavadaLabsKeyContextOptions: vi.fn(),
+  };
+});
 
 vi.mock("@/app/(dashboard)/hooks/users/useCurrentUser", () => ({
   useCurrentUser: vi.fn(),
@@ -59,7 +73,7 @@ vi.mock("@/components/common_components/user_search_modal", () => ({
           Submit
         </button>
       </div>
-    ) : null
+    ) : null,
   ),
 }));
 
@@ -72,7 +86,7 @@ vi.mock("@/components/team/EditMembership", () => ({
           Submit
         </button>
       </div>
-    ) : null
+    ) : null,
   ),
 }));
 
@@ -83,7 +97,7 @@ vi.mock("@/components/common_components/DeleteResourceModal", () => ({
         <button onClick={onCancel}>Cancel</button>
         <button onClick={onOk}>Confirm Delete</button>
       </div>
-    ) : null
+    ) : null,
   ),
 }));
 
@@ -126,12 +140,14 @@ import { useKeys } from "@/app/(dashboard)/hooks/keys/useKeys";
 import { useOrganization } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
 import { useTeam } from "@/app/(dashboard)/hooks/teams/useTeams";
 import { useCurrentUser } from "@/app/(dashboard)/hooks/users/useCurrentUser";
+import { useCavadaLabsKeyContextOptions } from "@/components/cavadalabs/keyContext";
 
 const mockUseAllProxyModels = vi.mocked(useAllProxyModels);
 const mockUseKeys = vi.mocked(useKeys);
 const mockUseTeam = vi.mocked(useTeam);
 const mockUseOrganization = vi.mocked(useOrganization);
 const mockUseCurrentUser = vi.mocked(useCurrentUser);
+const mockUseCavadaLabsKeyContextOptions = vi.mocked(useCavadaLabsKeyContextOptions);
 
 const createMockTeamData = (overrides = {}) => ({
   team_id: "123",
@@ -203,6 +219,22 @@ describe("TeamInfoView", () => {
       data: { models: [] },
       isLoading: false,
     } as any);
+    mockUseCavadaLabsKeyContextOptions.mockReturnValue({
+      companies: [
+        {
+          company_id: "company-1",
+          legal_name: "Acme Spa",
+          litellm_organization_id: "org-1",
+        },
+        {
+          company_id: "company-2",
+          legal_name: "Beta Srl",
+          litellm_organization_id: "org-2",
+        },
+      ],
+      projects: [],
+      isLoading: false,
+    });
     mockUseKeys.mockReturnValue({
       data: { keys: [], total_count: 0, current_page: 1, total_pages: 1 },
       isPending: false,
@@ -264,7 +296,7 @@ describe("TeamInfoView", () => {
           max_budget: 1000,
           spend: 250.5,
           budget_duration: "30d",
-        })
+        }),
       );
 
       renderWithProviders(<TeamInfoView {...defaultProps} />);
@@ -278,7 +310,7 @@ describe("TeamInfoView", () => {
       vi.mocked(networking.teamInfoCall).mockResolvedValue(
         createMockTeamData({
           metadata: { guardrails: ["guardrail1", "guardrail2"] },
-        })
+        }),
       );
 
       renderWithProviders(<TeamInfoView {...defaultProps} />);
@@ -294,7 +326,7 @@ describe("TeamInfoView", () => {
       vi.mocked(networking.teamInfoCall).mockResolvedValue(
         createMockTeamData({
           policies: ["policy1"],
-        })
+        }),
       );
       vi.mocked(networking.getPolicyInfoWithGuardrails).mockResolvedValue({
         resolved_guardrails: ["guardrail1"],
@@ -316,7 +348,7 @@ describe("TeamInfoView", () => {
             tpm_limit: 5000,
             rpm_limit: 50,
           },
-        })
+        }),
       );
 
       renderWithProviders(<TeamInfoView {...defaultProps} />);
@@ -329,10 +361,7 @@ describe("TeamInfoView", () => {
     it("should display virtual keys information", async () => {
       vi.mocked(networking.teamInfoCall).mockResolvedValue({
         ...createMockTeamData(),
-        keys: [
-          { user_id: "user1", token: "key1" },
-          { token: "key2" },
-        ],
+        keys: [{ user_id: "user1", token: "key1" }, { token: "key2" }],
       });
 
       renderWithProviders(<TeamInfoView {...defaultProps} />);
@@ -350,7 +379,7 @@ describe("TeamInfoView", () => {
             mcp_servers: ["server1"],
             vector_stores: ["store1"],
           },
-        })
+        }),
       );
 
       renderWithProviders(<TeamInfoView {...defaultProps} />);
@@ -391,7 +420,7 @@ describe("TeamInfoView", () => {
       vi.mocked(networking.teamInfoCall).mockResolvedValue(createMockTeamData());
 
       renderWithProviders(
-        <TeamInfoView {...defaultProps} editTeam={true} is_team_admin={false} is_proxy_admin={false} />
+        <TeamInfoView {...defaultProps} editTeam={true} is_team_admin={false} is_proxy_admin={false} />,
       );
 
       await waitFor(() => {
@@ -660,7 +689,7 @@ describe("TeamInfoView", () => {
           metadata: {
             secret_manager_settings: { provider: "aws", secret_id: "abc" },
           },
-        })
+        }),
       );
 
       renderWithProviders(<TeamInfoView {...defaultProps} premiumUser={false} />);
@@ -681,7 +710,7 @@ describe("TeamInfoView", () => {
       await user.click(editButton);
 
       const secretField = await screen.findByPlaceholderText(
-        '{"namespace": "admin", "mount": "secret", "path_prefix": "litellm"}'
+        '{"namespace": "admin", "mount": "secret", "path_prefix": "litellm"}',
       );
       expect(secretField).toBeDisabled();
     });
@@ -693,7 +722,7 @@ describe("TeamInfoView", () => {
           metadata: {
             secret_manager_settings: { provider: "aws", secret_id: "abc" },
           },
-        })
+        }),
       );
       vi.mocked(networking.teamUpdateCall).mockResolvedValue({ data: {}, team_id: "123" } as any);
 
@@ -715,7 +744,7 @@ describe("TeamInfoView", () => {
       await user.click(editButton);
 
       const secretField = await screen.findByPlaceholderText(
-        '{"namespace": "admin", "mount": "secret", "path_prefix": "litellm"}'
+        '{"namespace": "admin", "mount": "secret", "path_prefix": "litellm"}',
       );
       expect(secretField).not.toBeDisabled();
     });
@@ -762,7 +791,7 @@ describe("TeamInfoView", () => {
         createMockTeamData({
           soft_budget: 500.75,
           max_budget: 1000,
-        })
+        }),
       );
 
       renderWithProviders(<TeamInfoView {...defaultProps} />);
@@ -785,6 +814,64 @@ describe("TeamInfoView", () => {
       });
     });
 
+    it("should show Company instead of Organization ID in team settings", async () => {
+      const user = userEvent.setup({ delay: null });
+      vi.mocked(networking.teamInfoCall).mockResolvedValue(
+        createMockTeamData({
+          organization_id: "org-1",
+          models: ["gpt-4"],
+        }),
+      );
+
+      renderWithProviders(<TeamInfoView {...defaultProps} />);
+
+      await waitFor(() => {
+        const teamNameElements = screen.queryAllByText("Test Team");
+        expect(teamNameElements.length).toBeGreaterThan(0);
+      });
+
+      await user.click(screen.getByRole("tab", { name: "Settings" }));
+
+      expect(screen.getByText("Company")).toBeInTheDocument();
+      expect(screen.getByText("Acme Spa (company-1)")).toBeInTheDocument();
+      expect(screen.queryByText("Organization ID")).not.toBeInTheDocument();
+      expect(screen.queryByText("org-1")).not.toBeInTheDocument();
+    });
+
+    it("should save compatibility organization_id from selected Company", async () => {
+      const user = userEvent.setup({ delay: null });
+      vi.mocked(networking.teamInfoCall).mockResolvedValue(
+        createMockTeamData({
+          organization_id: "org-1",
+          models: ["gpt-4"],
+        }),
+      );
+      vi.mocked(networking.teamUpdateCall).mockResolvedValue({ data: {}, team_id: "123" } as any);
+
+      renderWithProviders(<TeamInfoView {...defaultProps} />);
+
+      await waitFor(() => {
+        const teamNameElements = screen.queryAllByText("Test Team");
+        expect(teamNameElements.length).toBeGreaterThan(0);
+      });
+
+      await user.click(screen.getByRole("tab", { name: "Settings" }));
+      await user.click(screen.getByRole("button", { name: /edit settings/i }));
+      await user.click(screen.getByRole("combobox", { name: /company/i }));
+      await user.click(screen.getByText("Beta Srl (company-2)"));
+      await user.click(screen.getByRole("button", { name: /save changes/i }));
+
+      await waitFor(() => {
+        expect(networking.teamUpdateCall).toHaveBeenCalledWith(
+          "test-token",
+          expect.objectContaining({
+            organization_id: "org-2",
+            team_id: "123",
+          }),
+        );
+      });
+    });
+
     it("should display soft budget alerting emails in settings view when present", async () => {
       const user = userEvent.setup({ delay: null });
       vi.mocked(networking.teamInfoCall).mockResolvedValue(
@@ -792,7 +879,7 @@ describe("TeamInfoView", () => {
           metadata: {
             soft_budget_alerting_emails: ["alert1@test.com", "alert2@test.com"],
           },
-        })
+        }),
       );
 
       renderWithProviders(<TeamInfoView {...defaultProps} />);
@@ -822,7 +909,7 @@ describe("TeamInfoView", () => {
         createMockTeamData({
           access_group_ids: accessGroupIds,
           models: ["gpt-4"],
-        })
+        }),
       );
       vi.mocked(networking.teamUpdateCall).mockResolvedValue({ data: {}, team_id: "123" } as any);
 
@@ -856,7 +943,7 @@ describe("TeamInfoView", () => {
           expect.objectContaining({
             access_group_ids: accessGroupIds,
             team_id: "123",
-          })
+          }),
         );
       });
     });

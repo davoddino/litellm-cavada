@@ -87,6 +87,8 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams }) => {
   console.log(`currentUser max budget: ${currentUser?.max_budget}`);
   const isAdmin = all_admin_roles.includes(userRole || "");
   const canViewTagUsage = isAdmin || internalUserRoles.includes(userRole || "");
+  const canRequestCavadaLabsUsageFilters = isAdmin || internalUserRoles.includes(userRole || "");
+  const canViewCavadaLabsUsage = isAdmin || cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
 
   // Debounced search for user selector
   const [userSearchInput, setUserSearchInput] = useState("");
@@ -186,7 +188,11 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams }) => {
   }, [accessToken, startTime, endTime]);
 
   useEffect(() => {
-    if (!accessToken || !isAdmin || (usageView !== "company" && usageView !== "project")) {
+    const shouldFetchCavadaLabsUsageFilters =
+      canRequestCavadaLabsUsageFilters && (!isAdmin || usageView === "company" || usageView === "project");
+    if (!accessToken || !shouldFetchCavadaLabsUsageFilters) {
+      setCavadalabsCompanies([]);
+      setCavadalabsProjects([]);
       return;
     }
     let cancelled = false;
@@ -218,7 +224,7 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams }) => {
     return () => {
       cancelled = true;
     };
-  }, [accessToken, isAdmin, usageView]);
+  }, [accessToken, canRequestCavadaLabsUsageFilters, isAdmin, usageView]);
 
   // Try aggregated endpoint first, fall back to paginated on failure
   const aggregatedFetchIdRef = useRef(0);
@@ -487,6 +493,7 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams }) => {
               onChange={(value) => setUsageView(value)}
               isAdmin={isAdmin}
               canViewTagUsage={canViewTagUsage}
+              canViewCavadaLabsUsage={canViewCavadaLabsUsage}
             />
             <AdvancedDatePicker value={dateValue} onValueChange={handleDateChange} />
           </div>

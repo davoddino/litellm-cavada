@@ -56,4 +56,22 @@ describe("stripTagsFromMetadata", () => {
     // Ensure original input is not mutated
     expect(input).toEqual(originalCopy);
   });
+
+  it("removes CavadaLabs key context from spend log metadata while preserving other spend metadata", () => {
+    const input = {
+      spend_logs_metadata: {
+        cavadalabs_company_id: "company-1",
+        cavadalabs_project_id: "project-1",
+        retained_metric: "value",
+      },
+    };
+
+    const result = stripTagsFromMetadata(input);
+
+    expect(result).toEqual({
+      spend_logs_metadata: {
+        retained_metric: "value",
+      },
+    });
+  });
 });

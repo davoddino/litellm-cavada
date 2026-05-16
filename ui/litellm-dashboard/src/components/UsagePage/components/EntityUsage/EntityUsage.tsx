@@ -24,7 +24,7 @@ import {
 } from "@tremor/react";
 import { ExportOutlined, LoadingOutlined } from "@ant-design/icons";
 import { Alert, Button } from "antd";
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import TeamMultiSelect from "../../../common_components/team_multi_select";
 import { ActivityMetrics, processActivityData } from "../../../activity_metrics";
 import { UsageExportHeader } from "../../../EntityUsageExport";
@@ -32,7 +32,9 @@ import type { EntityType } from "../../../EntityUsageExport/types";
 import {
   agentDailyActivityCall,
   cavadalabsCompanyDailyActivityCall,
+  cavadalabsCompanyUsageDiagnosticsCall,
   cavadalabsProjectDailyActivityCall,
+  cavadalabsProjectUsageDiagnosticsCall,
   customerDailyActivityCall,
   organizationDailyActivityCall,
   tagDailyActivityCall,
@@ -77,6 +79,52 @@ interface EntitySpendData {
   };
 }
 
+type CavadaLabsUsageDiagnosticStatus =
+  | "visible"
+  | "backfill_required"
+  | "scoped_backfill_available"
+  | "missing_compatibility_mapping"
+  | "no_attributable_spend"
+  | "filters_exclude_usage";
+
+type CavadaLabsUsageDiagnosticsAction =
+  | "none"
+  | "run_scoped_backfill"
+  | "run_migration_backfill"
+  | "fix_compatibility_mapping";
+
+interface CavadaLabsUsageDiagnostic {
+  entity_type: "company" | "project";
+  entity_id: string;
+  status: CavadaLabsUsageDiagnosticStatus;
+  ledger_rows: number;
+  attributable_spend_logs: number;
+  metadata_spend_logs?: number;
+  compatibility_spend_logs?: number;
+  key_metadata_spend_logs?: number;
+  unmapped_spend_logs?: number;
+  unfiltered_attributable_spend_logs?: number;
+  all_time_attributable_spend_logs?: number;
+  ledger_gap?: number;
+  missing_ledger_rows?: number;
+  recommended_action?: CavadaLabsUsageDiagnosticsAction;
+  scoped_backfill_available?: boolean;
+  filters_exclude_usage?: boolean;
+  date_range_excludes_usage?: boolean;
+  missing_mappings: string[];
+  missing_schema?: string[];
+  message: string;
+}
+
+interface CavadaLabsUsageDiagnosticsResponse {
+  diagnostics: CavadaLabsUsageDiagnostic[];
+  migration_name: string;
+  migration_command: string;
+  schema_status?: "ready" | "missing_schema";
+  migration_status?: "ready" | "schema_missing" | "backfill_pending" | "backfill_required";
+  missing_schema?: string[];
+}
+
 export interface EntityList {
   label: string;
   value: string;
@@ -104,12 +152,139 @@ const ENTITY_FETCH_FNS: Record<EntityType, (...args: any[]) => Promise<any>> = {
   user: userDailyActivityCall,
 };
 
+const cavadalabsEntityLabel = (entityType: "company" | "project") => (entityType === "company" ? "Company" : "Project");
+
+const cavadalabsMissingMappingLabel = (value: string): string => {
+  const normalized = value.toLowerCase();
+  if (normalized.includes("company row")) return "Company record";
+  if (normalized.includes("project row")) return "Project record";
+  if (normalized.includes("litellm_organization_id") || normalized.includes("litellm_team_id")) {
+    return "Company/Project compatibility mapping or key metadata";
+  }
+  if (normalized.includes("project") && normalized.includes("key metadata")) {
+    return "Project compatibility mapping or key metadata";
+  }
+  if (normalized.includes("company") && normalized.includes("key metadata")) {
+    return "Company compatibility mapping or key metadata";
+  }
+  return value
+    .replaceAll("litellm_organization_id", "internal Company mapping")
+    .replaceAll("litellm_team_id", "internal Project mapping");
+};
+
+const cavadalabsUsageDiagnosticSummary = (
+  diagnostics: CavadaLabsUsageDiagnosticsResponse,
+  diagnostic: CavadaLabsUsageDiagnostic,
+) => {
+  const label = cavadalabsEntityLabel(diagnostic.entity_type);
+  const missingSchema = diagnostics.missing_schema ?? diagnostic.missing_schema ?? [];
+  const recommendedAction = diagnostic.recommended_action ?? "none";
+  const details: string[] = [];
+
+  if (diagnostics.schema_status === "missing_schema" || diagnostics.migration_status === "schema_missing") {
+    details.push(...missingSchema.map((item) => `Missing schema: ${item}`));
+    if (diagnostics.migration_command) details.push(`Migration command: ${diagnostics.migration_command}`);
+    return {
+      type: "error" as const,
+      message: "CavadaLabs usage schema is not ready",
+      description: "Run the CavadaLabs Prisma migration before relying on Company/Project usage.",
+      details,
+    };
+  }
+
+  if (diagnostic.status === "scoped_backfill_available" || recommendedAction === "run_scoped_backfill") {
+    details.push(`Attributable SpendLogs: ${diagnostic.attributable_spend_logs ?? 0}`);
+    details.push(`Ledger rows: ${diagnostic.ledger_rows ?? 0}`);
+    details.push(`Ledger gap: ${diagnostic.ledger_gap ?? diagnostic.missing_ledger_rows ?? 0}`);
+    if (typeof diagnostic.metadata_spend_logs === "number")
+      details.push(`Direct metadata rows: ${diagnostic.metadata_spend_logs}`);
+    if (typeof diagnostic.compatibility_spend_logs === "number") {
+      details.push(`Compatibility mapping rows: ${diagnostic.compatibility_spend_logs}`);
+    }
+    if (typeof diagnostic.key_metadata_spend_logs === "number") {
+      details.push(`Key metadata rows: ${diagnostic.key_metadata_spend_logs}`);
+    }
+    return {
+      type: "warning" as const,
+      message: `${label} usage can be repaired`,
+      description:
+        "LiteLLM spend exists for this Company/Project, but the CavadaLabs ledger is empty or partial. Run scoped backfill from the CavadaLabs usage diagnostics view or apply the historical migration.",
+      details,
+    };
+  }
+
+  if (diagnostic.status === "missing_compatibility_mapping" || recommendedAction === "fix_compatibility_mapping") {
+    const missingMappings = diagnostic.missing_mappings.length
+      ? diagnostic.missing_mappings.map(cavadalabsMissingMappingLabel)
+      : ["Company/Project compatibility mapping or key metadata"];
+    details.push(...missingMappings.map((item) => `Missing mapping: ${item}`));
+    if (typeof diagnostic.unmapped_spend_logs === "number")
+      details.push(`Unmapped legacy spend rows: ${diagnostic.unmapped_spend_logs}`);
+    return {
+      type: "error" as const,
+      message: `${label} usage is not attributable`,
+      description:
+        "Legacy LiteLLM spend exists, but it cannot be safely assigned to this Company/Project until key metadata or compatibility mapping is fixed.",
+      details,
+    };
+  }
+
+  if (diagnostic.status === "backfill_required" || recommendedAction === "run_migration_backfill") {
+    details.push(...missingSchema.map((item) => `Missing schema: ${item}`));
+    if (diagnostics.migration_command) details.push(`Migration command: ${diagnostics.migration_command}`);
+    return {
+      type: "warning" as const,
+      message: "Historical usage backfill is required",
+      description: "Run the CavadaLabs usage migration before relying on full-period Company/Project usage.",
+      details,
+    };
+  }
+
+  if (
+    diagnostic.status === "filters_exclude_usage" ||
+    diagnostic.filters_exclude_usage ||
+    diagnostic.date_range_excludes_usage
+  ) {
+    const excludedCount = diagnostic.date_range_excludes_usage
+      ? diagnostic.all_time_attributable_spend_logs
+      : diagnostic.unfiltered_attributable_spend_logs;
+    if (typeof excludedCount === "number")
+      details.push(`Attributable SpendLogs outside current filters: ${excludedCount}`);
+    return {
+      type: "warning" as const,
+      message: `${label} usage is outside the current filters`,
+      description: diagnostic.date_range_excludes_usage
+        ? "Attributable Company/Project spend exists outside the selected date range."
+        : "Attributable Company/Project spend exists, but the current filters exclude it.",
+      details,
+    };
+  }
+
+  if (diagnostic.status === "no_attributable_spend") {
+    return {
+      type: "info" as const,
+      message: `No ${label}-attributable usage`,
+      description:
+        "No CavadaLabs ledger rows, SpendLogs metadata, key metadata, or internal compatibility mapping matched this Company/Project scope.",
+      details,
+    };
+  }
+
+  return {
+    type: "info" as const,
+    message: diagnostic.message,
+    description: "CavadaLabs usage diagnostics returned no action for this Company/Project scope.",
+    details,
+  };
+};
+
 const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, entityId, entityList, dateValue }) => {
   const { teams } = useTeams();
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [topKeysLimit, setTopKeysLimit] = useState<number>(5);
   const [topModelsLimit, setTopModelsLimit] = useState<number>(5);
   const [topAgentsLimit, setTopAgentsLimit] = useState<number>(5);
+  const [usageDiagnostics, setUsageDiagnostics] = useState<CavadaLabsUsageDiagnosticsResponse | null>(null);
 
   const startTime = useMemo(() => (dateValue.from ? new Date(dateValue.from) : null), [dateValue.from]);
   const endTime = useMemo(() => (dateValue.to ? new Date(dateValue.to) : null), [dateValue.to]);
@@ -153,6 +328,56 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
   const modelMetrics = processActivityData(spendData, "models", teams || []);
   const keyMetrics = processActivityData(spendData, "api_keys", teams || []);
   const agentMetrics = entityType === "team" ? processActivityData(agentSpendData, "entities", teams || []) : {};
+  const isCavadaLabsUsageEntity = entityType === "company" || entityType === "project";
+  const selectedCavadaLabsEntityIds = useMemo(
+    () => (isCavadaLabsUsageEntity ? selectedTags : []),
+    [isCavadaLabsUsageEntity, selectedTags],
+  );
+
+  useEffect(() => {
+    let shouldUpdate = true;
+    const totalRequests = spendData?.metadata?.total_api_requests ?? 0;
+    if (
+      !accessToken ||
+      !startTime ||
+      !endTime ||
+      !isCavadaLabsUsageEntity ||
+      selectedCavadaLabsEntityIds.length === 0 ||
+      totalRequests > 0
+    ) {
+      setUsageDiagnostics(null);
+      return () => {
+        shouldUpdate = false;
+      };
+    }
+
+    const diagnosticsCall =
+      entityType === "company" ? cavadalabsCompanyUsageDiagnosticsCall : cavadalabsProjectUsageDiagnosticsCall;
+    diagnosticsCall(accessToken, startTime, endTime, selectedCavadaLabsEntityIds)
+      .then((data) => {
+        if (shouldUpdate) {
+          setUsageDiagnostics(data as CavadaLabsUsageDiagnosticsResponse);
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to fetch CavadaLabs usage diagnostics:", error);
+        if (shouldUpdate) {
+          setUsageDiagnostics(null);
+        }
+      });
+
+    return () => {
+      shouldUpdate = false;
+    };
+  }, [
+    accessToken,
+    endTime,
+    entityType,
+    isCavadaLabsUsageEntity,
+    selectedCavadaLabsEntityIds,
+    spendData?.metadata?.total_api_requests,
+    startTime,
+  ]);
 
   const getTopModels = () => {
     const modelSpend: { [key: string]: any } = {};
@@ -399,14 +624,24 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
   };
 
   const getFilterLabel = (entityType: string) => {
+    if (entityType === "company") return "Filter by Company";
+    if (entityType === "project") return "Filter by Project";
     return `Filter by ${entityType}`;
   };
 
   const getFilterPlaceholder = (entityType: string) => {
+    if (entityType === "company") return "Select Company to filter...";
+    if (entityType === "project") return "Select Project to filter...";
     return `Select ${entityType} to filter...`;
   };
 
   const capitalizedEntityLabel = entityType.charAt(0).toUpperCase() + entityType.slice(1);
+  const actionableDiagnostics = usageDiagnostics?.diagnostics.filter((item) => item.status !== "visible") || [];
+  const primaryDiagnostic = actionableDiagnostics[0];
+  const primaryDiagnosticSummary =
+    usageDiagnostics && primaryDiagnostic
+      ? cavadalabsUsageDiagnosticSummary(usageDiagnostics, primaryDiagnostic)
+      : null;
 
   return (
     <div style={{ width: "100%" }} className="relative">
@@ -501,6 +736,28 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
         filterMode={entityType === "user" ? "single" : "multiple"}
         teams={teams || []}
       />
+      {primaryDiagnosticSummary && (
+        <Alert
+          className="mb-3"
+          type={primaryDiagnosticSummary.type}
+          showIcon
+          message={primaryDiagnosticSummary.message}
+          description={
+            <div>
+              <div>{primaryDiagnosticSummary.description}</div>
+              {primaryDiagnosticSummary.details.length > 0 && (
+                <ul className="mb-0 mt-2 pl-5">
+                  {primaryDiagnosticSummary.details.map((detail) => (
+                    <li key={detail}>
+                      <Text>{detail}</Text>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          }
+        />
+      )}
       <TabGroup>
         <TabList variant="solid" className="mt-1">
           <Tab>Cost</Tab>

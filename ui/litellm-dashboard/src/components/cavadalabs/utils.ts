@@ -12,6 +12,7 @@ export const statusColor = (status: unknown): string => {
     case "generated":
     case "completed":
     case "allow":
+    case "visible":
       return "green";
     case "queued":
     case "pending":
@@ -24,6 +25,10 @@ export const statusColor = (status: unknown): string => {
     case "in_progress":
     case "waiting_customer":
     case "review":
+    case "scoped_backfill_available":
+    case "backfill_required":
+    case "no_attributable_spend":
+    case "filters_exclude_usage":
       return "gold";
     case "disabled":
     case "archived":
@@ -41,6 +46,7 @@ export const statusColor = (status: unknown): string => {
     case "rejected":
     case "block":
     case "prohibited":
+    case "missing_compatibility_mapping":
       return "red";
     case "degraded":
     case "draining":

@@ -22,6 +22,14 @@ from litellm.proxy.cavadalabs.dispatcher import (
     _actor_user_id,
 )
 from litellm.proxy.cavadalabs.prisma_json import serialize_prisma_json_fields
+from litellm.proxy.cavadalabs.usage_backfill import (
+    repair_incomplete_cavadalabs_usage_ledger_from_spend_logs,
+    repair_cavadalabs_usage_ledger_from_spend_logs,
+)
+from litellm.proxy.cavadalabs.usage_schema_readiness import (
+    ensure_cavadalabs_usage_schema_ready,
+    ensure_cavadalabs_usage_repair_schema_ready,
+)
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
     CavadaLabsBillingReportFormat,
     CavadaLabsBillingReportGenerateRequest,
@@ -205,6 +213,12 @@ class CavadaLabsBillingService:
         company = await CavadaLabsDispatcherService(self.prisma_client).get_company(
             data.company_id
         )
+        await ensure_cavadalabs_usage_schema_ready(
+            prisma_client=self.prisma_client,
+            operation="generate_cavadalabs_billing_report",
+            include_key_context=False,
+            include_spend_logs=False,
+        )
         period_start, period_end = _month_range(data.year, data.month)
         company_rows = await self._fetch_many(
             self.db.cavadalabs_requestledgertable,
@@ -214,6 +228,43 @@ class CavadaLabsBillingService:
             },
             order={"created_at": "asc"},
         )
+        if not company_rows:
+            await ensure_cavadalabs_usage_repair_schema_ready(
+                prisma_client=self.prisma_client,
+                operation="repair_empty_cavadalabs_billing_report",
+            )
+            repaired = await repair_cavadalabs_usage_ledger_from_spend_logs(
+                prisma_client=self.prisma_client,
+                entity_id_field="company_id",
+                entity_id=data.company_id,
+                date_range={"gte": period_start, "lt": period_end},
+            )
+            if repaired:
+                company_rows = await self._fetch_many(
+                    self.db.cavadalabs_requestledgertable,
+                    where={
+                        "company_id": data.company_id,
+                        "created_at": {"gte": period_start, "lt": period_end},
+                    },
+                    order={"created_at": "asc"},
+                )
+        else:
+            repaired = await repair_incomplete_cavadalabs_usage_ledger_from_spend_logs(
+                prisma_client=self.prisma_client,
+                entity_id_field="company_id",
+                entity_id=data.company_id,
+                date_range={"gte": period_start, "lt": period_end},
+                current_ledger_count=len(company_rows),
+            )
+            if repaired:
+                company_rows = await self._fetch_many(
+                    self.db.cavadalabs_requestledgertable,
+                    where={
+                        "company_id": data.company_id,
+                        "created_at": {"gte": period_start, "lt": period_end},
+                    },
+                    order={"created_at": "asc"},
+                )
         node_ids = sorted(
             {
                 row["node_id"]

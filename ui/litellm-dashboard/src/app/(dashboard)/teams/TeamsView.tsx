@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "next/navigation";
 import { organizationKeys } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
-import { teamDeleteCall, Organization } from "@/components/networking";
+import { teamDeleteCall, Organization, serverRootPath } from "@/components/networking";
 import { fetchTeams } from "@/components/common_components/fetch_teams";
 import { Form } from "antd";
 import TeamInfoView from "@/components/team/TeamInfo";
@@ -19,6 +20,12 @@ import useFetchTeams from "@/app/(dashboard)/teams/hooks/useFetchTeams";
 import TeamsTable from "@/app/(dashboard)/teams/components/TeamsTable/TeamsTable";
 import DeleteTeamModal from "@/app/(dashboard)/teams/components/modals/DeleteTeamModal";
 import CreateTeamModal from "@/app/(dashboard)/teams/components/modals/CreateTeamModal";
+import {
+  buildTeamsListScopeParams,
+  normalizeTeamsFilterUpdate,
+} from "@/app/(dashboard)/teams/components/teamFilterScope";
+import { useCavadaLabsKeyContextOptions } from "@/components/cavadalabs/keyContext";
+import { buildUiPath } from "@/utils/uiRoutes";
 
 interface TeamProps {
   teams: Team[] | null;
@@ -33,7 +40,8 @@ interface TeamProps {
 interface FilterState {
   team_id: string;
   team_alias: string;
-  organization_id: string;
+  cavadalabs_company_id: string;
+  cavadalabs_project_id: string;
   sort_by: string;
   sort_order: "asc" | "desc";
 }
@@ -56,16 +64,19 @@ const TeamsView: React.FC<TeamProps> = ({
   organizations,
   premiumUser = false,
 }) => {
+  const router = useRouter();
   const queryClient = useQueryClient();
   const [currentOrg, setCurrentOrg] = useState<Organization | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [filters, setFilters] = useState<FilterState>({
     team_id: "",
     team_alias: "",
-    organization_id: "",
+    cavadalabs_company_id: "",
+    cavadalabs_project_id: "",
     sort_by: "created_at",
     sort_order: "desc",
   });
+  const { companies: cavadalabsCompanies, projects: cavadalabsProjects } = useCavadaLabsKeyContextOptions(accessToken);
 
   const [form] = Form.useForm();
   const [memberForm] = Form.useForm();
@@ -84,6 +95,17 @@ const TeamsView: React.FC<TeamProps> = ({
   const [loggingSettings, setLoggingSettings] = useState<any[]>([]);
   const [modelAliases, setModelAliases] = useState<{ [key: string]: string }>({});
   const { lastRefreshed, onRefreshClick: handleRefreshClick } = useFetchTeams({ currentOrg, setTeams });
+  const isCavadaLabsProductContext = cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
+  const canManageCavadaLabsProjects =
+    isCavadaLabsProductContext &&
+    (cavadalabsCompanies.some((company) => company.cavadalabs_can_manage === true) ||
+      cavadalabsProjects.some((project) => project.cavadalabs_can_manage === true));
+  const canCreateOrManageTeams = isCavadaLabsProductContext
+    ? userRole == "Admin" || canManageCavadaLabsProjects
+    : userRole == "Admin" || userRole == "Org Admin";
+  const openCavadaProject = (projectId: string) => {
+    router.push(buildUiPath(`cavadalabs/projects?project_id=${encodeURIComponent(projectId)}`, serverRootPath));
+  };
 
   useEffect(() => {
     const fetchTeamInfo = () => {
@@ -173,17 +195,24 @@ const TeamsView: React.FC<TeamProps> = ({
     return false;
   };
 
-  const handleFilterChange = (key: keyof FilterState, value: string) => {
-    const newFilters = { ...filters, [key]: value };
+  const handleFilterChange = (update: Partial<FilterState>) => {
+    const newFilters = normalizeTeamsFilterUpdate(filters, update, isCavadaLabsProductContext);
+    const scopeParams = buildTeamsListScopeParams(newFilters, isCavadaLabsProductContext);
     setFilters(newFilters);
     // Call teamListCall with the new filters
     if (accessToken) {
       v2TeamListCall(
         accessToken,
-        newFilters.organization_id || null,
         null,
-        newFilters.team_id || null,
-        newFilters.team_alias || null,
+        null,
+        scopeParams.teamId,
+        scopeParams.teamAlias,
+        1,
+        10,
+        newFilters.sort_by || null,
+        newFilters.sort_order || null,
+        scopeParams.cavadalabsCompanyId,
+        scopeParams.cavadalabsProjectId,
       )
         .then((response) => {
           if (response && response.teams) {
@@ -197,20 +226,27 @@ const TeamsView: React.FC<TeamProps> = ({
   };
 
   const handleSortChange = (sortBy: string, sortOrder: "asc" | "desc") => {
-    const newFilters = {
-      ...filters,
-      sort_by: sortBy,
-      sort_order: sortOrder,
-    };
+    const newFilters = normalizeTeamsFilterUpdate(
+      filters,
+      { sort_by: sortBy, sort_order: sortOrder },
+      isCavadaLabsProductContext,
+    );
+    const scopeParams = buildTeamsListScopeParams(newFilters, isCavadaLabsProductContext);
     setFilters(newFilters);
     // Call teamListCall with the new sort parameters
     if (accessToken) {
       v2TeamListCall(
         accessToken,
-        filters.organization_id || null,
         null,
-        filters.team_id || null,
-        filters.team_alias || null,
+        null,
+        scopeParams.teamId,
+        scopeParams.teamAlias,
+        1,
+        10,
+        newFilters.sort_by || null,
+        newFilters.sort_order || null,
+        scopeParams.cavadalabsCompanyId,
+        scopeParams.cavadalabsProjectId,
       )
         .then((response) => {
           if (response && response.teams) {
@@ -224,16 +260,31 @@ const TeamsView: React.FC<TeamProps> = ({
   };
 
   const handleFilterReset = () => {
-    setFilters({
+    const resetFilters = {
       team_id: "",
       team_alias: "",
-      organization_id: "",
+      cavadalabs_company_id: "",
+      cavadalabs_project_id: "",
       sort_by: "created_at",
       sort_order: "desc",
-    });
+    } satisfies FilterState;
+    const scopeParams = buildTeamsListScopeParams(resetFilters, isCavadaLabsProductContext);
+    setFilters(resetFilters);
     // Reset teams list
     if (accessToken) {
-      v2TeamListCall(accessToken, null, userID || null, null, null)
+      v2TeamListCall(
+        accessToken,
+        null,
+        isCavadaLabsProductContext ? null : userID || null,
+        scopeParams.teamId,
+        scopeParams.teamAlias,
+        1,
+        10,
+        resetFilters.sort_by,
+        resetFilters.sort_order,
+        scopeParams.cavadalabsCompanyId,
+        scopeParams.cavadalabsProjectId,
+      )
         .then((response) => {
           if (response && response.teams) {
             setTeams(response.teams);
@@ -249,12 +300,21 @@ const TeamsView: React.FC<TeamProps> = ({
     <div className="w-full mx-4 h-[75vh]">
       <Grid numItems={1} className="gap-2 p-8 w-full mt-2">
         <Col numColSpan={1} className="flex flex-col gap-2">
-          {(userRole == "Admin" || userRole == "Org Admin") && (
-            <Button className="w-fit" onClick={() => setIsTeamModalVisible(true)}>
-              + Create New Team
+          {canCreateOrManageTeams && (
+            <Button
+              className="w-fit"
+              onClick={() => {
+                if (isCavadaLabsProductContext) {
+                  router.push(buildUiPath("cavadalabs/projects", serverRootPath));
+                  return;
+                }
+                setIsTeamModalVisible(true);
+              }}
+            >
+              {isCavadaLabsProductContext ? "+ Create New Project" : "+ Create New Team"}
             </Button>
           )}
-          {selectedTeamId ? (
+          {selectedTeamId && !isCavadaLabsProductContext ? (
             <TeamInfoView
               teamId={selectedTeamId}
               onUpdate={(data) => {
@@ -268,7 +328,6 @@ const TeamsView: React.FC<TeamProps> = ({
                     }
                     return team;
                   });
-                  // Minimal fix: refresh the full team list after an update
                   if (accessToken) {
                     fetchTeams(accessToken, userID, userRole, currentOrg, setTeams);
                   }
@@ -293,10 +352,17 @@ const TeamsView: React.FC<TeamProps> = ({
               premiumUser={premiumUser}
             />
           ) : (
-            <TeamsHeaderTabs lastRefreshed={lastRefreshed} onRefresh={handleRefreshClick} userRole={userRole}>
+            <TeamsHeaderTabs
+              lastRefreshed={lastRefreshed}
+              onRefresh={handleRefreshClick}
+              userRole={userRole}
+              isCavadaLabsProductContext={isCavadaLabsProductContext}
+            >
               <TabPanel>
                 <Text>
-                  Click on &ldquo;Team ID&rdquo; to view team details <b>and</b> manage team members.
+                  {isCavadaLabsProductContext
+                    ? "Project runtime and membership"
+                    : 'Click on "Team ID" to view team details and manage team members.'}
                 </Text>
                 <Grid numItems={1} className="gap-2 pt-2 pb-2 h-[75vh] w-full mt-2">
                   <Col numColSpan={1}>
@@ -305,7 +371,9 @@ const TeamsView: React.FC<TeamProps> = ({
                         <div className="flex flex-col space-y-4">
                           <TeamsFilters
                             filters={filters}
-                            organizations={organizations}
+                            companies={cavadalabsCompanies}
+                            projects={cavadalabsProjects}
+                            isCavadaLabsProductContext={isCavadaLabsProductContext}
                             showFilters={showFilters}
                             onToggleFilters={setShowFilters}
                             onChange={handleFilterChange}
@@ -316,12 +384,16 @@ const TeamsView: React.FC<TeamProps> = ({
                       <TeamsTable
                         teams={teams}
                         currentOrg={currentOrg}
+                        cavadalabsCompanies={cavadalabsCompanies}
+                        cavadalabsProjects={cavadalabsProjects}
+                        isCavadaLabsProductContext={isCavadaLabsProductContext}
                         perTeamInfo={perTeamInfo}
                         userRole={userRole}
                         userId={userID}
                         setSelectedTeamId={setSelectedTeamId}
                         setEditTeam={setEditTeam}
                         onDeleteTeam={handleDelete}
+                        onOpenCavadaProject={openCavadaProject}
                       />
                       {isDeleteModalOpen && (
                         <DeleteTeamModal
@@ -335,23 +407,26 @@ const TeamsView: React.FC<TeamProps> = ({
                   </Col>
                 </Grid>
               </TabPanel>
-              <TabPanel>
-                <AvailableTeamsPanel accessToken={accessToken} userID={userID} />
-              </TabPanel>
-              {isAdminRole(userRole || "") && (
+              {!isCavadaLabsProductContext && (
+                <TabPanel>
+                  <AvailableTeamsPanel accessToken={accessToken} userID={userID} />
+                </TabPanel>
+              )}
+              {isAdminRole(userRole || "") && !isCavadaLabsProductContext && (
                 <TabPanel>
                   <TeamSSOSettings accessToken={accessToken} userID={userID || ""} userRole={userRole || ""} />
                 </TabPanel>
               )}
             </TeamsHeaderTabs>
           )}
-          {(userRole == "Admin" || userRole == "Org Admin") && (
+          {canCreateOrManageTeams && !isCavadaLabsProductContext && (
             <CreateTeamModal
               isTeamModalVisible={isTeamModalVisible}
               handleOk={handleOk}
               handleCancel={handleCancel}
               currentOrg={currentOrg}
               organizations={organizations}
+              cavadalabsCompanies={cavadalabsCompanies}
               teams={teams}
               setTeams={setTeams}
               modelAliases={modelAliases}

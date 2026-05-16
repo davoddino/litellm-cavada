@@ -2,9 +2,26 @@ import { InfoCircleOutlined, UserAddOutlined } from "@ant-design/icons";
 import { useQueryClient } from "@tanstack/react-query";
 import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
 import { Accordion, AccordionBody, AccordionHeader, SelectItem, TextInput } from "@tremor/react";
-import { Alert, Button, Checkbox, Form, Input, Modal, Select, Select as Select2, Space, Tooltip, Typography } from "antd";
+import {
+  Alert,
+  Button,
+  Checkbox,
+  Form,
+  Input,
+  Modal,
+  Select,
+  Select as Select2,
+  Space,
+  Tooltip,
+  Typography,
+} from "antd";
 import React, { useEffect, useMemo, useState } from "react";
 import BulkCreateUsers from "./bulk_create_users_button";
+import {
+  getCavadaLabsCompanyDisplayName,
+  getCavadaLabsProjectDisplayName,
+  useCavadaLabsKeyContextOptions,
+} from "./cavadalabs/keyContext";
 import TeamDropdown from "./common_components/team_dropdown";
 import { getModelDisplayName } from "./key_team_helpers/fetch_available_models_team_key";
 import NotificationsManager from "./molecules/notifications_manager";
@@ -18,6 +35,14 @@ import {
 import OnboardingModal, { InvitationLink } from "./onboarding_link";
 const { Option } = Select;
 const { Text, Link, Title } = Typography;
+
+const normalizeCavadaLabsSelection = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+  }
+  return typeof value === "string" && value.length > 0 ? [value] : [];
+};
+
 // Helper function to generate UUID compatible across all environments
 const generateUUID = (): string => {
   if (typeof crypto !== "undefined" && crypto.randomUUID) {
@@ -66,13 +91,45 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
   const [invitationLinkData, setInvitationLinkData] = useState<InvitationLink | null>(null);
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const { data: organizations = [] } = useOrganizations();
+  const { companies: cavadalabsCompanies, projects: cavadalabsProjects } = useCavadaLabsKeyContextOptions(accessToken);
+  const selectedCavadaLabsCompanyIdsValue = Form.useWatch("cavadalabs_company_ids", form);
+  const selectedCavadaLabsCompanyIds = useMemo(
+    () => normalizeCavadaLabsSelection(selectedCavadaLabsCompanyIdsValue),
+    [selectedCavadaLabsCompanyIdsValue],
+  );
+  const cavadalabsCompanyById = useMemo(
+    () => new Map(cavadalabsCompanies.map((company) => [company.company_id, company])),
+    [cavadalabsCompanies],
+  );
+  const cavadalabsProjectById = useMemo(
+    () => new Map(cavadalabsProjects.map((project) => [project.project_id, project])),
+    [cavadalabsProjects],
+  );
+  const hasCavadaLabsProductContext = cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
+  const filteredCavadaLabsProjects = useMemo(() => {
+    if (selectedCavadaLabsCompanyIds.length === 0) {
+      return cavadalabsProjects;
+    }
+    const selectedCompanyIds = new Set(selectedCavadaLabsCompanyIds);
+    return cavadalabsProjects.filter((project) => selectedCompanyIds.has(project.company_id));
+  }, [cavadalabsProjects, selectedCavadaLabsCompanyIds]);
 
-  // Derive teams from the user's organizations, falling back to the teams prop
-  const availableTeams = useMemo(() => {
-    const orgTeams = organizations.flatMap((org) => org.teams || []);
-    if (orgTeams.length > 0) return orgTeams;
-    return teams || [];
-  }, [organizations, teams]);
+  useEffect(() => {
+    if (!hasCavadaLabsProductContext || selectedCavadaLabsCompanyIds.length === 0) {
+      return;
+    }
+
+    const currentProjectIds = normalizeCavadaLabsSelection(form.getFieldValue("cavadalabs_project_ids"));
+    if (currentProjectIds.length === 0) {
+      return;
+    }
+
+    const allowedProjectIds = new Set(filteredCavadaLabsProjects.map((project) => project.project_id));
+    const nextProjectIds = currentProjectIds.filter((projectId) => allowedProjectIds.has(projectId));
+    if (nextProjectIds.length !== currentProjectIds.length) {
+      form.setFieldValue("cavadalabs_project_ids", nextProjectIds);
+    }
+  }, [filteredCavadaLabsProjects, form, hasCavadaLabsProductContext, selectedCavadaLabsCompanyIds]);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -94,7 +151,7 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
 
     setBaseUrl(getProxyBaseUrl());
     fetchData();
-  }, []);
+  }, [accessToken, userID]);
 
   const handleOk = () => {
     setIsModalVisible(false);
@@ -113,6 +170,19 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
     user_role: string;
     organization_ids?: string[];
     organizations?: string[];
+    team_id?: string;
+    cavadalabs_company_ids?: string[];
+    cavadalabs_company_role?: "company_admin" | "operator" | "viewer";
+    cavadalabs_company_memberships?: Array<{
+      company_id: string;
+      role: "company_admin" | "operator" | "viewer";
+    }>;
+    cavadalabs_project_ids?: string[];
+    cavadalabs_project_role?: "project_admin" | "operator" | "viewer";
+    cavadalabs_project_memberships?: Array<{
+      project_id: string;
+      role: "project_admin" | "operator" | "viewer";
+    }>;
     send_invite_email?: boolean;
   }) => {
     try {
@@ -127,6 +197,43 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
         formValues.organizations = formValues.organization_ids;
         delete formValues.organization_ids;
       }
+      if (!formValues.team_id) {
+        delete formValues.team_id;
+      }
+      const selectedCompanyIds = normalizeCavadaLabsSelection(formValues.cavadalabs_company_ids);
+      if (selectedCompanyIds.length > 0) {
+        formValues.cavadalabs_company_memberships = selectedCompanyIds.map((companyId) => {
+          const company = cavadalabsCompanyById.get(companyId);
+          if (!company) {
+            throw new Error(`Company ${companyId} is not available`);
+          }
+          return {
+            company_id: companyId,
+            role: formValues.cavadalabs_company_role || "viewer",
+          };
+        });
+      }
+      delete formValues.cavadalabs_company_ids;
+      delete formValues.cavadalabs_company_role;
+      const selectedCompanyIdSet = new Set(selectedCompanyIds);
+      const selectedProjectIds = normalizeCavadaLabsSelection(formValues.cavadalabs_project_ids);
+      if (selectedProjectIds.length > 0) {
+        formValues.cavadalabs_project_memberships = selectedProjectIds.map((projectId) => {
+          const project = cavadalabsProjectById.get(projectId);
+          if (!project) {
+            throw new Error(`Project ${projectId} is not available`);
+          }
+          if (selectedCompanyIdSet.size > 0 && !selectedCompanyIdSet.has(project.company_id)) {
+            throw new Error(`Project ${projectId} does not belong to the selected Company`);
+          }
+          return {
+            project_id: projectId,
+            role: formValues.cavadalabs_project_role || "operator",
+          };
+        });
+      }
+      delete formValues.cavadalabs_project_ids;
+      delete formValues.cavadalabs_project_role;
       const response = await userCreateCall(accessToken, null, formValues);
       await queryClient.invalidateQueries({ queryKey: ["userList"] });
       setApiuser(true);
@@ -173,6 +280,60 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
     }
   };
 
+  const renderCavadaLabsMembershipFields = () => {
+    if (!hasCavadaLabsProductContext) {
+      return null;
+    }
+
+    return (
+      <>
+        <Form.Item
+          label="Company"
+          name="cavadalabs_company_ids"
+          help="The user will be granted access through CavadaLabs company membership."
+        >
+          <Select mode="multiple" placeholder="Select Company" style={{ width: "100%" }}>
+            {cavadalabsCompanies.map((company) => (
+              <Option key={company.company_id} value={company.company_id}>
+                {getCavadaLabsCompanyDisplayName(company)}
+              </Option>
+            ))}
+          </Select>
+        </Form.Item>
+
+        <Form.Item label="Company Role" name="cavadalabs_company_role" initialValue="viewer">
+          <Select style={{ width: "100%" }} aria-label="Company Role">
+            <Option value="viewer">Viewer</Option>
+            <Option value="operator">Operator</Option>
+            <Option value="company_admin">Company Admin</Option>
+          </Select>
+        </Form.Item>
+
+        <Form.Item
+          label="Project"
+          name="cavadalabs_project_ids"
+          help="Projects are filtered by the selected Company when one is selected."
+        >
+          <Select mode="multiple" placeholder="Select Project" style={{ width: "100%" }}>
+            {filteredCavadaLabsProjects.map((project) => (
+              <Option key={project.project_id} value={project.project_id}>
+                {getCavadaLabsProjectDisplayName(project)}
+              </Option>
+            ))}
+          </Select>
+        </Form.Item>
+
+        <Form.Item label="Project Role" name="cavadalabs_project_role" initialValue="operator">
+          <Select style={{ width: "100%" }} aria-label="Project Role">
+            <Option value="viewer">Viewer</Option>
+            <Option value="operator">Operator</Option>
+            <Option value="project_admin">Project Admin</Option>
+          </Select>
+        </Form.Item>
+      </>
+    );
+  };
+
   // Modify the return statement to handle embedded mode
   if (isEmbedded) {
     return (
@@ -217,19 +378,19 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
               ))}
           </Select2>
         </Form.Item>
-        <Form.Item label="Team" name="team_id">
-          <TeamDropdown />
-        </Form.Item>
+        {!hasCavadaLabsProductContext && (
+          <Form.Item label="Team" name="team_id">
+            <TeamDropdown />
+          </Form.Item>
+        )}
+
+        {renderCavadaLabsMembershipFields()}
 
         <Form.Item label="Metadata" name="metadata">
           <Input.TextArea rows={4} placeholder="Enter metadata as JSON" />
         </Form.Item>
 
-        <Form.Item
-          label="Send invitation email"
-          name="send_invite_email"
-          valuePropName="checked"
-        >
+        <Form.Item label="Send invitation email" name="send_invite_email" valuePropName="checked">
           <Checkbox />
         </Form.Item>
 
@@ -246,7 +407,9 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
       <Button type="primary" className="mb-0" onClick={() => setIsModalVisible(true)}>
         + Invite User
       </Button>
-      <BulkCreateUsers accessToken={accessToken} teams={teams} possibleUIRoles={possibleUIRoles} />
+      {!hasCavadaLabsProductContext && (
+        <BulkCreateUsers accessToken={accessToken} teams={teams} possibleUIRoles={possibleUIRoles} />
+      )}
       <Modal
         title="Invite User"
         open={isModalVisible}
@@ -288,7 +451,7 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
             label={
               <span>
                 Global Proxy Role{" "}
-                <Tooltip title="This role is independent of any team/org specific roles. Configure Team / Organization Admins in the Settings">
+                <Tooltip title="This role is independent of any team or company-specific roles. Configure Team / Company Admins in the Settings">
                   <InfoCircleOutlined />
                 </Tooltip>
               </span>
@@ -309,37 +472,39 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
             </Select2>
           </Form.Item>
 
-          <Form.Item
-            label="Team"
-            className="gap-2"
-            name="team_id"
-            help="If selected, user will be added as a 'user' role to the team."
-          >
-            <TeamDropdown />
-          </Form.Item>
+          {!hasCavadaLabsProductContext && (
+            <Form.Item
+              label="Team"
+              className="gap-2"
+              name="team_id"
+              help="If selected, user will be added as a 'user' role to the team."
+            >
+              <TeamDropdown />
+            </Form.Item>
+          )}
 
-          <Form.Item
-            label="Organization"
-            name="organization_ids"
-            help="The user will be added to the selected organization(s)."
-          >
-            <Select mode="multiple" placeholder="Select Organization" style={{ width: "100%" }}>
-              {organizations.map((org) => (
-                <Option key={org.organization_id} value={org.organization_id}>
-                  {org.organization_alias} ({org.organization_id})
-                </Option>
-              ))}
-            </Select>
-          </Form.Item>
+          {!hasCavadaLabsProductContext && (
+            <Form.Item
+              label="Organization"
+              name="organization_ids"
+              help="The user will be added to the selected organization(s)."
+            >
+              <Select mode="multiple" placeholder="Select Organization" style={{ width: "100%" }}>
+                {organizations.map((org) => (
+                  <Option key={org.organization_id} value={org.organization_id}>
+                    {org.organization_alias} ({org.organization_id})
+                  </Option>
+                ))}
+              </Select>
+            </Form.Item>
+          )}
+
+          {renderCavadaLabsMembershipFields()}
 
           <Form.Item label="Metadata" name="metadata">
             <Input.TextArea rows={4} placeholder="Enter metadata as JSON" />
           </Form.Item>
-          <Form.Item
-            label="Send invitation email"
-            name="send_invite_email"
-            valuePropName="checked"
-          >
+          <Form.Item label="Send invitation email" name="send_invite_email" valuePropName="checked">
             <Checkbox />
           </Form.Item>
           <Accordion>

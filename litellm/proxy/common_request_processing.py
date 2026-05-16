@@ -40,6 +40,9 @@ from litellm.litellm_core_utils.llm_response_utils.get_headers import (
 from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
 from litellm.proxy._types import ProxyException, UserAPIKeyAuth
 from litellm.proxy.auth.auth_utils import check_response_size_is_safe
+from litellm.proxy.cavadalabs.model_policy_proxy import (
+    apply_cavadalabs_project_model_fallback,
+)
 from litellm.proxy.common_utils.callback_utils import (
     get_logging_caching_headers,
     get_remaining_tokens_and_requests_from_request_data,
@@ -852,8 +855,7 @@ class ProxyBaseLLMRequestProcessing:
         arrival_time = proxy_server_request.get("arrival_time")
         queue_time_seconds = None
         if arrival_time is not None:
-            processing_start_time = time.time()
-            queue_time_seconds = processing_start_time - arrival_time
+            queue_time_seconds = time.time() - arrival_time
 
         # Store queue time in metadata after add_litellm_data_to_request to ensure it's preserved
         if queue_time_seconds is not None:
@@ -873,6 +875,12 @@ class ProxyBaseLLMRequestProcessing:
             or user_model  # model name passed via cli args
             or model  # for azure deployments
             or self.data.get("model", None)  # default passed in http request
+        )
+        await apply_cavadalabs_project_model_fallback(
+            data=self.data,
+            route_type=route_type,
+            user_api_key_dict=user_api_key_dict,
+            llm_router=llm_router,
         )
 
         # override with user settings, these are params passed via cli

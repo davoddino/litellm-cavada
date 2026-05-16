@@ -5,11 +5,13 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query, Request
 
 from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy.cavadalabs.access_control import (
+    require_project_access,
+    require_project_admin_access,
+)
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.management_endpoints.cavadalabs_dispatcher_utils import (
     dispatcher_service,
-    require_admin_view,
-    require_proxy_admin,
 )
 from litellm.proxy.management_helpers.utils import management_endpoint_wrapper
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
@@ -33,10 +35,13 @@ async def create_model_policy(
     http_request: Request,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> CavadaLabsProjectModelPolicyResponse:
-    require_proxy_admin(user_api_key_dict)
-    return await dispatcher_service().create_project_model_policy(
-        data, user_api_key_dict
+    service = dispatcher_service()
+    await require_project_admin_access(
+        service.db,
+        project_id=data.project_id,
+        user_api_key_dict=user_api_key_dict,
     )
+    return await service.create_project_model_policy(data, user_api_key_dict)
 
 
 @router.get(
@@ -51,8 +56,13 @@ async def list_model_policies(
     enabled: Optional[bool] = None,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> CavadaLabsProjectModelPolicyListResponse:
-    require_admin_view(user_api_key_dict)
-    model_policies = await dispatcher_service().list_project_model_policies(
+    service = dispatcher_service()
+    await require_project_access(
+        service.db,
+        project_id=project_id,
+        user_api_key_dict=user_api_key_dict,
+    )
+    model_policies = await service.list_project_model_policies(
         project_id=project_id,
         enabled=enabled,
     )
@@ -73,7 +83,11 @@ async def update_model_policy(
     http_request: Request,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> CavadaLabsProjectModelPolicyResponse:
-    require_proxy_admin(user_api_key_dict)
-    return await dispatcher_service().update_project_model_policy(
-        policy_id, data, user_api_key_dict
+    service = dispatcher_service()
+    policy = await service.get_project_model_policy(policy_id)
+    await require_project_admin_access(
+        service.db,
+        project_id=policy.project_id,
+        user_api_key_dict=user_api_key_dict,
     )
+    return await service.update_project_model_policy(policy_id, data, user_api_key_dict)

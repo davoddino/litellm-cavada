@@ -10,6 +10,7 @@ All /team management endpoints
 """
 
 import asyncio
+import inspect
 import json
 import traceback
 from datetime import datetime, timezone
@@ -72,6 +73,7 @@ from litellm.proxy.auth.auth_checks import (
 )
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.cavadalabs.access_control import (
+    require_company_access,
     resolve_cavadalabs_team_list_filters,
 )
 from litellm.proxy.management_endpoints.common_utils import (
@@ -974,6 +976,36 @@ async def new_team(  # noqa: PLR0915
                         "error": f"Team id = {data.team_id} already exists. Please use a different team id."
                     },
                 )
+
+        if data.cavadalabs_company_id is not None:
+            company = await require_company_access(
+                prisma_client.db,
+                company_id=data.cavadalabs_company_id,
+                user_api_key_dict=user_api_key_dict,
+                require_admin=True,
+            )
+            compatibility_organization_id = company.litellm_organization_id
+            if compatibility_organization_id is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": f"Company '{data.cavadalabs_company_id}' is missing its LiteLLM compatibility organization"
+                    },
+                )
+            if (
+                data.organization_id is not None
+                and data.organization_id != compatibility_organization_id
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "cavadalabs_company_id does not match organization_id compatibility mapping"
+                    },
+                )
+            data.organization_id = compatibility_organization_id
+            if data.metadata is None:
+                data.metadata = {}
+            data.metadata["cavadalabs_company_id"] = data.cavadalabs_company_id
 
         # check org key limits - done here to handle inheriting org id from team
         if data.organization_id is not None and prisma_client is not None:
@@ -3941,6 +3973,57 @@ def _convert_teams_to_response_models(
     return team_list
 
 
+async def _attach_cavadalabs_project_context_to_team_items(
+    *,
+    db: Any,
+    team_list: List[Union[TeamListItem, LiteLLM_TeamTable, LiteLLM_DeletedTeamTable]],
+) -> None:
+    team_items = [team for team in team_list if isinstance(team, TeamListItem)]
+    team_ids = [team.team_id for team in team_items if team.team_id is not None]
+    if not team_ids:
+        return
+
+    try:
+        project_delegate = db.cavadalabs_projecttable
+        find_many = project_delegate.find_many
+    except AttributeError:
+        return
+
+    try:
+        project_rows_result = find_many(where={"litellm_team_id": {"in": team_ids}})
+    except AttributeError:
+        return
+
+    if inspect.isawaitable(project_rows_result):
+        project_rows = await project_rows_result
+    elif isinstance(project_rows_result, list):
+        project_rows = project_rows_result
+    else:
+        return
+
+    projects_by_team_id = {
+        project.litellm_team_id: project
+        for project in project_rows
+        if getattr(project, "litellm_team_id", None) is not None
+    }
+    if not projects_by_team_id:
+        return
+
+    for team in team_items:
+        project = projects_by_team_id.get(team.team_id)
+        if project is None:
+            continue
+        team.cavadalabs_company_id = getattr(project, "company_id", None)
+        team.cavadalabs_project_id = getattr(project, "project_id", None)
+        team.cavadalabs_project_name = getattr(project, "name", None)
+        status_value = getattr(project, "status", None)
+        team.cavadalabs_project_status = (
+            getattr(status_value, "value", status_value)
+            if status_value is not None
+            else None
+        )
+
+
 async def _enforce_list_team_v2_access(
     user_api_key_dict: UserAPIKeyAuth,
     user_id: Optional[str],
@@ -3948,6 +4031,7 @@ async def _enforce_list_team_v2_access(
     prisma_client: Any,
     user_api_key_cache: Any,
     proxy_logging_obj: Any,
+    cavadalabs_scope_authorized: bool = False,
 ) -> Tuple[Optional[str], Optional[List[str]]]:
     """Enforce access control for list_team_v2.
 
@@ -3961,6 +4045,13 @@ async def _enforce_list_team_v2_access(
     org_admin_org_ids: Optional[List[str]] = None
 
     if is_proxy_admin:
+        return user_id, org_admin_org_ids
+
+    if cavadalabs_scope_authorized:
+        # CavadaLabs Company/Project filters have already been authorized by
+        # resolve_cavadalabs_team_list_filters. The resulting organization_id
+        # and team_id are internal LiteLLM compatibility mappings only, so do
+        # not require legacy org_admin membership for this product-scoped path.
         return user_id, org_admin_org_ids
 
     # Always check org admin status so that even own-queries see
@@ -4006,6 +4097,43 @@ async def _enforce_list_team_v2_access(
     return user_id, org_admin_org_ids
 
 
+async def _resolve_cavadalabs_team_list_compat_scope(
+    *,
+    db: Any,
+    user_api_key_dict: UserAPIKeyAuth,
+    cavadalabs_company_id: Optional[str],
+    cavadalabs_project_id: Optional[str],
+    page: int,
+    page_size: int,
+) -> Tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
+    if cavadalabs_company_id is None and cavadalabs_project_id is None:
+        return None, None, None
+
+    cavadalabs_organization_id, cavadalabs_team_id = (
+        await resolve_cavadalabs_team_list_filters(
+            db,
+            user_api_key_dict=user_api_key_dict,
+            cavadalabs_company_id=cavadalabs_company_id,
+            cavadalabs_project_id=cavadalabs_project_id,
+        )
+    )
+    if (cavadalabs_company_id is not None and cavadalabs_organization_id is None) or (
+        cavadalabs_project_id is not None and cavadalabs_team_id is None
+    ):
+        return (
+            cavadalabs_organization_id,
+            cavadalabs_team_id,
+            {
+                "teams": [],
+                "total": 0,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": 0,
+            },
+        )
+    return cavadalabs_organization_id, cavadalabs_team_id, None
+
+
 @router.get(
     "/v2/team/list",
     tags=["team management"],
@@ -4049,6 +4177,14 @@ async def list_team_v2(
     status: Optional[str] = fastapi.Query(
         default=None, description="Filter by status (e.g. 'deleted')"
     ),
+    cavadalabs_company_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Filter teams by CavadaLabs company context.",
+    ),
+    cavadalabs_project_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Filter teams by CavadaLabs project context.",
+    ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
@@ -4086,6 +4222,30 @@ async def list_team_v2(
             detail={"error": f"No db connected. prisma client={prisma_client}"},
         )
 
+    if not isinstance(cavadalabs_company_id, str):
+        cavadalabs_company_id = None
+    if not isinstance(cavadalabs_project_id, str):
+        cavadalabs_project_id = None
+
+    (
+        cavadalabs_organization_id,
+        cavadalabs_team_id,
+        cavadalabs_empty_response,
+    ) = await _resolve_cavadalabs_team_list_compat_scope(
+        db=prisma_client.db,
+        user_api_key_dict=user_api_key_dict,
+        cavadalabs_company_id=cavadalabs_company_id,
+        cavadalabs_project_id=cavadalabs_project_id,
+        page=page,
+        page_size=page_size,
+    )
+    if cavadalabs_empty_response is not None:
+        return cavadalabs_empty_response
+    if cavadalabs_organization_id is not None:
+        organization_id = cavadalabs_organization_id
+    if cavadalabs_team_id is not None:
+        team_id = cavadalabs_team_id
+
     # --- Access control ---
     user_id, org_admin_org_ids = await _enforce_list_team_v2_access(
         user_api_key_dict=user_api_key_dict,
@@ -4094,6 +4254,9 @@ async def list_team_v2(
         prisma_client=prisma_client,
         user_api_key_cache=user_api_key_cache,
         proxy_logging_obj=proxy_logging_obj,
+        cavadalabs_scope_authorized=(
+            cavadalabs_company_id is not None or cavadalabs_project_id is not None
+        ),
     )
 
     if status is not None and status != "deleted":
@@ -4170,6 +4333,11 @@ async def list_team_v2(
 
     # Convert Prisma models to response models with members_count
     team_list = _convert_teams_to_response_models(teams, use_deleted_table)
+    if not use_deleted_table:
+        await _attach_cavadalabs_project_context_to_team_items(
+            db=prisma_client.db,
+            team_list=team_list,
+        )
 
     # Resolve resources inherited from access groups (single batch query)
     if not use_deleted_table:
@@ -4209,6 +4377,9 @@ async def _authorize_and_filter_teams(
     prisma_client: Any,
     user_api_key_cache: Any,
     proxy_logging_obj: Any,
+    organization_id: Optional[str] = None,
+    team_id: Optional[str] = None,
+    cavadalabs_scope_authorized: bool = False,
 ) -> list:
     """
     Authorize the /team/list request and return filtered teams.
@@ -4220,6 +4391,27 @@ async def _authorize_and_filter_teams(
     """
     is_proxy_admin = _user_has_admin_view(user_api_key_dict)
     allowed_org_ids: Optional[List[str]] = None
+
+    if cavadalabs_scope_authorized:
+        where: Dict[str, Any] = {}
+        if organization_id is not None:
+            where["organization_id"] = organization_id
+        if team_id is not None:
+            where["team_id"] = team_id
+        find_many_kwargs: Dict[str, Any] = {"include": {"litellm_model_table": True}}
+        if where:
+            find_many_kwargs["where"] = where
+        scoped_teams = await prisma_client.db.litellm_teamtable.find_many(
+            **find_many_kwargs
+        )
+        if not user_id:
+            return list(scoped_teams)
+        return [
+            team
+            for team in scoped_teams
+            if team.members_with_roles
+            and any(m.get("user_id") == user_id for m in team.members_with_roles)
+        ]
 
     if not is_proxy_admin:
         is_own_query = (
@@ -4363,6 +4555,11 @@ async def list_team(
         prisma_client=prisma_client,
         user_api_key_cache=user_api_key_cache,
         proxy_logging_obj=proxy_logging_obj,
+        organization_id=organization_id,
+        team_id=cavadalabs_team_id,
+        cavadalabs_scope_authorized=(
+            cavadalabs_company_id is not None or cavadalabs_project_id is not None
+        ),
     )
 
     _team_ids = [team.team_id for team in filtered_response]

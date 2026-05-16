@@ -28,6 +28,7 @@ import { columns } from "./view_users/columns";
 import { UserDataTable } from "./view_users/table";
 import { UserInfo } from "./view_users/types";
 import { Skeleton } from "antd";
+import { useCavadaLabsKeyContextOptions } from "./cavadalabs/keyContext";
 
 const { Text, Title } = Typography;
 
@@ -39,7 +40,7 @@ interface ViewUserDashboardProps {
   userID: string | null;
   teams: any[] | null;
   setKeys: React.Dispatch<React.SetStateAction<object[] | null>>;
-  orgAdminOrgIds?: Array<{organization_id: string, organization_alias: string}> | null;
+  orgAdminOrgIds?: Array<{ organization_id: string; organization_alias: string }> | null;
 }
 
 interface FilterState {
@@ -51,6 +52,8 @@ interface FilterState {
   model: string;
   min_spend: number | null;
   max_spend: number | null;
+  cavadalabs_company_id: string;
+  cavadalabs_project_id: string;
   sort_by: string;
   sort_order: "asc" | "desc";
 }
@@ -66,11 +69,20 @@ const initialFilters: FilterState = {
   model: "",
   min_spend: null,
   max_spend: null,
+  cavadalabs_company_id: "",
+  cavadalabs_project_id: "",
   sort_by: "created_at",
   sort_order: "desc",
 };
 
-const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({ accessToken, token, userRole, userID, teams, orgAdminOrgIds }) => {
+const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({
+  accessToken,
+  token,
+  userRole,
+  userID,
+  teams,
+  orgAdminOrgIds,
+}) => {
   const isProxyAdmin = userRole ? isProxyAdminRole(userRole) : false;
   const queryClient = useQueryClient();
   const [currentPage, setCurrentPage] = useState(1);
@@ -89,6 +101,7 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({ accessToken, toke
   const [isBulkEditModalVisible, setIsBulkEditModalVisible] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [userModels, setUserModels] = useState<string[]>([]);
+  const { companies: cavadalabsCompanies, projects: cavadalabsProjects } = useCavadaLabsKeyContextOptions(accessToken);
 
   const handleDelete = (user: UserInfo) => {
     setUserToDelete(user);
@@ -250,6 +263,9 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({ accessToken, toke
     queryKey: ["userList", { debouncedFilter: debouncedFilters, currentPage, orgAdminOrgIds }],
     queryFn: async () => {
       if (!accessToken) throw new Error("Access token required");
+      const hasCavadaLabsScopeFilter = Boolean(
+        debouncedFilters.cavadalabs_company_id || debouncedFilters.cavadalabs_project_id,
+      );
 
       return await userListCall(
         accessToken,
@@ -262,7 +278,9 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({ accessToken, toke
         debouncedFilters.sso_user_id || null,
         debouncedFilters.sort_by,
         debouncedFilters.sort_order,
-        orgAdminOrgIds ? orgAdminOrgIds.map((o) => o.organization_id) : null,
+        !hasCavadaLabsScopeFilter && orgAdminOrgIds ? orgAdminOrgIds.map((o) => o.organization_id) : null,
+        debouncedFilters.cavadalabs_company_id ? [debouncedFilters.cavadalabs_company_id] : null,
+        debouncedFilters.cavadalabs_project_id ? [debouncedFilters.cavadalabs_project_id] : null,
       );
     },
     enabled: Boolean(accessToken && token && userRole && userID),
@@ -289,7 +307,7 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({ accessToken, toke
     },
     handleDelete,
     handleResetPassword,
-    () => { }, // placeholder function, will be overridden in UserDataTable
+    () => {}, // placeholder function, will be overridden in UserDataTable
   );
 
   return (
@@ -305,7 +323,12 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({ accessToken, toke
           ) : userID && accessToken ? (
             <>
               {isProxyAdmin && (
-                <CreateUserButton userID={userID} accessToken={accessToken} teams={teams} possibleUIRoles={possibleUIRoles} />
+                <CreateUserButton
+                  userID={userID}
+                  accessToken={accessToken}
+                  teams={teams}
+                  possibleUIRoles={possibleUIRoles}
+                />
               )}
 
               {isProxyAdmin && (
@@ -319,7 +342,12 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({ accessToken, toke
               )}
 
               {isProxyAdmin && selectionMode && (
-                <Button type="primary" onClick={handleBulkEdit} disabled={selectedUsers.length === 0} className="flex items-center">
+                <Button
+                  type="primary"
+                  onClick={handleBulkEdit}
+                  disabled={selectedUsers.length === 0}
+                  className="flex items-center"
+                >
                   Bulk Edit ({selectedUsers.length} selected)
                 </Button>
               )}
@@ -362,6 +390,8 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({ accessToken, toke
                 updateFilters={updateFilters}
                 initialFilters={initialFilters}
                 teams={teams}
+                cavadalabsCompanies={cavadalabsCompanies}
+                cavadalabsProjects={cavadalabsProjects}
                 userListResponse={userListResponse}
                 currentPage={currentPage}
                 handlePageChange={handlePageChange}
@@ -410,6 +440,8 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({ accessToken, toke
           updateFilters={updateFilters}
           initialFilters={initialFilters}
           teams={teams}
+          cavadalabsCompanies={cavadalabsCompanies}
+          cavadalabsProjects={cavadalabsProjects}
           userListResponse={userListResponse}
           currentPage={currentPage}
           handlePageChange={handlePageChange}
@@ -423,6 +455,8 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({ accessToken, toke
         onCancel={handleEditCancel}
         user={selectedUser}
         onSubmit={handleEditSubmit}
+        cavadalabsCompanies={cavadalabsCompanies}
+        cavadalabsProjects={cavadalabsProjects}
       />
 
       <DeleteResourceModal

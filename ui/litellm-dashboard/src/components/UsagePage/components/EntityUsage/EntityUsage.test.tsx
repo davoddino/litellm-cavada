@@ -19,7 +19,9 @@ vi.mock("../../../networking", () => ({
   teamDailyActivityCall: vi.fn(),
   organizationDailyActivityCall: vi.fn(),
   cavadalabsCompanyDailyActivityCall: vi.fn(),
+  cavadalabsCompanyUsageDiagnosticsCall: vi.fn(),
   cavadalabsProjectDailyActivityCall: vi.fn(),
+  cavadalabsProjectUsageDiagnosticsCall: vi.fn(),
   customerDailyActivityCall: vi.fn(),
   agentDailyActivityCall: vi.fn(),
   userDailyActivityCall: vi.fn(),
@@ -44,7 +46,16 @@ vi.mock("../../../EntityUsageExport/EntityUsageExportModal", () => ({
 }));
 
 vi.mock("../../../EntityUsageExport", () => ({
-  UsageExportHeader: () => <div>Usage Export Header</div>,
+  UsageExportHeader: ({ entityType, filterLabel, filterPlaceholder, onFiltersChange }: any) => (
+    <div>
+      <div>Usage Export Header</div>
+      <div>{filterLabel}</div>
+      <div>{filterPlaceholder}</div>
+      <button type="button" onClick={() => onFiltersChange([`${entityType}-1`])}>
+        Apply {entityType} filter
+      </button>
+    </div>
+  ),
 }));
 
 vi.mock("../../../common_components/team_multi_select", () => ({
@@ -64,7 +75,9 @@ describe("EntityUsage", () => {
   const mockTeamDailyActivityCall = vi.mocked(networking.teamDailyActivityCall);
   const mockOrganizationDailyActivityCall = vi.mocked(networking.organizationDailyActivityCall);
   const mockCavadalabsCompanyDailyActivityCall = vi.mocked(networking.cavadalabsCompanyDailyActivityCall);
+  const mockCavadalabsCompanyUsageDiagnosticsCall = vi.mocked(networking.cavadalabsCompanyUsageDiagnosticsCall);
   const mockCavadalabsProjectDailyActivityCall = vi.mocked(networking.cavadalabsProjectDailyActivityCall);
+  const mockCavadalabsProjectUsageDiagnosticsCall = vi.mocked(networking.cavadalabsProjectUsageDiagnosticsCall);
   const mockCustomerDailyActivityCall = vi.mocked(networking.customerDailyActivityCall);
   const mockAgentDailyActivityCall = vi.mocked(networking.agentDailyActivityCall);
   const mockUserDailyActivityCall = vi.mocked(networking.userDailyActivityCall);
@@ -357,7 +370,9 @@ describe("EntityUsage", () => {
     mockTeamDailyActivityCall.mockClear();
     mockOrganizationDailyActivityCall.mockClear();
     mockCavadalabsCompanyDailyActivityCall.mockClear();
+    mockCavadalabsCompanyUsageDiagnosticsCall.mockClear();
     mockCavadalabsProjectDailyActivityCall.mockClear();
+    mockCavadalabsProjectUsageDiagnosticsCall.mockClear();
     mockCustomerDailyActivityCall.mockClear();
     mockAgentDailyActivityCall.mockClear();
     mockUserDailyActivityCall.mockClear();
@@ -365,7 +380,19 @@ describe("EntityUsage", () => {
     mockTeamDailyActivityCall.mockResolvedValue(mockSpendData);
     mockOrganizationDailyActivityCall.mockResolvedValue(mockSpendData);
     mockCavadalabsCompanyDailyActivityCall.mockResolvedValue(mockSpendData);
+    mockCavadalabsCompanyUsageDiagnosticsCall.mockResolvedValue({
+      diagnostics: [],
+      migration_name: "20260515123000_backfill_cavadalabs_request_ledger_from_spend_logs",
+      migration_command:
+        "uv run prisma migrate deploy --schema litellm-proxy-extras/litellm_proxy_extras/schema.prisma",
+    });
     mockCavadalabsProjectDailyActivityCall.mockResolvedValue(mockSpendData);
+    mockCavadalabsProjectUsageDiagnosticsCall.mockResolvedValue({
+      diagnostics: [],
+      migration_name: "20260515123000_backfill_cavadalabs_request_ledger_from_spend_logs",
+      migration_command:
+        "uv run prisma migrate deploy --schema litellm-proxy-extras/litellm_proxy_extras/schema.prisma",
+    });
     mockCustomerDailyActivityCall.mockResolvedValue(mockSpendData);
     mockAgentDailyActivityCall.mockResolvedValue(mockAgentSpendData);
     mockUserDailyActivityCall.mockResolvedValue(mockSpendData);
@@ -428,6 +455,7 @@ describe("EntityUsage", () => {
     });
 
     expect(screen.getByText("Company Spend Overview")).toBeInTheDocument();
+    expect(screen.getByText("Filter by Company")).toBeInTheDocument();
   });
 
   it("should render with project entity type and call CavadaLabs project usage API", async () => {
@@ -438,6 +466,240 @@ describe("EntityUsage", () => {
     });
 
     expect(screen.getByText("Project Spend Overview")).toBeInTheDocument();
+    expect(screen.getByText("Filter by Project")).toBeInTheDocument();
+  });
+
+  it("should show a Company scoped backfill diagnostic when selected Company usage is empty but attributable spend exists", async () => {
+    const emptyData = {
+      results: [],
+      metadata: {
+        total_spend: 0,
+        total_api_requests: 0,
+        total_successful_requests: 0,
+        total_failed_requests: 0,
+        total_tokens: 0,
+      },
+    };
+    mockCavadalabsCompanyDailyActivityCall.mockResolvedValue(emptyData);
+    mockCavadalabsCompanyUsageDiagnosticsCall.mockResolvedValue({
+      diagnostics: [
+        {
+          entity_type: "company",
+          entity_id: "company-1",
+          status: "scoped_backfill_available",
+          ledger_rows: 0,
+          attributable_spend_logs: 3,
+          metadata_spend_logs: 1,
+          compatibility_spend_logs: 1,
+          key_metadata_spend_logs: 1,
+          ledger_gap: 3,
+          recommended_action: "run_scoped_backfill",
+          scoped_backfill_available: true,
+          missing_mappings: [],
+          message:
+            "Company usage exists in LiteLLM SpendLogs, but no matching CavadaLabs request ledger rows were found.",
+        },
+      ],
+      migration_name: "20260515123000_backfill_cavadalabs_request_ledger_from_spend_logs",
+      migration_command:
+        "uv run prisma migrate deploy --schema litellm-proxy-extras/litellm_proxy_extras/schema.prisma",
+    });
+
+    render(<EntityUsage {...defaultProps} entityType="company" />);
+
+    await waitFor(() => {
+      expect(mockCavadalabsCompanyDailyActivityCall).toHaveBeenCalled();
+    });
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Apply company filter" }));
+    });
+
+    await waitFor(() => {
+      expect(mockCavadalabsCompanyDailyActivityCall).toHaveBeenCalledWith(
+        "test-token",
+        expect.any(Date),
+        expect.any(Date),
+        1,
+        ["company-1"],
+      );
+    });
+    await waitFor(() => {
+      expect(mockCavadalabsCompanyUsageDiagnosticsCall).toHaveBeenCalledWith(
+        "test-token",
+        expect.any(Date),
+        expect.any(Date),
+        ["company-1"],
+      );
+    });
+    expect(screen.getByText("Company usage can be repaired")).toBeInTheDocument();
+    expect(screen.getByText(/Attributable SpendLogs: 3/)).toBeInTheDocument();
+    expect(screen.getByText(/Ledger gap: 3/)).toBeInTheDocument();
+    expect(screen.getByText(/Key metadata rows: 1/)).toBeInTheDocument();
+  });
+
+  it("should show a Project empty-state diagnostic without falling back to global usage", async () => {
+    const emptyData = {
+      results: [],
+      metadata: {
+        total_spend: 0,
+        total_api_requests: 0,
+        total_successful_requests: 0,
+        total_failed_requests: 0,
+        total_tokens: 0,
+      },
+    };
+    mockCavadalabsProjectDailyActivityCall.mockResolvedValue(emptyData);
+    mockCavadalabsProjectUsageDiagnosticsCall.mockResolvedValue({
+      diagnostics: [
+        {
+          entity_type: "project",
+          entity_id: "project-1",
+          status: "no_attributable_spend",
+          ledger_rows: 0,
+          attributable_spend_logs: 0,
+          missing_mappings: [],
+          message: "No CavadaLabs-attributable spend exists for this Project and date range.",
+        },
+      ],
+      migration_name: "20260515123000_backfill_cavadalabs_request_ledger_from_spend_logs",
+      migration_command:
+        "uv run prisma migrate deploy --schema litellm-proxy-extras/litellm_proxy_extras/schema.prisma",
+    });
+
+    render(<EntityUsage {...defaultProps} entityType="project" />);
+
+    await waitFor(() => {
+      expect(mockCavadalabsProjectDailyActivityCall).toHaveBeenCalled();
+    });
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Apply project filter" }));
+    });
+
+    await waitFor(() => {
+      expect(mockCavadalabsProjectDailyActivityCall).toHaveBeenCalledWith(
+        "test-token",
+        expect.any(Date),
+        expect.any(Date),
+        1,
+        ["project-1"],
+      );
+    });
+    await waitFor(() => {
+      expect(mockCavadalabsProjectUsageDiagnosticsCall).toHaveBeenCalledWith(
+        "test-token",
+        expect.any(Date),
+        expect.any(Date),
+        ["project-1"],
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByText("No Project-attributable usage")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/No CavadaLabs ledger rows, SpendLogs metadata, key metadata/i)).toBeInTheDocument();
+  });
+
+  it("should show Company compatibility mapping diagnostics without exposing Organization wording", async () => {
+    const emptyData = {
+      results: [],
+      metadata: {
+        total_spend: 0,
+        total_api_requests: 0,
+        total_successful_requests: 0,
+        total_failed_requests: 0,
+        total_tokens: 0,
+      },
+    };
+    mockCavadalabsCompanyDailyActivityCall.mockResolvedValue(emptyData);
+    mockCavadalabsCompanyUsageDiagnosticsCall.mockResolvedValue({
+      diagnostics: [
+        {
+          entity_type: "company",
+          entity_id: "company-1",
+          status: "missing_compatibility_mapping",
+          ledger_rows: 0,
+          attributable_spend_logs: 0,
+          unmapped_spend_logs: 2,
+          ledger_gap: 0,
+          recommended_action: "fix_compatibility_mapping",
+          scoped_backfill_available: false,
+          missing_mappings: ["litellm_organization_id, project litellm_team_id, or CavadaLabs key metadata"],
+          message: "Missing compatibility mapping.",
+        },
+      ],
+      migration_name: "20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata",
+      migration_command:
+        "uv run prisma migrate deploy --schema litellm-proxy-extras/litellm_proxy_extras/schema.prisma",
+      schema_status: "ready",
+      migration_status: "ready",
+    });
+
+    render(<EntityUsage {...defaultProps} entityType="company" />);
+
+    await waitFor(() => {
+      expect(mockCavadalabsCompanyDailyActivityCall).toHaveBeenCalled();
+    });
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Apply company filter" }));
+    });
+
+    expect(await screen.findByText("Company usage is not attributable")).toBeInTheDocument();
+    expect(screen.getByText(/Unmapped legacy spend rows: 2/)).toBeInTheDocument();
+    expect(screen.getByText(/Company\/Project compatibility mapping or key metadata/)).toBeInTheDocument();
+    expect(screen.queryByText(/organization/i)).not.toBeInTheDocument();
+  });
+
+  it("should show Company usage missing schema diagnostics with migration command", async () => {
+    const emptyData = {
+      results: [],
+      metadata: {
+        total_spend: 0,
+        total_api_requests: 0,
+        total_successful_requests: 0,
+        total_failed_requests: 0,
+        total_tokens: 0,
+      },
+    };
+    mockCavadalabsCompanyDailyActivityCall.mockResolvedValue(emptyData);
+    mockCavadalabsCompanyUsageDiagnosticsCall.mockResolvedValue({
+      diagnostics: [
+        {
+          entity_type: "company",
+          entity_id: "company-1",
+          status: "backfill_required",
+          ledger_rows: 0,
+          attributable_spend_logs: 0,
+          ledger_gap: 0,
+          recommended_action: "run_migration_backfill",
+          scoped_backfill_available: false,
+          missing_mappings: [],
+          missing_schema: ["CavadaLabs_RequestLedgerTable.company_id"],
+          message: "CavadaLabs usage schema is missing.",
+        },
+      ],
+      migration_name: "20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata",
+      migration_command:
+        "uv run prisma migrate deploy --schema litellm-proxy-extras/litellm_proxy_extras/schema.prisma",
+      schema_status: "missing_schema",
+      migration_status: "schema_missing",
+      missing_schema: ["CavadaLabs_RequestLedgerTable.company_id"],
+    });
+
+    render(<EntityUsage {...defaultProps} entityType="company" />);
+
+    await waitFor(() => {
+      expect(mockCavadalabsCompanyDailyActivityCall).toHaveBeenCalled();
+    });
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Apply company filter" }));
+    });
+
+    expect(await screen.findByText("CavadaLabs usage schema is not ready")).toBeInTheDocument();
+    expect(screen.getByText(/Migration command: uv run prisma migrate deploy --schema/)).toBeInTheDocument();
+    expect(screen.getByText(/Missing schema: CavadaLabs_RequestLedgerTable.company_id/)).toBeInTheDocument();
   });
 
   it("should render with customer entity type and call customer API", async () => {

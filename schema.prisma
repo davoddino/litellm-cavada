@@ -205,6 +205,7 @@ model CavadaLabs_CompanyTable {
   updated_by                 String
 
   projects                   CavadaLabs_ProjectTable[]
+  company_members            CavadaLabs_CompanyMemberTable[]
   litellm_organization       LiteLLM_OrganizationTable? @relation(fields: [litellm_organization_id], references: [organization_id])
   chatbots                   CavadaLabs_ChatbotTable[]
   web_tokens                 CavadaLabs_WebTokenTable[]
@@ -246,6 +247,7 @@ model CavadaLabs_ProjectTable {
 
   company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
   litellm_team               LiteLLM_TeamTable? @relation(fields: [litellm_team_id], references: [team_id])
+  project_members            CavadaLabs_ProjectMemberTable[]
   chatbots                   CavadaLabs_ChatbotTable[]
   web_tokens                 CavadaLabs_WebTokenTable[]
   model_policies             CavadaLabs_ProjectModelPolicyTable[]
@@ -264,6 +266,42 @@ model CavadaLabs_ProjectTable {
 
   @@unique([company_id, name])
   @@index([company_id, status])
+}
+
+model CavadaLabs_CompanyMemberTable {
+  membership_id              String   @id @default(uuid())
+  company_id                 String
+  user_id                    String
+  role                       String
+  created_at                 DateTime @default(now()) @map("created_at")
+  created_by                 String?
+  updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                 String?
+
+  company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id], onDelete: Cascade)
+  user                       LiteLLM_UserTable @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
+
+  @@unique([company_id, user_id])
+  @@index([company_id, role])
+  @@index([user_id, role])
+}
+
+model CavadaLabs_ProjectMemberTable {
+  membership_id              String   @id @default(uuid())
+  project_id                 String
+  user_id                    String
+  role                       String
+  created_at                 DateTime @default(now()) @map("created_at")
+  created_by                 String?
+  updated_at                 DateTime @default(now()) @updatedAt @map("updated_at")
+  updated_by                 String?
+
+  project                    CavadaLabs_ProjectTable @relation(fields: [project_id], references: [project_id], onDelete: Cascade)
+  user                       LiteLLM_UserTable @relation(fields: [user_id], references: [user_id], onDelete: Cascade)
+
+  @@unique([project_id, user_id])
+  @@index([project_id, role])
+  @@index([user_id, role])
 }
 
 model CavadaLabs_ChatbotTable {
@@ -1053,6 +1091,8 @@ model LiteLLM_UserTable {
     // relations
     litellm_organization_table LiteLLM_OrganizationTable?                   @relation(fields: [organization_id], references: [organization_id])
     organization_memberships LiteLLM_OrganizationMembership[]
+    cavadalabs_company_memberships CavadaLabs_CompanyMemberTable[]
+    cavadalabs_project_memberships CavadaLabs_ProjectMemberTable[]
     invitations_created LiteLLM_InvitationLink[] @relation("CreatedBy")
     invitations_updated LiteLLM_InvitationLink[] @relation("UpdatedBy")
     invitations_user    LiteLLM_InvitationLink[] @relation("UserId")
@@ -1377,6 +1417,11 @@ model LiteLLM_SpendLogs {
   proxy_server_request Json?     @default("{}")
   @@index([startTime])
   @@index([startTime, request_id])
+  @@index([api_key, startTime])
+  @@index([team_id, startTime])
+  @@index([organization_id, startTime])
+  @@index([model, startTime])
+  @@index([model_group, startTime])
   @@index([end_user])
   @@index([session_id])
 }

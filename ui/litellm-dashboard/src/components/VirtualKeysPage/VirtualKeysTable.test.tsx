@@ -47,6 +47,16 @@ vi.mock("@/app/(dashboard)/hooks/keys/useKeys", () => ({
   useKeys: vi.fn(),
 }));
 
+vi.mock("@/app/(dashboard)/hooks/keys/useKeyAliases", () => ({
+  useInfiniteKeyAliases: vi.fn().mockReturnValue({
+    data: { pages: [{ aliases: ["Test Key Alias"], current_page: 1, total_pages: 1 }] },
+    fetchNextPage: vi.fn(),
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    isLoading: false,
+  }),
+}));
+
 // Mock useFilterLogic hook
 vi.mock("../key_team_helpers/filter_logic", () => ({
   useFilterLogic: vi.fn(),
@@ -211,6 +221,7 @@ beforeEach(() => {
     filteredKeys: [mockKey],
     filteredTotalCount: null,
     allTeams: [mockTeam],
+    allOrganizations: [mockOrganization],
     allCompanies: [{ company_id: "company-1", legal_name: "Acme Srl", status: "active" }],
     allProjects: [{ project_id: "project-1", company_id: "company-1", name: "Support", status: "production" }],
     handleFilterChange: vi.fn(),
@@ -255,10 +266,166 @@ it("should display key information correctly", async () => {
 
   await waitFor(() => {
     expect(screen.getByText("Test Key Alias")).toBeInTheDocument();
-    expect(screen.getByText("Test Team")).toBeInTheDocument();
     expect(screen.getByText("Acme Srl")).toBeInTheDocument();
     expect(screen.getByText("Support")).toBeInTheDocument();
     expect(screen.getByText("5.5000")).toBeInTheDocument();
+  });
+  expect(screen.queryByText("Test Team")).not.toBeInTheDocument();
+});
+
+it("should resolve Company and Project from internal compatibility mappings when Cavada metadata is absent", async () => {
+  const compatibilityKey = {
+    ...mockKey,
+    cavadalabs_company_id: undefined,
+    cavadalabs_project_id: undefined,
+    metadata: {},
+    organization_id: "org-compat",
+    team_id: "team-compat",
+    team_alias: "Compatibility Team",
+  };
+
+  mockUseFilterLogic.mockReturnValue({
+    filters: {
+      "Team ID": "",
+      "Organization ID": "",
+      "Key Alias": "",
+      "User ID": "",
+      "Sort By": "created_at",
+      "Sort Order": "desc",
+    },
+    filteredKeys: [compatibilityKey],
+    filteredTotalCount: null,
+    allTeams: [{ ...mockTeam, team_id: "team-compat", team_alias: "Compatibility Team" }],
+    allOrganizations: [{ ...mockOrganization, organization_id: "org-compat", organization_alias: "Compatibility Org" }],
+    allCompanies: [
+      {
+        company_id: "company-compat",
+        legal_name: "Compatibility Company",
+        litellm_organization_id: "org-compat",
+        status: "active",
+      },
+    ],
+    allProjects: [
+      {
+        project_id: "project-compat",
+        company_id: "company-compat",
+        litellm_team_id: "team-compat",
+        name: "Compatibility Project",
+        status: "production",
+      },
+    ],
+    handleFilterChange: vi.fn(),
+    handleFilterReset: vi.fn(),
+  });
+
+  renderWithProviders(
+    <VirtualKeysTable
+      teams={[{ ...mockTeam, team_id: "team-compat", team_alias: "Compatibility Team" }]}
+      organizations={[]}
+      onSortChange={vi.fn()}
+      currentSort={{ sortBy: "created_at", sortOrder: "desc" }}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByText("Compatibility Company")).toBeInTheDocument();
+    expect(screen.getByText("Compatibility Project")).toBeInTheDocument();
+  });
+  expect(screen.queryByText("org-compat")).not.toBeInTheDocument();
+  expect(screen.queryByText("Compatibility Team")).not.toBeInTheDocument();
+});
+
+it("should show legacy Organization and Team readback when Cavada context is unavailable", async () => {
+  const legacyKey = {
+    ...mockKey,
+    cavadalabs_company_id: undefined,
+    cavadalabs_project_id: undefined,
+    metadata: {},
+    organization_id: "org-1",
+    team_id: "team-1",
+  };
+
+  mockUseKeys.mockReturnValue({
+    data: {
+      keys: [legacyKey],
+      total_count: 1,
+      current_page: 1,
+      total_pages: 1,
+    } as KeysResponse,
+    isPending: false,
+    isFetching: false,
+    refetch: vi.fn(),
+  } as any);
+
+  mockUseFilterLogic.mockReturnValue({
+    filters: {
+      "Team ID": "",
+      "Organization ID": "",
+      "Company ID": "",
+      "Project ID": "",
+      "Key Alias": "",
+      "User ID": "",
+      "Sort By": "created_at",
+      "Sort Order": "desc",
+    },
+    filteredKeys: [legacyKey],
+    filteredTotalCount: null,
+    allTeams: [mockTeam],
+    allOrganizations: [mockOrganization],
+    allCompanies: [],
+    allProjects: [],
+    handleFilterChange: vi.fn(),
+    handleFilterReset: vi.fn(),
+  });
+
+  renderWithProviders(<VirtualKeysTable {...defaultMockProps} />);
+
+  await waitFor(() => {
+    expect(screen.getByText("Organization")).toBeInTheDocument();
+    expect(screen.getByText("Team")).toBeInTheDocument();
+    expect(screen.getByText("Test Organization")).toBeInTheDocument();
+    expect(screen.getByText("Test Team")).toBeInTheDocument();
+  });
+  expect(screen.queryByText("Company")).not.toBeInTheDocument();
+  expect(screen.queryByText("Project")).not.toBeInTheDocument();
+});
+
+it("should surface mismatched Cavada Company and Project metadata in the table", async () => {
+  const mismatchedKey = {
+    ...mockKey,
+    cavadalabs_company_id: "company-1",
+    cavadalabs_project_id: "project-2",
+    metadata: {},
+    organization_id: null,
+    team_id: null,
+  };
+
+  mockUseFilterLogic.mockReturnValue({
+    filters: {
+      "Team ID": "",
+      "Organization ID": "",
+      "Company ID": "",
+      "Project ID": "",
+      "Key Alias": "",
+      "User ID": "",
+      "Sort By": "created_at",
+      "Sort Order": "desc",
+    },
+    filteredKeys: [mismatchedKey],
+    filteredTotalCount: null,
+    allTeams: [],
+    allOrganizations: [],
+    allCompanies: [{ company_id: "company-1", legal_name: "Acme Srl", status: "active" }],
+    allProjects: [{ project_id: "project-2", company_id: "company-2", name: "Billing", status: "production" }],
+    handleFilterChange: vi.fn(),
+    handleFilterReset: vi.fn(),
+  });
+
+  renderWithProviders(<VirtualKeysTable {...defaultMockProps} />);
+
+  await waitFor(() => {
+    expect(screen.getByText("Acme Srl")).toBeInTheDocument();
+    expect(screen.getByText("Project belongs to another Company")).toBeInTheDocument();
   });
 });
 
@@ -398,11 +565,54 @@ it("should render table headers correctly", () => {
   // Check that main headers are rendered (testing the header.isPlaceholder condition path)
   expect(screen.getByText("Key ID")).toBeInTheDocument();
   expect(screen.getByText("Key Alias")).toBeInTheDocument();
-  expect(screen.getByText("Team")).toBeInTheDocument();
   expect(screen.getByText("Company")).toBeInTheDocument();
   expect(screen.getByText("Project")).toBeInTheDocument();
   expect(screen.getByText("Models")).toBeInTheDocument();
   expect(screen.getByText("Spend (USD)")).toBeInTheDocument();
+  expect(screen.queryByText("Team")).not.toBeInTheDocument();
+});
+
+it("should preserve Team column only for explicit LiteLLM compatibility mode", () => {
+  const mockProps = {
+    teams: [mockTeam],
+    organizations: [mockOrganization],
+    onSortChange: vi.fn(),
+    currentSort: {
+      sortBy: "created_at",
+      sortOrder: "desc" as const,
+    },
+    showLiteLLMCompatibilityFields: true,
+  };
+
+  renderWithProviders(<VirtualKeysTable {...mockProps} />);
+
+  expect(screen.getByText("Team")).toBeInTheDocument();
+  expect(screen.getByText("Test Team")).toBeInTheDocument();
+});
+
+it("should expose Company and Project filters without Organization in Virtual Keys", async () => {
+  const mockProps = {
+    teams: [mockTeam],
+    organizations: [mockOrganization],
+    onSortChange: vi.fn(),
+    currentSort: {
+      sortBy: "created_at",
+      sortOrder: "desc" as const,
+    },
+  };
+
+  renderWithProviders(<VirtualKeysTable {...mockProps} />);
+
+  act(() => {
+    fireEvent.click(screen.getByRole("button", { name: /^Filters$/i }));
+  });
+
+  await waitFor(() => {
+    expect(screen.getAllByText("Company")).toHaveLength(2);
+    expect(screen.getAllByText("Project")).toHaveLength(2);
+  });
+  expect(screen.queryByText("Organization ID")).not.toBeInTheDocument();
+  expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
 });
 
 it("should handle column resizing hover events", () => {
@@ -472,11 +682,15 @@ it("should open KeyInfoView when clicking on a key ID button", async () => {
     expect(screen.getByText("Back to Keys")).toBeInTheDocument();
     // KeyInfoHeader shows "Created At" metadata label
     expect(screen.getByText("Created At")).toBeInTheDocument();
+    expect(screen.getByText("Acme Srl (company-1)")).toBeInTheDocument();
+    expect(screen.getByText("Support (project-1)")).toBeInTheDocument();
   });
 
   // Verify that table-specific elements are no longer visible
   // The "Showing X of Y results" text should not be visible when KeyInfoView is open
   expect(screen.queryByText(/Showing.*results/)).not.toBeInTheDocument();
+  expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+  expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
 });
 
 it("should display 'Default Proxy Admin' for user_id when value is 'default_user_id'", async () => {
@@ -560,7 +774,6 @@ it("should display 'Default Proxy Admin' for created_by when value is 'default_u
     expect(defaultProxyAdminElements.length).toBeGreaterThan(0);
   });
 });
-
 
 it("should display created_by_user email in 'Created By' column when available", async () => {
   const keyWithCreatedByUser = {
@@ -826,7 +1039,14 @@ describe("pagination display – total count and page count", () => {
     } as any);
 
     mockUseFilterLogic.mockReturnValue({
-      filters: { "Team ID": "", "Organization ID": "", "Key Alias": "", "User ID": "", "Sort By": "created_at", "Sort Order": "desc" },
+      filters: {
+        "Team ID": "",
+        "Organization ID": "",
+        "Key Alias": "",
+        "User ID": "",
+        "Sort By": "created_at",
+        "Sort Order": "desc",
+      },
       filteredKeys: [mockKey],
       filteredTotalCount: null,
       allTeams: [mockTeam],
@@ -857,7 +1077,14 @@ describe("pagination display – total count and page count", () => {
     } as any);
 
     mockUseFilterLogic.mockReturnValue({
-      filters: { "Team ID": "", "Organization ID": "", "Key Alias": "aaaaa", "User ID": "", "Sort By": "created_at", "Sort Order": "desc" },
+      filters: {
+        "Team ID": "",
+        "Organization ID": "",
+        "Key Alias": "aaaaa",
+        "User ID": "",
+        "Sort By": "created_at",
+        "Sort Order": "desc",
+      },
       filteredKeys: [mockKey],
       filteredTotalCount: 1,
       allTeams: [mockTeam],
@@ -888,7 +1115,14 @@ describe("pagination display – total count and page count", () => {
     } as any);
 
     mockUseFilterLogic.mockReturnValue({
-      filters: { "Team ID": "", "Organization ID": "", "Key Alias": "aaaaa", "User ID": "", "Sort By": "created_at", "Sort Order": "desc" },
+      filters: {
+        "Team ID": "",
+        "Organization ID": "",
+        "Key Alias": "aaaaa",
+        "User ID": "",
+        "Sort By": "created_at",
+        "Sort Order": "desc",
+      },
       filteredKeys: [mockKey],
       filteredTotalCount: 1,
       allTeams: [mockTeam],
@@ -1004,9 +1238,7 @@ describe("Status column reflects key.blocked / scim_blocked metadata", () => {
     renderWithProviders(<VirtualKeysTable {...defaultMockProps} />);
 
     await waitFor(() => {
-      expect(screen.getByTestId(`key-status-${mockKey.token_id}`)).toHaveTextContent(
-        "Active",
-      );
+      expect(screen.getByTestId(`key-status-${mockKey.token_id}`)).toHaveTextContent("Active");
     });
   });
 
@@ -1031,9 +1263,7 @@ describe("Status column reflects key.blocked / scim_blocked metadata", () => {
     renderWithProviders(<VirtualKeysTable {...defaultMockProps} />);
 
     await waitFor(() => {
-      expect(screen.getByTestId(`key-status-${mockKey.token_id}`)).toHaveTextContent(
-        "Blocked",
-      );
+      expect(screen.getByTestId(`key-status-${mockKey.token_id}`)).toHaveTextContent("Blocked");
     });
     expect(screen.queryByText(/Blocked by SCIM/i)).not.toBeInTheDocument();
   });
@@ -1048,9 +1278,7 @@ describe("Status column reflects key.blocked / scim_blocked metadata", () => {
         "Sort By": "created_at",
         "Sort Order": "desc",
       },
-      filteredKeys: [
-        { ...mockKey, blocked: true, metadata: { scim_blocked: true } },
-      ],
+      filteredKeys: [{ ...mockKey, blocked: true, metadata: { scim_blocked: true } }],
       filteredTotalCount: null,
       allTeams: [mockTeam],
       allOrganizations: [mockOrganization],

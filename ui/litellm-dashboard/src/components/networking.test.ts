@@ -112,6 +112,88 @@ describe("loginCall - storeLoginToken integration", () => {
   });
 });
 
+describe("v2TeamListCall", () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("should send CavadaLabs Company and Project filters without legacy Organization parameters", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        teams: [],
+        total: 0,
+        page: 1,
+        page_size: 10,
+        total_pages: 0,
+      }),
+    } as any);
+    global.fetch = mockFetch as any;
+
+    await Networking.v2TeamListCall("token-1", null, null, null, null, 1, 10, null, null, "company-1", "project-1");
+
+    const requestedUrl = mockFetch.mock.calls[0][0] as string;
+    expect(requestedUrl).toContain("cavadalabs_company_id=company-1");
+    expect(requestedUrl).toContain("cavadalabs_project_id=project-1");
+    expect(requestedUrl).not.toContain("organization_id=");
+  });
+});
+
+describe("keyListCall", () => {
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("should send CavadaLabs Company and Project filters without legacy Organization parameters", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({
+        keys: [],
+        total_count: 0,
+        current_page: 1,
+        total_pages: 0,
+      }),
+    } as any);
+    global.fetch = mockFetch as any;
+
+    await Networking.keyListCall(
+      "token-1",
+      null,
+      null,
+      null,
+      null,
+      null,
+      1,
+      10,
+      null,
+      null,
+      null,
+      null,
+      "company-1",
+      "project-1",
+    );
+
+    const requestedUrl = new URL(mockFetch.mock.calls[0][0] as string, "http://example.com");
+    expect(requestedUrl.pathname).toBe("/key/list");
+    expect(requestedUrl.searchParams.get("cavadalabs_company_id")).toBe("company-1");
+    expect(requestedUrl.searchParams.get("cavadalabs_project_id")).toBe("project-1");
+    expect(requestedUrl.searchParams.has("organization_id")).toBe(false);
+    expect(requestedUrl.searchParams.has("team_id")).toBe(false);
+  });
+});
+
 describe("daily activity helpers", () => {
   const startTime = new Date("2025-02-12T00:00:00.000Z");
   const endTime = new Date("2025-02-19T00:00:00.000Z");
@@ -178,6 +260,58 @@ describe("daily activity helpers", () => {
     expect(companyUrl.searchParams.get("company_ids")).toBe("company-1");
     expect(projectUrl.pathname).toBe("/cavadalabs/projects/daily/activity");
     expect(projectUrl.searchParams.get("project_ids")).toBe("project-1,project-2");
+  });
+
+  it("should build CavadaLabs Company and Project usage diagnostics URLs", async () => {
+    const mockFetch = setupSuccessfulFetch();
+
+    await Networking.cavadalabsCompanyUsageDiagnosticsCall("token", startTime, endTime, ["company-1"]);
+    await Networking.cavadalabsProjectUsageDiagnosticsCall("token", startTime, endTime, ["project-1", "project-2"]);
+
+    const companyUrl = new URL(mockFetch.mock.calls[0][0] as string, "http://example.com");
+    const projectUrl = new URL(mockFetch.mock.calls[1][0] as string, "http://example.com");
+
+    expect(companyUrl.pathname).toBe("/cavadalabs/companies/usage/diagnostics");
+    expect(companyUrl.searchParams.get("company_ids")).toBe("company-1");
+    expect(companyUrl.searchParams.has("page")).toBe(false);
+    expect(projectUrl.pathname).toBe("/cavadalabs/projects/usage/diagnostics");
+    expect(projectUrl.searchParams.get("project_ids")).toBe("project-1,project-2");
+    expect(projectUrl.searchParams.has("page")).toBe(false);
+  });
+
+  it("should return actionable CavadaLabs missing schema diagnostics instead of throwing a generic empty state", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      json: vi.fn().mockResolvedValue({
+        detail: {
+          error: "CavadaLabs usage schema is missing",
+          schema_status: "missing_schema",
+          migration_status: "schema_missing",
+          missing_schema: ["CavadaLabs_RequestLedgerTable.company_id"],
+          migration_name: "20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata",
+          migration_command:
+            "uv run prisma migrate deploy --schema litellm-proxy-extras/litellm_proxy_extras/schema.prisma",
+          migration_names: ["20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata"],
+          migration_plan: [
+            {
+              name: "20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata",
+              purpose: "Backfills historical SpendLogs from key Company/Project metadata.",
+            },
+          ],
+        },
+      }),
+    } as any);
+    global.fetch = mockFetch as any;
+
+    const diagnostics = await Networking.cavadalabsCompanyUsageDiagnosticsCall("token", startTime, endTime, [
+      "company-1",
+    ]);
+
+    expect(diagnostics.schema_status).toBe("missing_schema");
+    expect(diagnostics.migration_status).toBe("schema_missing");
+    expect(diagnostics.missing_schema).toEqual(["CavadaLabs_RequestLedgerTable.company_id"]);
+    expect(diagnostics.migration_command).toContain("prisma migrate deploy");
+    expect(diagnostics.diagnostics).toEqual([]);
   });
 });
 

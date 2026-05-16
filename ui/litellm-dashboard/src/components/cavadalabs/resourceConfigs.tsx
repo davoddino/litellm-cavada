@@ -5,7 +5,12 @@ import {
   PlayCircleOutlined,
   UnlockOutlined,
 } from "@ant-design/icons";
-import type { CavadaLabsFieldConfig, CavadaLabsResourceConfig, CavadaLabsRuntimeContext } from "./types";
+import type {
+  CavadaLabsFieldConfig,
+  CavadaLabsRecord,
+  CavadaLabsResourceConfig,
+  CavadaLabsRuntimeContext,
+} from "./types";
 import { enumOptions, toOptions } from "./utils";
 
 const status = {
@@ -87,7 +92,18 @@ const collectionField = (collectionOptions: ReturnType<typeof toOptions>, requir
 export const buildCavadaLabsResourceConfigs = (
   context: CavadaLabsRuntimeContext,
 ): Record<string, CavadaLabsResourceConfig> => {
+  const hasExplicitManageFlag = (rows: CavadaLabsRecord[]): boolean =>
+    rows.some((row) => typeof row.cavadalabs_can_manage === "boolean");
+  const canManage = (row: CavadaLabsRecord): boolean => row.cavadalabs_can_manage !== false;
+  const canCreateFor = (rows: CavadaLabsRecord[]): boolean => {
+    if (!hasExplicitManageFlag(rows)) return true;
+    return rows.some((row) => row.cavadalabs_can_manage === true);
+  };
+  const manageableCompanies = hasExplicitManageFlag(context.companies)
+    ? context.companies.filter((company) => company.cavadalabs_can_manage === true)
+    : context.companies;
   const companyOptions = toOptions(context.companies, "company_id", "legal_name");
+  const manageableCompanyOptions = toOptions(manageableCompanies, "company_id", "legal_name");
   const projectOptions = toOptions(context.projects, "project_id", "name");
   const chatbotOptions = toOptions(context.chatbots, "chatbot_id", "name");
   const collectionOptions = toOptions(context.ragCollections, "collection_id", "name");
@@ -117,6 +133,7 @@ export const buildCavadaLabsResourceConfigs = (
       createLabel: "New company",
       updatePath: (row) => `/cavadalabs/companies/${row.company_id}`,
       updateLabel: "Edit company",
+      canUpdate: canManage,
       filters: [{ name: "status", label: "Status", type: "select", options: status.company }],
       createFields: [
         { name: "legal_name", label: "Legal name", type: "text", required: true },
@@ -163,6 +180,7 @@ export const buildCavadaLabsResourceConfigs = (
           confirmDescription:
             "The company will be marked archived. Existing linked audit and billing history is preserved.",
           request: (row) => ({ method: "DELETE", path: `/cavadalabs/companies/${row.company_id}` }),
+          hidden: (row) => !canManage(row),
         },
       ],
     },
@@ -174,11 +192,13 @@ export const buildCavadaLabsResourceConfigs = (
       rowKey: "project_id",
       createPath: "/cavadalabs/projects",
       createLabel: "New project",
+      canCreate: (runtimeContext) => canCreateFor(runtimeContext.companies),
       updatePath: (row) => `/cavadalabs/projects/${row.project_id}`,
       updateLabel: "Edit project",
+      canUpdate: canManage,
       filters: [companyFilter, { name: "status", label: "Status", type: "select", options: status.project }],
       createFields: [
-        companyField(companyOptions),
+        companyField(manageableCompanyOptions),
         { name: "name", label: "Name", type: "text", required: true },
         { name: "status", label: "Status", type: "select", options: status.project, defaultValue: "dev" },
         { name: "budget", label: "Budget", type: "number", min: 0, step: 0.01 },
@@ -231,6 +251,7 @@ export const buildCavadaLabsResourceConfigs = (
           confirmDescription:
             "The project will be marked archived. Existing runtime, billing, and compliance history is preserved.",
           request: (row) => ({ method: "DELETE", path: `/cavadalabs/projects/${row.project_id}` }),
+          hidden: (row) => !canManage(row),
         },
       ],
     },
@@ -242,6 +263,7 @@ export const buildCavadaLabsResourceConfigs = (
       rowKey: "chatbot_id",
       createPath: "/cavadalabs/chatbots",
       createLabel: "New chatbot",
+      canCreate: () => false,
       filters: [
         companyFilter,
         projectFilter,
@@ -331,6 +353,8 @@ export const buildCavadaLabsResourceConfigs = (
       columns: [
         { key: "name", title: "Name", type: "text", width: 180 },
         { key: "web_token_id", title: "Token ID", type: "id", width: 220 },
+        { key: "company_id", title: "Company", type: "id", width: 220 },
+        { key: "project_id", title: "Project", type: "id", width: 220 },
         { key: "token_prefix", title: "Prefix", type: "text", width: 100 },
         { key: "chatbot_id", title: "Chatbot", type: "id", width: 220 },
         { key: "status", title: "Status", type: "status", width: 110 },
@@ -691,9 +715,10 @@ export const buildCavadaLabsResourceConfigs = (
       rowKey: "report_id",
       createPath: "/cavadalabs/billing-reports",
       createLabel: "Generate report",
+      canCreate: (runtimeContext) => canCreateFor(runtimeContext.companies),
       filters: [companyFilter],
       createFields: [
-        companyField(companyOptions),
+        companyField(manageableCompanyOptions),
         {
           name: "year",
           label: "Year",

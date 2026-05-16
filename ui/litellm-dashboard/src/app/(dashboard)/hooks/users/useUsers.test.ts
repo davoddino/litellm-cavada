@@ -10,6 +10,11 @@ vi.mock("@/components/networking", () => ({
   userListCall: vi.fn(),
 }));
 
+const mockUseCavadaLabsKeyContextOptions = vi.fn();
+vi.mock("@/components/cavadalabs/keyContext", () => ({
+  useCavadaLabsKeyContextOptions: () => mockUseCavadaLabsKeyContextOptions(),
+}));
+
 vi.mock("../common/queryKeysFactory", () => ({
   createQueryKeys: vi.fn((resource: string) => ({
     all: [resource],
@@ -36,11 +41,7 @@ const DEFAULT_AUTH = {
   showSSOBanner: false,
 };
 
-const buildUserListResponse = (
-  page: number,
-  totalPages: number,
-  userCount = 2,
-): UserListResponse => ({
+const buildUserListResponse = (page: number, totalPages: number, userCount = 2): UserListResponse => ({
   page,
   page_size: 50,
   total: totalPages * userCount,
@@ -73,6 +74,12 @@ describe("useInfiniteUsers", () => {
     });
     vi.clearAllMocks();
     mockUseAuthorized.mockReturnValue(DEFAULT_AUTH);
+    mockUseCavadaLabsKeyContextOptions.mockReturnValue({
+      companies: [],
+      projects: [],
+      isLoading: false,
+      errorDetail: null,
+    });
   });
 
   const wrapper = ({ children }: { children: ReactNode }) =>
@@ -90,13 +97,7 @@ describe("useInfiniteUsers", () => {
 
     expect(result.current.data?.pages).toHaveLength(1);
     expect(result.current.data?.pages[0]).toEqual(mockResponse);
-    expect(userListCall).toHaveBeenCalledWith(
-      "test-access-token",
-      null,
-      1,
-      50,
-      null,
-    );
+    expect(userListCall).toHaveBeenCalledWith("test-access-token", null, 1, 50, null);
   });
 
   it("should use the default page size of 50", async () => {
@@ -109,13 +110,7 @@ describe("useInfiniteUsers", () => {
       expect(result.current.isSuccess).toBe(true);
     });
 
-    expect(userListCall).toHaveBeenCalledWith(
-      "test-access-token",
-      null,
-      1,
-      50,
-      null,
-    );
+    expect(userListCall).toHaveBeenCalledWith("test-access-token", null, 1, 50, null);
   });
 
   it("should use a custom page size when provided", async () => {
@@ -131,13 +126,7 @@ describe("useInfiniteUsers", () => {
       expect(result.current.isSuccess).toBe(true);
     });
 
-    expect(userListCall).toHaveBeenCalledWith(
-      "test-access-token",
-      null,
-      1,
-      customPageSize,
-      null,
-    );
+    expect(userListCall).toHaveBeenCalledWith("test-access-token", null, 1, customPageSize, null);
   });
 
   it("should pass searchEmail to userListCall when provided", async () => {
@@ -153,13 +142,7 @@ describe("useInfiniteUsers", () => {
       expect(result.current.isSuccess).toBe(true);
     });
 
-    expect(userListCall).toHaveBeenCalledWith(
-      "test-access-token",
-      null,
-      1,
-      50,
-      searchEmail,
-    );
+    expect(userListCall).toHaveBeenCalledWith("test-access-token", null, 1, 50, searchEmail);
   });
 
   it("should pass null for searchEmail when not provided", async () => {
@@ -174,13 +157,7 @@ describe("useInfiniteUsers", () => {
       expect(result.current.isSuccess).toBe(true);
     });
 
-    expect(userListCall).toHaveBeenCalledWith(
-      "test-access-token",
-      null,
-      1,
-      50,
-      null,
-    );
+    expect(userListCall).toHaveBeenCalledWith("test-access-token", null, 1, 50, null);
   });
 
   it("should fetch the next page when more pages are available", async () => {
@@ -209,13 +186,7 @@ describe("useInfiniteUsers", () => {
 
     expect(result.current.data?.pages[1]).toEqual(page2);
     expect(userListCall).toHaveBeenCalledTimes(2);
-    expect(userListCall).toHaveBeenLastCalledWith(
-      "test-access-token",
-      null,
-      2,
-      50,
-      null,
-    );
+    expect(userListCall).toHaveBeenLastCalledWith("test-access-token", null, 2, 50, null);
   });
 
   it("should not have a next page when on the last page", async () => {
@@ -259,6 +230,29 @@ describe("useInfiniteUsers", () => {
     expect(userListCall).not.toHaveBeenCalled();
   });
 
+  it("should execute query for internal users with CavadaLabs Company or Project scope", async () => {
+    const mockResponse = buildUserListResponse(1, 1);
+    (userListCall as any).mockResolvedValue(mockResponse);
+    mockUseAuthorized.mockReturnValue({
+      ...DEFAULT_AUTH,
+      userRole: "internal_user",
+    });
+    mockUseCavadaLabsKeyContextOptions.mockReturnValue({
+      companies: [{ company_id: "company-1", legal_name: "Acme" }],
+      projects: [{ project_id: "project-1", company_id: "company-1", name: "Support" }],
+      isLoading: false,
+      errorDetail: null,
+    });
+
+    const { result } = renderHook(() => useInfiniteUsers(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBe(true);
+    });
+
+    expect(userListCall).toHaveBeenCalledWith("test-access-token", null, 1, 50, null);
+  });
+
   it("should not execute query when both accessToken and userRole are invalid", async () => {
     mockUseAuthorized.mockReturnValue({
       ...DEFAULT_AUTH,
@@ -275,13 +269,7 @@ describe("useInfiniteUsers", () => {
   });
 
   it("should execute query for each admin role", async () => {
-    const adminRoles = [
-      "Admin",
-      "Admin Viewer",
-      "proxy_admin",
-      "proxy_admin_viewer",
-      "org_admin",
-    ];
+    const adminRoles = ["Admin", "Admin Viewer", "proxy_admin", "proxy_admin_viewer", "org_admin"];
 
     for (const role of adminRoles) {
       vi.clearAllMocks();
@@ -328,12 +316,6 @@ describe("useInfiniteUsers", () => {
       expect(result.current.isSuccess).toBe(true);
     });
 
-    expect(userListCall).toHaveBeenCalledWith(
-      "test-access-token",
-      null,
-      1,
-      50,
-      null,
-    );
+    expect(userListCall).toHaveBeenCalledWith("test-access-token", null, 1, 50, null);
   });
 });

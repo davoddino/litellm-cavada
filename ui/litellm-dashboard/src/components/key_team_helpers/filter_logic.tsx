@@ -2,11 +2,13 @@ import { useCallback, useEffect, useState, useRef } from "react";
 import { KeyResponse } from "../key_team_helpers/key_list";
 import { keyListCall } from "../networking";
 import { Team } from "../key_team_helpers/key_list";
-import { fetchAllTeams } from "./filter_helpers";
+import { fetchAllOrganizations, fetchAllTeams } from "./filter_helpers";
 import { debounce } from "lodash";
 import { defaultPageSize } from "../constants";
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import {
+  findCavadaLabsCompanyForCompatibilityOrganization,
+  findCavadaLabsProjectForCompatibilityTeam,
   getKeyCavadaLabsCompanyId,
   getKeyCavadaLabsProjectId,
   useCavadaLabsKeyContextOptions,
@@ -14,27 +16,57 @@ import {
 
 export interface FilterState {
   "Team ID": string;
+  "Organization ID": string;
   "Company ID": string;
   "Project ID": string;
   "Key Alias": string;
+  "Key Hash"?: string;
   [key: string]: string;
   "User ID": string;
   "Sort By": string;
   "Sort Order": string;
 }
 
-export function useFilterLogic({
-  keys,
-  teams,
-}: {
-  keys: KeyResponse[];
-  teams: Team[] | null;
-}) {
+const keyMatchesCavadaLabsCompany = (
+  key: KeyResponse,
+  companyId: string,
+  companies: ReturnType<typeof useCavadaLabsKeyContextOptions>["companies"],
+) => {
+  const explicitCompanyId = getKeyCavadaLabsCompanyId(key);
+  if (explicitCompanyId) {
+    return explicitCompanyId === companyId;
+  }
+
+  const compatibilityOrganizationId = key.organization_id ?? (key as any).org_id ?? null;
+  const compatibilityCompany = findCavadaLabsCompanyForCompatibilityOrganization(
+    companies,
+    compatibilityOrganizationId,
+  );
+  return compatibilityCompany?.company_id === companyId;
+};
+
+const keyMatchesCavadaLabsProject = (
+  key: KeyResponse,
+  projectId: string,
+  projects: ReturnType<typeof useCavadaLabsKeyContextOptions>["projects"],
+) => {
+  const explicitProjectId = getKeyCavadaLabsProjectId(key);
+  if (explicitProjectId) {
+    return explicitProjectId === projectId;
+  }
+
+  const compatibilityProject = findCavadaLabsProjectForCompatibilityTeam(projects, key.team_id);
+  return compatibilityProject?.project_id === projectId;
+};
+
+export function useFilterLogic({ keys, teams }: { keys: KeyResponse[]; teams: Team[] | null }) {
   const defaultFilters: FilterState = {
     "Team ID": "",
+    "Organization ID": "",
     "Company ID": "",
     "Project ID": "",
     "Key Alias": "",
+    "Key Hash": "",
     "User ID": "",
     "Sort By": "created_at",
     "Sort Order": "desc",
@@ -43,6 +75,9 @@ export function useFilterLogic({
   const { companies: allCompanies, projects: allProjects } = useCavadaLabsKeyContextOptions(accessToken);
   const [filters, setFilters] = useState<FilterState>(defaultFilters);
   const [allTeams, setAllTeams] = useState<Team[]>(teams || []);
+  const [allOrganizations, setAllOrganizations] = useState<
+    Array<{ organization_id: string; organization_alias?: string }>
+  >([]);
   const [filteredKeys, setFilteredKeys] = useState<KeyResponse[]>(keys);
   const [filteredTotalCount, setFilteredTotalCount] = useState<number | null>(null);
   const lastSearchTimestamp = useRef(0);
@@ -59,7 +94,7 @@ export function useFilterLogic({
         // Make the API call using keyListCall with all filter parameters
         const data = await keyListCall(
           accessToken,
-          null,
+          filters["Organization ID"] || null,
           filters["Team ID"] || null,
           filters["Key Alias"] || null,
           filters["User ID"] || null,
@@ -103,24 +138,36 @@ export function useFilterLogic({
       result = result.filter((key) => key.team_id === filters["Team ID"]);
     }
 
+    if (filters["Organization ID"]) {
+      result = result.filter(
+        (key) => (key.organization_id ?? (key as any).org_id ?? null) === filters["Organization ID"],
+      );
+    }
+
     if (filters["Company ID"]) {
-      result = result.filter((key) => getKeyCavadaLabsCompanyId(key) === filters["Company ID"]);
+      result = result.filter((key) => keyMatchesCavadaLabsCompany(key, filters["Company ID"], allCompanies));
     }
 
     if (filters["Project ID"]) {
-      result = result.filter((key) => getKeyCavadaLabsProjectId(key) === filters["Project ID"]);
+      result = result.filter((key) => keyMatchesCavadaLabsProject(key, filters["Project ID"], allProjects));
     }
 
     setFilteredKeys(result);
-  }, [keys, filters]);
+  }, [keys, filters, allCompanies, allProjects]);
 
   // Fetch all data for filters when component mounts
   useEffect(() => {
     const loadAllFilterData = async () => {
-      // Load all teams; Company/Project context is loaded through CavadaLabs resources.
-      const teamsData = await fetchAllTeams(accessToken);
+      // Load LiteLLM compatibility entities; Company/Project context is loaded through CavadaLabs resources.
+      const [teamsData, organizationsData] = await Promise.all([
+        fetchAllTeams(accessToken),
+        fetchAllOrganizations(accessToken),
+      ]);
       if (teamsData.length > 0) {
         setAllTeams(teamsData);
+      }
+      if (organizationsData.length > 0) {
+        setAllOrganizations(organizationsData);
       }
     };
 
@@ -140,26 +187,25 @@ export function useFilterLogic({
   }, [teams]);
 
   const handleFilterChange = (newFilters: Record<string, string>, skipDebounce: boolean = false) => {
-    // Update filters state
-    setFilters({
+    const nextFilters: FilterState = {
       "Team ID": newFilters["Team ID"] || "",
+      "Organization ID": newFilters["Organization ID"] || "",
       "Company ID": newFilters["Company ID"] || "",
       "Project ID": newFilters["Project ID"] || "",
       "Key Alias": newFilters["Key Alias"] || "",
+      "Key Hash": newFilters["Key Hash"] || "",
       "User ID": newFilters["User ID"] || "",
       "Sort By": newFilters["Sort By"] || "created_at",
       "Sort Order": newFilters["Sort Order"] || "desc",
-    });
+    };
+
+    // Update filters state
+    setFilters(nextFilters);
 
     // Only trigger debouncedSearch if skipDebounce is false
     // This allows sorting to be handled by the parent component's useKeys hook
     if (!skipDebounce) {
-      // Fetch keys based on new filters
-      const updatedFilters = {
-        ...filters,
-        ...newFilters,
-      };
-      debouncedSearch(updatedFilters);
+      debouncedSearch(nextFilters);
     }
   };
 
@@ -177,6 +223,7 @@ export function useFilterLogic({
     filteredKeys,
     filteredTotalCount,
     allTeams,
+    allOrganizations,
     allCompanies,
     allProjects,
     handleFilterChange,

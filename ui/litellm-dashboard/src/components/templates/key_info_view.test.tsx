@@ -152,9 +152,9 @@ describe("KeyInfoView", () => {
     renderWithProviders(
       <KeyInfoView
         keyData={MOCK_KEY_DATA}
-        onClose={() => { }}
+        onClose={() => {}}
         keyId={"test-key-id"}
-        onKeyDataUpdate={() => { }}
+        onKeyDataUpdate={() => {}}
         teams={[]}
       />,
     );
@@ -169,9 +169,9 @@ describe("KeyInfoView", () => {
     const { container } = renderWithProviders(
       <KeyInfoView
         keyData={MOCK_KEY_DATA}
-        onClose={() => { }}
+        onClose={() => {}}
         keyId={"test-key-id"}
-        onKeyDataUpdate={() => { }}
+        onKeyDataUpdate={() => {}}
         teams={[]}
       />,
     );
@@ -197,13 +197,196 @@ describe("KeyInfoView", () => {
 
     const keyData = { ...MOCK_KEY_DATA, user_id: "other-user-id" };
     renderWithProviders(
-      <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+      <KeyInfoView keyData={keyData} onClose={() => {}} keyId={"test-key-id"} onKeyDataUpdate={() => {}} teams={[]} />,
     );
 
     await waitFor(() => {
       expect(screen.getByText("Regenerate Key")).toBeInTheDocument();
       expect(screen.getByText("Delete Key")).toBeInTheDocument();
     });
+  });
+
+  it("should show Company and Project instead of internal org/team for CavadaLabs keys", async () => {
+    vi.mocked(useAuthorized).mockReturnValue(baseUseAuthorizedMock);
+    const cavadaKeyData = {
+      ...MOCK_KEY_DATA,
+      team_id: "team-internal",
+      organization_id: "org-internal",
+      metadata: {
+        ...MOCK_KEY_DATA.metadata,
+        cavadalabs_company_id: "company-1",
+        cavadalabs_project_id: "project-1",
+      },
+      cavadalabs_company_id: "company-1",
+      cavadalabs_project_id: "project-1",
+    };
+
+    renderWithProviders(
+      <KeyInfoView
+        keyData={cavadaKeyData}
+        onClose={() => {}}
+        keyId={"test-key-id"}
+        onKeyDataUpdate={() => {}}
+        teams={[]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Company")).toBeInTheDocument();
+      expect(screen.getByText("company-1")).toBeInTheDocument();
+      expect(screen.getByText("Project")).toBeInTheDocument();
+      expect(screen.getByText("project-1")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+    expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
+    expect(screen.queryByText("org-internal")).not.toBeInTheDocument();
+    expect(screen.queryByText("team-internal")).not.toBeInTheDocument();
+  });
+
+  it("should show CavadaLabs company and project names when resource options are provided", async () => {
+    vi.mocked(useAuthorized).mockReturnValue(baseUseAuthorizedMock);
+    const cavadaKeyData = {
+      ...MOCK_KEY_DATA,
+      team_id: "team-internal",
+      organization_id: "org-internal",
+      cavadalabs_company_id: "company-1",
+      cavadalabs_project_id: "project-1",
+    };
+
+    renderWithProviders(
+      <KeyInfoView
+        keyData={cavadaKeyData}
+        onClose={() => {}}
+        keyId={"test-key-id"}
+        onKeyDataUpdate={() => {}}
+        teams={[]}
+        cavadalabsCompanies={[{ company_id: "company-1", legal_name: "Acme Srl", status: "active" }]}
+        cavadalabsProjects={[
+          { project_id: "project-1", company_id: "company-1", name: "Support", status: "production" },
+        ]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Acme Srl (company-1)")).toBeInTheDocument();
+      expect(screen.getByText("Support (project-1)")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+    expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
+    expect(screen.queryByText("org-internal")).not.toBeInTheDocument();
+    expect(screen.queryByText("team-internal")).not.toBeInTheDocument();
+  });
+
+  it("should resolve CavadaLabs company and project from compatibility mappings when key metadata is legacy-only", async () => {
+    vi.mocked(useAuthorized).mockReturnValue(baseUseAuthorizedMock);
+    const legacyMappedKeyData = {
+      ...MOCK_KEY_DATA,
+      team_id: "team-internal",
+      organization_id: "org-internal",
+      cavadalabs_company_id: undefined,
+      cavadalabs_project_id: undefined,
+      metadata: {},
+    };
+
+    renderWithProviders(
+      <KeyInfoView
+        keyData={legacyMappedKeyData}
+        onClose={() => {}}
+        keyId={"test-key-id"}
+        onKeyDataUpdate={() => {}}
+        teams={[]}
+        cavadalabsCompanies={[
+          {
+            company_id: "company-1",
+            legal_name: "Acme Srl",
+            litellm_organization_id: "org-internal",
+            status: "active",
+          },
+        ]}
+        cavadalabsProjects={[
+          {
+            project_id: "project-1",
+            company_id: "company-1",
+            litellm_team_id: "team-internal",
+            name: "Support",
+            status: "production",
+          },
+        ]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Acme Srl (company-1)")).toBeInTheDocument();
+      expect(screen.getByText("Support (project-1)")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+    expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
+    expect(screen.queryByText("org-internal")).not.toBeInTheDocument();
+    expect(screen.queryByText("team-internal")).not.toBeInTheDocument();
+  });
+
+  it("should surface CavadaLabs project and company mismatch in key detail", async () => {
+    vi.mocked(useAuthorized).mockReturnValue(baseUseAuthorizedMock);
+    const cavadaKeyData = {
+      ...MOCK_KEY_DATA,
+      team_id: "team-internal",
+      organization_id: "org-internal",
+      cavadalabs_company_id: "company-1",
+      cavadalabs_project_id: "project-2",
+      metadata: {},
+    };
+
+    renderWithProviders(
+      <KeyInfoView
+        keyData={cavadaKeyData}
+        onClose={() => {}}
+        keyId={"test-key-id"}
+        onKeyDataUpdate={() => {}}
+        teams={[]}
+        cavadalabsCompanies={[{ company_id: "company-1", legal_name: "Acme Srl", status: "active" }]}
+        cavadalabsProjects={[
+          { project_id: "project-2", company_id: "company-2", name: "Billing", status: "production" },
+        ]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Acme Srl (company-1)")).toBeInTheDocument();
+      expect(screen.getByText("Billing (project-2)")).toBeInTheDocument();
+      expect(screen.getByText(/Project belongs to Company company-2, not company-1/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+    expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
+  });
+
+  it("should show legacy Organization and Team ID when key has no CavadaLabs context", async () => {
+    vi.mocked(useAuthorized).mockReturnValue(baseUseAuthorizedMock);
+    const legacyKeyData = {
+      ...MOCK_KEY_DATA,
+      team_id: "team-legacy",
+      organization_id: "org-legacy",
+      cavadalabs_company_id: undefined,
+      cavadalabs_project_id: undefined,
+      metadata: {},
+    };
+
+    renderWithProviders(
+      <KeyInfoView
+        keyData={legacyKeyData}
+        onClose={() => {}}
+        keyId={"test-key-id"}
+        onKeyDataUpdate={() => {}}
+        teams={[]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Organization")).toBeInTheDocument();
+      expect(screen.getByText("org-legacy")).toBeInTheDocument();
+      expect(screen.getByText("Team ID")).toBeInTheDocument();
+      expect(screen.getByText("team-legacy")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Company")).not.toBeInTheDocument();
   });
 
   it("should allow team admin to modify key", async () => {
@@ -242,7 +425,7 @@ describe("KeyInfoView", () => {
 
     const keyData = { ...MOCK_KEY_DATA, team_id: teamId, user_id: "other-user-id" };
     renderWithProviders(
-      <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+      <KeyInfoView keyData={keyData} onClose={() => {}} keyId={"test-key-id"} onKeyDataUpdate={() => {}} teams={[]} />,
     );
 
     await waitFor(() => {
@@ -266,7 +449,7 @@ describe("KeyInfoView", () => {
     const ownerUserId = "owner-user-id";
     const keyData = { ...MOCK_KEY_DATA, user_id: ownerUserId };
     renderWithProviders(
-      <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+      <KeyInfoView keyData={keyData} onClose={() => {}} keyId={"test-key-id"} onKeyDataUpdate={() => {}} teams={[]} />,
     );
 
     await waitFor(() => {
@@ -289,7 +472,7 @@ describe("KeyInfoView", () => {
 
     const keyData = { ...MOCK_KEY_DATA, user_id: "owner-user-id" };
     renderWithProviders(
-      <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+      <KeyInfoView keyData={keyData} onClose={() => {}} keyId={"test-key-id"} onKeyDataUpdate={() => {}} teams={[]} />,
     );
 
     await waitFor(() => {
@@ -313,7 +496,7 @@ describe("KeyInfoView", () => {
     const ownerUserId = "internal-viewer-user-id";
     const keyData = { ...MOCK_KEY_DATA, user_id: ownerUserId };
     renderWithProviders(
-      <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+      <KeyInfoView keyData={keyData} onClose={() => {}} keyId={"test-key-id"} onKeyDataUpdate={() => {}} teams={[]} />,
     );
 
     await waitFor(() => {
@@ -357,7 +540,7 @@ describe("KeyInfoView", () => {
 
     const keyData = { ...MOCK_KEY_DATA, team_id: "non-matching-team-id", user_id: "other-user-id" };
     renderWithProviders(
-      <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+      <KeyInfoView keyData={keyData} onClose={() => {}} keyId={"test-key-id"} onKeyDataUpdate={() => {}} teams={[]} />,
     );
 
     await waitFor(() => {
@@ -375,7 +558,7 @@ describe("KeyInfoView", () => {
         keyData={MOCK_KEY_DATA}
         onClose={onCloseMock}
         keyId={"test-key-id"}
-        onKeyDataUpdate={() => { }}
+        onKeyDataUpdate={() => {}}
         teams={[]}
       />,
     );
@@ -390,17 +573,10 @@ describe("KeyInfoView", () => {
     expect(onCloseMock).toHaveBeenCalledTimes(1);
   });
 
-
   describe("'Edit Settings' button visibility in the Settings tab", () => {
     const renderAndOpenSettingsTab = async (keyData = MOCK_KEY_DATA) => {
       renderWithProviders(
-        <KeyInfoView
-          keyData={keyData}
-          onClose={() => {}}
-          keyId="test-key-id"
-          onKeyDataUpdate={() => {}}
-          teams={[]}
-        />,
+        <KeyInfoView keyData={keyData} onClose={() => {}} keyId="test-key-id" onKeyDataUpdate={() => {}} teams={[]} />,
       );
       await waitFor(() => {
         expect(screen.getByRole("tab", { name: /settings/i })).toBeInTheDocument();
@@ -490,7 +666,6 @@ describe("KeyInfoView", () => {
     });
   });
 
-
   it("should display guardrails when present", async () => {
     vi.mocked(useAuthorized).mockReturnValue(baseUseAuthorizedMock);
 
@@ -505,9 +680,9 @@ describe("KeyInfoView", () => {
     renderWithProviders(
       <KeyInfoView
         keyData={keyDataWithGuardrails}
-        onClose={() => { }}
+        onClose={() => {}}
         keyId={"test-key-id"}
-        onKeyDataUpdate={() => { }}
+        onKeyDataUpdate={() => {}}
         teams={[]}
       />,
     );
@@ -531,9 +706,9 @@ describe("KeyInfoView", () => {
     renderWithProviders(
       <KeyInfoView
         keyData={keyDataWithPolicies}
-        onClose={() => { }}
+        onClose={() => {}}
         keyId={"test-key-id"}
-        onKeyDataUpdate={() => { }}
+        onKeyDataUpdate={() => {}}
         teams={[]}
       />,
     );
@@ -549,9 +724,9 @@ describe("KeyInfoView", () => {
     renderWithProviders(
       <KeyInfoView
         keyData={undefined}
-        onClose={() => { }}
+        onClose={() => {}}
         keyId={"test-key-id"}
-        onKeyDataUpdate={() => { }}
+        onKeyDataUpdate={() => {}}
         teams={[]}
       />,
     );
@@ -571,7 +746,13 @@ describe("KeyInfoView", () => {
       });
 
       renderWithProviders(
-        <KeyInfoView keyData={MOCK_KEY_DATA} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+        <KeyInfoView
+          keyData={MOCK_KEY_DATA}
+          onClose={() => {}}
+          keyId={"test-key-id"}
+          onKeyDataUpdate={() => {}}
+          teams={[]}
+        />,
       );
 
       await waitFor(() => {
@@ -606,7 +787,13 @@ describe("KeyInfoView", () => {
 
       const keyData = { ...MOCK_KEY_DATA, team_id: teamId, user_id: "other-user-id" };
       renderWithProviders(
-        <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+        <KeyInfoView
+          keyData={keyData}
+          onClose={() => {}}
+          keyId={"test-key-id"}
+          onKeyDataUpdate={() => {}}
+          teams={[]}
+        />,
       );
 
       await waitFor(() => {
@@ -624,7 +811,13 @@ describe("KeyInfoView", () => {
 
       const keyData = { ...MOCK_KEY_DATA, user_id: "owner-user-id" };
       renderWithProviders(
-        <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+        <KeyInfoView
+          keyData={keyData}
+          onClose={() => {}}
+          keyId={"test-key-id"}
+          onKeyDataUpdate={() => {}}
+          teams={[]}
+        />,
       );
 
       await waitFor(() => {
@@ -643,7 +836,13 @@ describe("KeyInfoView", () => {
       });
 
       renderWithProviders(
-        <KeyInfoView keyData={MOCK_KEY_DATA} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+        <KeyInfoView
+          keyData={MOCK_KEY_DATA}
+          onClose={() => {}}
+          keyId={"test-key-id"}
+          onKeyDataUpdate={() => {}}
+          teams={[]}
+        />,
       );
 
       await waitFor(() => {
@@ -668,7 +867,13 @@ describe("KeyInfoView", () => {
 
       const keyDataWithSpend = { ...MOCK_KEY_DATA, spend: 5.0 };
       renderWithProviders(
-        <KeyInfoView keyData={keyDataWithSpend} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+        <KeyInfoView
+          keyData={keyDataWithSpend}
+          onClose={() => {}}
+          keyId={"test-key-id"}
+          onKeyDataUpdate={() => {}}
+          teams={[]}
+        />,
       );
 
       await waitFor(() => {
@@ -701,13 +906,7 @@ describe("KeyInfoView", () => {
         userRole: "proxy_admin",
       });
       renderWithProviders(
-        <KeyInfoView
-          keyData={keyData}
-          onClose={() => {}}
-          keyId="test-key-id"
-          onKeyDataUpdate={() => {}}
-          teams={[]}
-        />,
+        <KeyInfoView keyData={keyData} onClose={() => {}} keyId="test-key-id" onKeyDataUpdate={() => {}} teams={[]} />,
       );
       await userEvent.click(screen.getByRole("tab", { name: /settings/i }));
       await userEvent.click(screen.getByRole("button", { name: /edit settings/i }));
@@ -752,10 +951,7 @@ describe("KeyInfoView", () => {
       await enterEditMode(keyData);
       await editViewMocks.onSubmit!({ key: keyData.token, token: keyData.token, policies: [] });
 
-      expect(keyUpdateCall).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ policies: [] }),
-      );
+      expect(keyUpdateCall).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ policies: [] }));
     });
 
     it("should keep an empty policies field when the previous value lives only at the top level of keyData", async () => {
@@ -771,10 +967,7 @@ describe("KeyInfoView", () => {
       await enterEditMode(keyData);
       await editViewMocks.onSubmit!({ key: keyData.token, token: keyData.token, policies: [] });
 
-      expect(keyUpdateCall).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ policies: [] }),
-      );
+      expect(keyUpdateCall).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ policies: [] }));
     });
   });
 });

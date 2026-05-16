@@ -1,6 +1,8 @@
 import json
 import os
 import sys
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import litellm
 import pytest
@@ -17,6 +19,7 @@ from fastapi import HTTPException
 
 from litellm.proxy._types import (
     GenerateKeyRequest,
+    GenerateKeyResponse,
     LiteLLM_BudgetTable,
     LiteLLM_OrganizationTable,
     LiteLLM_TeamTableCachedObj,
@@ -38,10 +41,12 @@ from litellm.proxy.management_endpoints.key_management_endpoints import (
     _enforce_upperbound_key_params,
     _get_and_validate_existing_key,
     _list_key_helper,
+    _normalize_cavadalabs_generate_key_request,
     _persist_deleted_verification_tokens,
     _process_single_key_update,
     _save_deleted_verification_token_records,
     _transform_verification_tokens_to_deleted_records,
+    _validate_cavadalabs_key_list_filter_access,
     _validate_max_budget,
     _validate_reset_spend_value,
     _validate_update_key_data,
@@ -64,6 +69,94 @@ from litellm.proxy.proxy_server import app
 client = TestClient(app)
 
 
+def _cavadalabs_test_row(**kwargs):
+    defaults = {
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "created_by": "admin",
+        "updated_by": "admin",
+    }
+    return SimpleNamespace(**{**defaults, **kwargs})
+
+
+def _cavadalabs_company_row(**kwargs):
+    return _cavadalabs_test_row(
+        company_id=kwargs.pop("company_id", "company-1"),
+        litellm_organization_id=kwargs.pop("litellm_organization_id", "org-1"),
+        legal_name=kwargs.pop("legal_name", "ACME Spa"),
+        billing_name=None,
+        vat_tax_id=None,
+        billing_address={},
+        admin_emails=[],
+        plan="production",
+        status=kwargs.pop("status", "active"),
+        monthly_budget=100.0,
+        metadata={},
+        retention_policy={},
+        default_guardrail_policy=None,
+        default_billing_settings={},
+        **kwargs,
+    )
+
+
+def _cavadalabs_project_row(**kwargs):
+    return _cavadalabs_test_row(
+        project_id=kwargs.pop("project_id", "project-1"),
+        company_id=kwargs.pop("company_id", "company-1"),
+        litellm_team_id=kwargs.pop("litellm_team_id", "team-1"),
+        name=kwargs.pop("name", "Support"),
+        status=kwargs.pop("status", "production"),
+        allowed_models=[],
+        allowed_rag_collections=[],
+        default_chatbot_settings={},
+        default_guardrail_policy=None,
+        budget=None,
+        retention_policy_override={},
+        metadata={},
+        **kwargs,
+    )
+
+
+def _cavadalabs_key_prisma(
+    *,
+    project=None,
+    company=None,
+    team_members=None,
+    org_membership=None,
+):
+    prisma_client = MagicMock()
+    prisma_client.db = MagicMock()
+    prisma_client.db.cavadalabs_projecttable = MagicMock()
+    prisma_client.db.cavadalabs_companytable = MagicMock()
+    prisma_client.db.litellm_teamtable = MagicMock()
+    prisma_client.db.litellm_usertable = MagicMock()
+    prisma_client.db.litellm_organizationmembership = MagicMock()
+    prisma_client.db.cavadalabs_projecttable.find_unique = AsyncMock(
+        return_value=project or _cavadalabs_project_row()
+    )
+    prisma_client.db.cavadalabs_companytable.find_unique = AsyncMock(
+        return_value=company or _cavadalabs_company_row()
+    )
+    prisma_client.db.litellm_teamtable.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            team_id="team-1",
+            members_with_roles=team_members or [],
+        )
+    )
+    prisma_client.db.litellm_usertable.find_unique = AsyncMock(
+        return_value=SimpleNamespace(user_id="user", teams=[])
+    )
+    prisma_client.db.litellm_organizationmembership.find_unique = AsyncMock(
+        return_value=org_membership
+    )
+    prisma_client.db.litellm_organizationmembership.find_many = AsyncMock(
+        return_value=[]
+    )
+    prisma_client.db.cavadalabs_companytable.find_many = AsyncMock(return_value=[])
+    prisma_client.db.cavadalabs_projecttable.find_many = AsyncMock(return_value=[])
+    return prisma_client
+
+
 def test_generate_key_request_accepts_cavadalabs_key_context_fields():
     request = GenerateKeyRequest(
         cavadalabs_company_id="company-1",
@@ -76,19 +169,6 @@ def test_generate_key_request_accepts_cavadalabs_key_context_fields():
 
 @pytest.mark.asyncio
 async def test_apply_cavadalabs_key_context_sets_canonical_metadata():
-    prisma_client = AsyncMock()
-    project = MagicMock()
-    project.company_id = "company-1"
-    project.status = "production"
-    company = MagicMock()
-    company.status = "active"
-    prisma_client.db.cavadalabs_projecttable.find_unique = AsyncMock(
-        return_value=project
-    )
-    prisma_client.db.cavadalabs_companytable.find_unique = AsyncMock(
-        return_value=company
-    )
-
     data_json = {
         "cavadalabs_company_id": "company-1",
         "cavadalabs_project_id": "project-1",
@@ -98,7 +178,7 @@ async def test_apply_cavadalabs_key_context_sets_canonical_metadata():
     result = await _apply_cavadalabs_key_context(
         data_json=data_json,
         existing_metadata=None,
-        prisma_client=prisma_client,
+        prisma_client=_cavadalabs_key_prisma(),
         user_api_key_dict=UserAPIKeyAuth(
             user_id="admin",
             user_role=LitellmUserRoles.PROXY_ADMIN.value,
@@ -107,6 +187,8 @@ async def test_apply_cavadalabs_key_context_sets_canonical_metadata():
 
     assert "cavadalabs_company_id" not in result
     assert "cavadalabs_project_id" not in result
+    assert result["organization_id"] == "org-1"
+    assert result["team_id"] == "team-1"
     assert result["metadata"]["owner"] == "support"
     assert result["metadata"]["cavadalabs_company_id"] == "company-1"
     assert result["metadata"]["cavadalabs_project_id"] == "project-1"
@@ -121,7 +203,68 @@ async def test_apply_cavadalabs_key_context_sets_canonical_metadata():
 
 
 @pytest.mark.asyncio
-async def test_apply_cavadalabs_key_context_rejects_non_admin_assignment():
+async def test_apply_cavadalabs_key_context_rejects_internal_mapping_conflicts():
+    with pytest.raises(HTTPException) as exc:
+        await _apply_cavadalabs_key_context(
+            data_json={
+                "cavadalabs_company_id": "company-1",
+                "cavadalabs_project_id": "project-1",
+                "organization_id": "org-other",
+            },
+            existing_metadata=None,
+            prisma_client=_cavadalabs_key_prisma(),
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="admin",
+                user_role=LitellmUserRoles.PROXY_ADMIN.value,
+            ),
+        )
+
+    assert exc.value.status_code == 400
+    assert "organization_id conflicts" in exc.value.detail["error"]
+
+
+@pytest.mark.asyncio
+async def test_apply_cavadalabs_key_context_allows_project_change_to_recompute_internal_team():
+    prisma_client = _cavadalabs_key_prisma(
+        project=_cavadalabs_project_row(
+            project_id="project-2", litellm_team_id="team-2"
+        )
+    )
+
+    result = await _apply_cavadalabs_key_context(
+        data_json={
+            "cavadalabs_company_id": "company-1",
+            "cavadalabs_project_id": "project-2",
+        },
+        existing_metadata={
+            "cavadalabs_company_id": "company-1",
+            "cavadalabs_project_id": "project-1",
+        },
+        existing_team_id="team-1",
+        existing_organization_id="org-1",
+        prisma_client=prisma_client,
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="admin",
+            user_role=LitellmUserRoles.PROXY_ADMIN.value,
+        ),
+    )
+
+    assert result["team_id"] == "team-2"
+    assert result["organization_id"] == "org-1"
+    assert result["metadata"]["cavadalabs_project_id"] == "project-2"
+
+
+@pytest.mark.asyncio
+async def test_apply_cavadalabs_key_context_rejects_missing_compatibility_mappings():
+    prisma_client = AsyncMock()
+    project = MagicMock()
+    project.company_id = "company-1"
+    project.status = "production"
+    project.litellm_team_id = None
+    prisma_client.db.cavadalabs_projecttable.find_unique = AsyncMock(
+        return_value=project
+    )
+
     with pytest.raises(HTTPException) as exc:
         await _apply_cavadalabs_key_context(
             data_json={
@@ -129,7 +272,56 @@ async def test_apply_cavadalabs_key_context_rejects_non_admin_assignment():
                 "cavadalabs_project_id": "project-1",
             },
             existing_metadata=None,
-            prisma_client=AsyncMock(),
+            prisma_client=prisma_client,
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="admin",
+                user_role=LitellmUserRoles.PROXY_ADMIN.value,
+            ),
+        )
+
+    assert exc.value.status_code == 400
+    assert "missing its internal compatibility mapping" in exc.value.detail["error"]
+
+
+@pytest.mark.asyncio
+async def test_apply_cavadalabs_key_context_allows_project_admin_assignment():
+    prisma_client = _cavadalabs_key_prisma(
+        team_members=[{"user_id": "project-admin", "role": "admin"}]
+    )
+
+    result = await _apply_cavadalabs_key_context(
+        data_json={
+            "cavadalabs_company_id": "company-1",
+            "cavadalabs_project_id": "project-1",
+            "metadata": {"owner": "support"},
+        },
+        existing_metadata=None,
+        prisma_client=prisma_client,
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="project-admin",
+            user_role=LitellmUserRoles.INTERNAL_USER.value,
+        ),
+    )
+
+    assert result["organization_id"] == "org-1"
+    assert result["team_id"] == "team-1"
+    assert result["metadata"]["owner"] == "support"
+    assert result["metadata"]["cavadalabs_company_id"] == "company-1"
+    assert result["metadata"]["cavadalabs_project_id"] == "project-1"
+
+
+@pytest.mark.asyncio
+async def test_apply_cavadalabs_key_context_rejects_non_admin_without_project_admin_access():
+    prisma_client = _cavadalabs_key_prisma(team_members=[])
+
+    with pytest.raises(HTTPException) as exc:
+        await _apply_cavadalabs_key_context(
+            data_json={
+                "cavadalabs_company_id": "company-1",
+                "cavadalabs_project_id": "project-1",
+            },
+            existing_metadata=None,
+            prisma_client=prisma_client,
             user_api_key_dict=UserAPIKeyAuth(
                 user_id="user",
                 user_role=LitellmUserRoles.INTERNAL_USER.value,
@@ -141,6 +333,8 @@ async def test_apply_cavadalabs_key_context_rejects_non_admin_assignment():
 
 @pytest.mark.asyncio
 async def test_apply_cavadalabs_key_context_rejects_non_admin_metadata_assignment():
+    prisma_client = _cavadalabs_key_prisma(team_members=[])
+
     with pytest.raises(HTTPException) as exc:
         await _apply_cavadalabs_key_context(
             data_json={
@@ -150,7 +344,7 @@ async def test_apply_cavadalabs_key_context_rejects_non_admin_metadata_assignmen
                 },
             },
             existing_metadata=None,
-            prisma_client=AsyncMock(),
+            prisma_client=prisma_client,
             user_api_key_dict=UserAPIKeyAuth(
                 user_id="user",
                 user_role=LitellmUserRoles.INTERNAL_USER.value,
@@ -158,6 +352,45 @@ async def test_apply_cavadalabs_key_context_rejects_non_admin_metadata_assignmen
         )
 
     assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_normalize_cavadalabs_generate_key_request_sets_internal_compatibility_scope():
+    prisma_client = _cavadalabs_key_prisma(
+        team_members=[{"user_id": "project-admin", "role": "admin"}]
+    )
+    data = GenerateKeyRequest(
+        cavadalabs_company_id="company-1",
+        cavadalabs_project_id="project-1",
+        metadata={"owner": "support"},
+    )
+
+    assert await _normalize_cavadalabs_generate_key_request(
+        data=data,
+        prisma_client=prisma_client,
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="project-admin",
+            user_role=LitellmUserRoles.INTERNAL_USER.value,
+        ),
+    )
+
+    assert data.organization_id == "org-1"
+    assert data.team_id == "team-1"
+    assert data.cavadalabs_company_id == "company-1"
+    assert data.cavadalabs_project_id == "project-1"
+    dumped = data.model_dump(exclude_unset=True, exclude_none=True)
+    assert dumped["team_id"] == "team-1"
+    assert dumped["organization_id"] == "org-1"
+    assert data.metadata["cavadalabs_company_id"] == "company-1"
+    assert data.metadata["cavadalabs_project_id"] == "project-1"
+    assert data.metadata["cavadalabs"] == {
+        "company_id": "company-1",
+        "project_id": "project-1",
+    }
+    assert data.metadata["spend_logs_metadata"] == {
+        "cavadalabs_company_id": "company-1",
+        "cavadalabs_project_id": "project-1",
+    }
 
 
 @pytest.mark.asyncio
@@ -172,10 +405,10 @@ async def test_apply_cavadalabs_key_context_preserves_existing_context_on_metada
                 "project_id": "project-1",
             },
         },
-        prisma_client=AsyncMock(),
+        prisma_client=_cavadalabs_key_prisma(),
         user_api_key_dict=UserAPIKeyAuth(
-            user_id="user",
-            user_role=LitellmUserRoles.INTERNAL_USER.value,
+            user_id="proxy-admin",
+            user_role=LitellmUserRoles.PROXY_ADMIN.value,
         ),
     )
 
@@ -189,6 +422,46 @@ async def test_apply_cavadalabs_key_context_preserves_existing_context_on_metada
     assert result["metadata"]["spend_logs_metadata"] == {
         "cavadalabs_company_id": "company-1",
         "cavadalabs_project_id": "project-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_apply_cavadalabs_key_context_preserves_legacy_spend_logs_context():
+    result = await _apply_cavadalabs_key_context(
+        data_json={"metadata": {"owner": "support"}},
+        existing_metadata={
+            "spend_logs_metadata": {
+                "cavadalabs_company_id": "company-legacy",
+                "cavadalabs_project_id": "project-legacy",
+            },
+        },
+        prisma_client=_cavadalabs_key_prisma(
+            project=_cavadalabs_project_row(
+                project_id="project-legacy",
+                company_id="company-legacy",
+                litellm_team_id="team-legacy",
+            ),
+            company=_cavadalabs_company_row(
+                company_id="company-legacy",
+                litellm_organization_id="org-legacy",
+            ),
+        ),
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="proxy-admin",
+            user_role=LitellmUserRoles.PROXY_ADMIN.value,
+        ),
+    )
+
+    assert result["metadata"]["owner"] == "support"
+    assert result["metadata"]["cavadalabs_company_id"] == "company-legacy"
+    assert result["metadata"]["cavadalabs_project_id"] == "project-legacy"
+    assert result["metadata"]["cavadalabs"] == {
+        "company_id": "company-legacy",
+        "project_id": "project-legacy",
+    }
+    assert result["metadata"]["spend_logs_metadata"] == {
+        "cavadalabs_company_id": "company-legacy",
+        "cavadalabs_project_id": "project-legacy",
     }
 
 
@@ -210,6 +483,78 @@ def test_build_key_filter_conditions_applies_cavadalabs_metadata_filters():
     assert "company-1" in serialized
     assert "cavadalabs_project_id" in serialized
     assert "project-1" in serialized
+    assert "spend_logs_metadata" in serialized
+
+
+@pytest.mark.asyncio
+async def test_key_list_filter_access_allows_visible_project_filter():
+    prisma_client = _cavadalabs_key_prisma(
+        team_members=[{"user_id": "project-user", "role": "user"}]
+    )
+
+    await _validate_cavadalabs_key_list_filter_access(
+        prisma_client=prisma_client,
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="project-user",
+            user_role=LitellmUserRoles.INTERNAL_USER.value,
+        ),
+        cavadalabs_company_id="company-1",
+        cavadalabs_project_id="project-1",
+    )
+
+
+@pytest.mark.asyncio
+async def test_key_list_filter_access_rejects_project_company_mismatch():
+    prisma_client = _cavadalabs_key_prisma(
+        project=_cavadalabs_project_row(company_id="company-2"),
+        team_members=[{"user_id": "project-user", "role": "user"}],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await _validate_cavadalabs_key_list_filter_access(
+            prisma_client=prisma_client,
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="project-user",
+                user_role=LitellmUserRoles.INTERNAL_USER.value,
+            ),
+            cavadalabs_company_id="company-1",
+            cavadalabs_project_id="project-1",
+        )
+
+    assert exc.value.status_code == 400
+    assert "must belong" in exc.value.detail["error"]
+
+
+def test_verification_token_reads_cavadalabs_context_from_legacy_spend_metadata():
+    token = LiteLLM_VerificationToken(
+        token="hashed-token",
+        metadata={
+            "spend_logs_metadata": {
+                "cavadalabs_company_id": "company-legacy",
+                "cavadalabs_project_id": "project-legacy",
+            }
+        },
+    )
+
+    assert token.cavadalabs_company_id == "company-legacy"
+    assert token.cavadalabs_project_id == "project-legacy"
+
+
+def test_generate_key_response_reads_cavadalabs_context_from_legacy_spend_metadata():
+    response = GenerateKeyResponse(
+        key="sk-test",
+        metadata=json.dumps(
+            {
+                "spend_logs_metadata": {
+                    "cavadalabs_company_id": "company-legacy",
+                    "cavadalabs_project_id": "project-legacy",
+                }
+            }
+        ),
+    )
+
+    assert response.cavadalabs_company_id == "company-legacy"
+    assert response.cavadalabs_project_id == "project-legacy"
 
 
 @pytest.mark.asyncio
@@ -1307,6 +1652,8 @@ async def test_generate_service_account_requires_team_id():
 async def test_generate_service_account_works_with_team_id():
     from unittest.mock import patch
 
+    from litellm.proxy._types import LiteLLM_TeamTable
+
     # Mock the database and router dependencies from proxy_server
     with (
         patch("litellm.proxy.proxy_server.prisma_client") as mock_prisma,
@@ -1319,6 +1666,13 @@ async def test_generate_service_account_works_with_team_id():
 
         # Configure mocks
         mock_prisma.return_value = AsyncMock()
+        mock_prisma.db.litellm_teamtable.find_unique = AsyncMock(
+            return_value=LiteLLM_TeamTable(
+                team_id="IJ",
+                models=[],
+                members_with_roles=[],
+            )
+        )
         mock_router.return_value = None
         # Mock the response from generate_key_helper_fn
         mock_generate_key.return_value = {
@@ -3700,8 +4054,6 @@ def test_check_org_key_model_specific_limits_org_model_tpm_overallocation():
 
 
 def test_transform_verification_tokens_to_deleted_records():
-    from datetime import datetime, timezone
-
     user_api_key_dict = UserAPIKeyAuth(
         user_id="user-123",
         api_key="sk-test",
@@ -3719,7 +4071,11 @@ def test_transform_verification_tokens_to_deleted_records():
         aliases={},
         config={},
         permissions={},
-        metadata={"test": "value"},
+        metadata={
+            "test": "value",
+            "cavadalabs_company_id": "company-1",
+            "cavadalabs_project_id": "project-1",
+        },
         model_max_budget={},
         model_spend={},
         soft_budget_cooldown=False,
@@ -3773,6 +4129,9 @@ def test_transform_verification_tokens_to_deleted_records():
     assert "litellm_organization_table" not in record1
     assert "object_permission" not in record1
     assert "id" not in record1
+    assert "cavadalabs_company_id" not in record1
+    assert "cavadalabs_project_id" not in record1
+    assert json.loads(record1["metadata"])["cavadalabs_company_id"] == "company-1"
 
     record2 = records[1]
     assert record2["token"] == "hashed-token-2"

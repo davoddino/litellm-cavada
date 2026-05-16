@@ -7,9 +7,9 @@ import { formatNumberWithCommas } from "@/utils/dataUtils";
 import { InfoCircleOutlined } from "@ant-design/icons";
 import { useQueryClient } from "@tanstack/react-query";
 import { Accordion, AccordionBody, AccordionHeader, Button, Col, Grid, Text, TextInput, Title } from "@tremor/react";
-import { Button as Button2, Form, Input, Modal, Radio, Select, Switch, Tag, Tooltip, Typography } from "antd";
+import { Alert, Button as Button2, Form, Input, Modal, Radio, Select, Switch, Tag, Tooltip, Typography } from "antd";
 import debounce from "lodash/debounce";
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { rolesWithWriteAccess } from "../../utils/roles";
 import AgentSelector from "../agent_management/AgentSelector";
 import { mapDisplayToInternalNames } from "../callback_info_helpers";
@@ -22,9 +22,15 @@ import PassThroughRoutesSelector from "../common_components/PassThroughRoutesSel
 import PremiumLoggingSettings from "../common_components/PremiumLoggingSettings";
 import RateLimitTypeFormItem from "../common_components/RateLimitTypeFormItem";
 import RouterSettingsAccordion, { RouterSettingsAccordionValue } from "../common_components/RouterSettingsAccordion";
-import TeamDropdown from "../common_components/team_dropdown";
 import { CreateUserButton } from "../CreateUserButton";
-import { useCavadaLabsKeyContextOptions } from "../cavadalabs/keyContext";
+import {
+  filterManageableCavadaLabsCompanies,
+  filterManageableCavadaLabsProjects,
+  resolveCavadaLabsProjectCompatibilityTeamId,
+  stripLiteLLMCompatibilityFieldsForCavadaLabsKey,
+  useCavadaLabsKeyContextOptions,
+} from "../cavadalabs/keyContext";
+import { cavadalabsMissingSchemaDetailLines, isCavadaLabsMissingSchemaDetail } from "../cavadalabs/api";
 import { BudgetWindowEntry, BudgetWindowsEditor } from "../key_team_helpers/BudgetWindowsEditor";
 import { getModelDisplayName } from "../key_team_helpers/fetch_available_models_team_key";
 import { Team } from "../key_team_helpers/key_list";
@@ -151,7 +157,6 @@ export const fetchUserModels = async (
   }
 };
 
-
 /**
  * ─────────────────────────────────────────────────────────────────────────
  * @deprecated
@@ -166,13 +171,12 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
     companies: cavadalabsCompanies,
     projects: cavadalabsProjects,
     isLoading: isCavadalabsContextLoading,
+    errorDetail: cavadalabsContextErrorDetail,
   } = useCavadaLabsKeyContextOptions(accessToken);
   const { data: uiSettingsData } = useUISettings();
   const { data: tagsData } = useTags();
   const disableCustomApiKeys = Boolean(uiSettingsData?.values?.disable_custom_api_keys);
-  const tagOptions = tagsData
-    ? Object.values(tagsData).map((tag) => ({ value: tag.name, label: tag.name }))
-    : [];
+  const tagOptions = tagsData ? Object.values(tagsData).map((tag) => ({ value: tag.name, label: tag.name })) : [];
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [isModalVisible, setIsModalVisible] = useState(false);
@@ -366,6 +370,24 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
   // Check if team selection is required
   const isTeamSelectionRequired = modelsToPick.includes("no-default-models");
   const isFormDisabled = isTeamSelectionRequired && !selectedCreateKeyTeam;
+  const manageableCavadaLabsCompanies = useMemo(
+    () => filterManageableCavadaLabsCompanies(cavadalabsCompanies),
+    [cavadalabsCompanies],
+  );
+  const manageableCavadaLabsProjects = useMemo(
+    () => filterManageableCavadaLabsProjects(cavadalabsProjects),
+    [cavadalabsProjects],
+  );
+  const hasCavadaLabsTenantOptions = cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
+  const hasManageableCavadaLabsTenantOptions =
+    manageableCavadaLabsCompanies.length > 0 && manageableCavadaLabsProjects.length > 0;
+  const hasCavadaLabsMissingSchema = isCavadaLabsMissingSchemaDetail(cavadalabsContextErrorDetail);
+  const shouldUseCavadaLabsKeyContext = hasCavadaLabsTenantOptions || hasCavadaLabsMissingSchema;
+  const showCavadaLabsManageScopeWarning =
+    shouldUseCavadaLabsKeyContext && !hasCavadaLabsMissingSchema && !hasManageableCavadaLabsTenantOptions;
+  const cavadalabsMissingSchemaLines = hasCavadaLabsMissingSchema
+    ? cavadalabsMissingSchemaDetailLines(cavadalabsContextErrorDetail)
+    : [];
 
   const handleCreate = async (formValues: Record<string, any>) => {
     try {
@@ -512,6 +534,26 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
         formValues.aliases = JSON.stringify(modelAliases);
       }
 
+      const cavadalabsCompanyId = formValues.cavadalabs_company_id || null;
+      const cavadalabsProjectId = formValues.cavadalabs_project_id || null;
+      if (cavadalabsCompanyId || cavadalabsProjectId) {
+        if (!cavadalabsCompanyId || !cavadalabsProjectId) {
+          NotificationsManager.fromBackend("Select both Company and Project before creating a CavadaLabs key");
+          return;
+        }
+        const selectedProject = manageableCavadaLabsProjects.find(
+          (project) => project.project_id === cavadalabsProjectId,
+        );
+        if (!selectedProject) {
+          NotificationsManager.fromBackend(`Project ${cavadalabsProjectId} is not available`);
+          return;
+        }
+        if (selectedProject.company_id !== cavadalabsCompanyId) {
+          NotificationsManager.fromBackend("Selected Project belongs to a different Company");
+          return;
+        }
+      }
+
       // Add router_settings if any are defined
       if (routerSettings?.router_settings) {
         // Only include router_settings if it has at least one non-null value
@@ -524,10 +566,14 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
       }
 
       // Add multi-window budget limits (filter out incomplete entries)
-      const validWindows = budgetLimits.filter((w) => w.budget_duration && w.max_budget !== null && w.max_budget !== undefined);
+      const validWindows = budgetLimits.filter(
+        (w) => w.budget_duration && w.max_budget !== null && w.max_budget !== undefined,
+      );
       if (validWindows.length > 0) {
         formValues.budget_limits = validWindows;
       }
+
+      stripLiteLLMCompatibilityFieldsForCavadaLabsKey(formValues);
 
       let response;
       if (keyOwner === "service_account") {
@@ -568,7 +614,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
   // watches for pendingPrefillModels + modelsToPick to both be populated.
   useEffect(() => {
     if (selectedProjectId) {
-      const project = cavadalabsProjects.find((p) => p.project_id === selectedProjectId);
+      const project = manageableCavadaLabsProjects.find((p) => p.project_id === selectedProjectId);
       const projectModels = project?.allowed_models ?? [];
       setModelsToPick(projectModels);
       form.setFieldValue("models", []);
@@ -586,7 +632,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
     }
     // Clear MCP server selection when team changes (available servers may differ)
     form.setFieldValue("allowed_mcp_servers_and_groups", { servers: [], accessGroups: [] });
-  }, [selectedCreateKeyTeam, selectedProjectId, accessToken, userID, userRole, form, cavadalabsProjects]);
+  }, [selectedCreateKeyTeam, selectedProjectId, accessToken, userID, userRole, form, manageableCavadaLabsProjects]);
 
   // Apply deferred model prefill once the available model list arrives.
   // This handles timing where prefill data arrives before or after models are fetched.
@@ -759,111 +805,179 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                 </div>
               </div>
             )}
-            <Form.Item
-              label={
-                <span>
-                  Company{" "}
-                  <Tooltip title="The CavadaLabs company this key belongs to.">
-                    <InfoCircleOutlined style={{ marginLeft: "4px" }} />
-                  </Tooltip>
-                </span>
-              }
-              name="cavadalabs_company_id"
-              className="mt-4"
-              rules={[{ required: true, message: "Please select a company" }]}
-            >
-              <Select
-                showSearch
-                allowClear
-                loading={isCavadalabsContextLoading}
-                placeholder="Select company"
-                optionFilterProp="label"
-                onChange={(companyId) => {
-                  setSelectedCompanyId(companyId || null);
-                  setSelectedProjectId(null);
-                  form.setFieldValue("cavadalabs_project_id", undefined);
-                }}
-                options={cavadalabsCompanies.map((company) => ({
-                  label: `${company.legal_name || company.company_id} (${company.company_id})`,
-                  value: company.company_id,
-                }))}
+            {hasCavadaLabsMissingSchema && (
+              <Alert
+                className="mt-4"
+                type="error"
+                showIcon
+                message="CavadaLabs key schema migration required"
+                description={
+                  <div className="space-y-1">
+                    <div>
+                      Company and Project key context cannot be loaded until the CavadaLabs Prisma migrations are
+                      applied.
+                    </div>
+                    {cavadalabsMissingSchemaLines.map((line) => (
+                      <div key={line}>
+                        <code>{line}</code>
+                      </div>
+                    ))}
+                  </div>
+                }
               />
-            </Form.Item>
-            <Form.Item
-              label={
-                <span>
-                  Project{" "}
-                  <Tooltip title="The CavadaLabs project this key is scoped to. This is the canonical project context for usage and billing.">
-                    <InfoCircleOutlined style={{ marginLeft: "4px" }} />
-                  </Tooltip>
-                </span>
-              }
-              name="cavadalabs_project_id"
-              className="mt-4"
-              rules={[{ required: true, message: "Please select a project" }]}
-            >
-              <Select
-                showSearch
-                allowClear
-                loading={isCavadalabsContextLoading}
-                placeholder="Select project"
-                optionFilterProp="label"
-                onChange={(projectId) => {
-                  if (!projectId) {
-                    setSelectedProjectId(null);
-                    return;
+            )}
+            {showCavadaLabsManageScopeWarning && (
+              <Alert
+                className="mt-4"
+                type="warning"
+                showIcon
+                message="Company or Project admin access required"
+                description="Creating a CavadaLabs server API key requires a manageable Company and Project scope."
+              />
+            )}
+            {shouldUseCavadaLabsKeyContext ? (
+              <>
+                <Form.Item
+                  label={
+                    <span>
+                      Company{" "}
+                      <Tooltip title="The CavadaLabs company this key belongs to.">
+                        <InfoCircleOutlined style={{ marginLeft: "4px" }} />
+                      </Tooltip>
+                    </span>
                   }
-                  const project = cavadalabsProjects.find((item) => item.project_id === projectId);
-                  setSelectedProjectId(projectId);
-                  if (project?.company_id) {
-                    setSelectedCompanyId(project.company_id);
-                    form.setFieldValue("cavadalabs_company_id", project.company_id);
+                  name="cavadalabs_company_id"
+                  className="mt-4"
+                  rules={[{ required: true, message: "Please select a company" }]}
+                >
+                  <Select
+                    aria-label="CavadaLabs Company"
+                    showSearch
+                    allowClear
+                    loading={isCavadalabsContextLoading}
+                    placeholder="Select company"
+                    optionFilterProp="label"
+                    onChange={(companyId) => {
+                      setSelectedCompanyId(companyId || null);
+                      setSelectedProjectId(null);
+                      form.setFieldValue("cavadalabs_project_id", undefined);
+                      form.setFieldValue("team_id", undefined);
+                      setSelectedCreateKeyTeam(null);
+                    }}
+                    options={manageableCavadaLabsCompanies.map((company) => ({
+                      label: `${company.legal_name || company.company_id} (${company.company_id})`,
+                      value: company.company_id,
+                    }))}
+                  />
+                </Form.Item>
+                <Form.Item
+                  label={
+                    <span>
+                      Project{" "}
+                      <Tooltip title="The CavadaLabs project this key is scoped to. This is the canonical project context for usage and billing.">
+                        <InfoCircleOutlined style={{ marginLeft: "4px" }} />
+                      </Tooltip>
+                    </span>
                   }
-                }}
-                options={cavadalabsProjects
-                  .filter((project) => !selectedCompanyId || project.company_id === selectedCompanyId)
-                  .map((project) => ({
-                    label: `${project.name || project.project_id} (${project.project_id})`,
-                    value: project.project_id,
+                  name="cavadalabs_project_id"
+                  className="mt-4"
+                  rules={[{ required: true, message: "Please select a project" }]}
+                >
+                  <Select
+                    aria-label="CavadaLabs Project"
+                    showSearch
+                    allowClear
+                    disabled={!selectedCompanyId || isCavadalabsContextLoading}
+                    loading={isCavadalabsContextLoading}
+                    placeholder={selectedCompanyId ? "Select project" : "Select company first"}
+                    optionFilterProp="label"
+                    onChange={(projectId) => {
+                      if (!projectId) {
+                        setSelectedProjectId(null);
+                        form.setFieldValue("team_id", undefined);
+                        setSelectedCreateKeyTeam(null);
+                        return;
+                      }
+                      const project = manageableCavadaLabsProjects.find((item) => item.project_id === projectId);
+                      setSelectedProjectId(projectId);
+                      if (project?.company_id) {
+                        setSelectedCompanyId(project.company_id);
+                        form.setFieldValue("cavadalabs_company_id", project.company_id);
+                      }
+                      const compatibilityTeamId = resolveCavadaLabsProjectCompatibilityTeamId(
+                        projectId,
+                        manageableCavadaLabsProjects,
+                      );
+                      const compatibilityTeam =
+                        teams?.find((item) => item.team_id === compatibilityTeamId) ??
+                        ({
+                          team_id: compatibilityTeamId,
+                          models: project?.allowed_models ?? [],
+                        } as Team);
+                      form.setFieldValue("team_id", compatibilityTeamId);
+                      setSelectedCreateKeyTeam(compatibilityTeam);
+                    }}
+                    options={manageableCavadaLabsProjects
+                      .filter((project) => !selectedCompanyId || project.company_id === selectedCompanyId)
+                      .map((project) => ({
+                        label: project.litellm_team_id
+                          ? `${project.name || project.project_id} (${project.project_id})`
+                          : `${project.name || project.project_id} (${project.project_id}) - mapping required`,
+                        value: project.project_id,
+                        disabled: !project.litellm_team_id,
+                      }))}
+                  />
+                </Form.Item>
+                <Form.Item name="team_id" initialValue={team ? team.team_id : null} hidden>
+                  <Input type="hidden" />
+                </Form.Item>
+              </>
+            ) : (
+              <Form.Item
+                label={
+                  <span>
+                    Team ID{" "}
+                    <Tooltip title="The LiteLLM team this key belongs to.">
+                      <InfoCircleOutlined style={{ marginLeft: "4px" }} />
+                    </Tooltip>
+                  </span>
+                }
+                name="team_id"
+                initialValue={team ? team.team_id : null}
+                className="mt-4"
+              >
+                <Select
+                  showSearch
+                  allowClear
+                  placeholder="Select team"
+                  optionFilterProp="label"
+                  onChange={(teamId) => {
+                    const selectedTeam = teams?.find((item) => item.team_id === teamId) ?? null;
+                    setSelectedCreateKeyTeam(selectedTeam);
+                  }}
+                  options={(teams || []).map((item) => ({
+                    label: `${item.team_alias || item.team_id} (${item.team_id})`,
+                    value: item.team_id,
                   }))}
-              />
-            </Form.Item>
-            <Form.Item
-              label={
-                <span>
-                  Team{" "}
-                  <Tooltip title="The team this key belongs to, which determines available models and budget limits">
-                    <InfoCircleOutlined style={{ marginLeft: "4px" }} />
-                  </Tooltip>
-                </span>
-              }
-              name="team_id"
-              initialValue={team ? team.team_id : null}
-              className="mt-4"
-              rules={[
-                {
-                  required: keyOwner === "service_account",
-                  message: "Please select a team for the service account",
-                },
-              ]}
-              help={keyOwner === "service_account" ? "required" : ""}
-            >
-              <TeamDropdown
-                disabled={false}
-                onTeamSelect={(team) => {
-                  setSelectedCreateKeyTeam(team);
-                }}
-              />
-            </Form.Item>
+                />
+              </Form.Item>
+            )}
           </div>
 
           {/* Show message when team selection is required */}
           {isFormDisabled && (
             <div className="mb-8 p-4 bg-blue-50 border border-blue-200 rounded-md">
-              <Text className="text-blue-800 text-sm">
-                Please select a team to continue configuring your Virtual Key. If you do not see any teams, please
-                contact your Proxy Admin to either provide you with access to models or to add you to a team.
-              </Text>
+              {hasCavadaLabsTenantOptions ? (
+                <Text className="text-blue-800 text-sm">
+                  Select a Company and Project to continue configuring this Virtual Key. If no Projects are available,
+                  ask a CavadaLabs admin to grant access or complete the Project compatibility mapping.
+                </Text>
+              ) : (
+                <Text className="text-blue-800 text-sm">
+                  Please select a team to continue configuring your Virtual Key. If you do not see any teams, please
+                  contact your Proxy Admin to either provide you with access to models or to add you to a team.
+                </Text>
+              )}
             </div>
           )}
 
@@ -1055,10 +1169,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                       </span>
                     }
                   >
-                    <BudgetWindowsEditor
-                      value={budgetLimits}
-                      onChange={setBudgetLimits}
-                    />
+                    <BudgetWindowsEditor value={budgetLimits} onChange={setBudgetLimits} />
                   </Form.Item>
                   <Form.Item
                     className="mt-4"

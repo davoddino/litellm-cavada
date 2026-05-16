@@ -4,9 +4,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import HTTPException
 
+from litellm.proxy import proxy_server
 from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.cavadalabs.billing import CavadaLabsBillingService
+from litellm.proxy.management_endpoints import (
+    cavadalabs_billing_endpoints as billing_endpoints,
+)
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
     CavadaLabsBillingReportGenerateRequest,
 )
@@ -17,6 +22,14 @@ def _admin() -> UserAPIKeyAuth:
         api_key="sk-test",
         user_id="admin-user",
         user_role=LitellmUserRoles.PROXY_ADMIN,
+    )
+
+
+def _internal_user() -> UserAPIKeyAuth:
+    return UserAPIKeyAuth(
+        api_key="sk-user",
+        user_id="user-1",
+        user_role=LitellmUserRoles.INTERNAL_USER,
     )
 
 
@@ -142,12 +155,92 @@ def _service():
     prisma_client = MagicMock()
     prisma_client.db = MagicMock()
     prisma_client.db.cavadalabs_companytable = MagicMock()
+    prisma_client.db.cavadalabs_companytable.find_many = AsyncMock(return_value=[])
+    prisma_client.db.cavadalabs_projecttable = MagicMock()
+    prisma_client.db.cavadalabs_projecttable.find_many = AsyncMock(return_value=[])
     prisma_client.db.cavadalabs_requestledgertable = MagicMock()
+    prisma_client.db.cavadalabs_requestledgertable.create_many = AsyncMock()
     prisma_client.db.cavadalabs_nodedailyreporttable = MagicMock()
     prisma_client.db.cavadalabs_billingreporttable = MagicMock()
     prisma_client.db.cavadalabs_auditlogtable = MagicMock()
     prisma_client.db.cavadalabs_auditlogtable.create = AsyncMock()
+    prisma_client.db.litellm_spendlogs = MagicMock()
+    prisma_client.db.litellm_spendlogs.count = AsyncMock(return_value=0)
+    prisma_client.db.litellm_spendlogs.find_many = AsyncMock(return_value=[])
+    prisma_client.db.litellm_verificationtoken = MagicMock()
+    prisma_client.db.litellm_verificationtoken.find_many = AsyncMock(return_value=[])
+    prisma_client.db.litellm_deletedverificationtoken = MagicMock()
+    prisma_client.db.litellm_deletedverificationtoken.find_many = AsyncMock(
+        return_value=[]
+    )
     return CavadaLabsBillingService(prisma_client), prisma_client
+
+
+def _billing_endpoint_db():
+    db = MagicMock()
+
+    async def _find_company(*, where):
+        company_id = where["company_id"]
+        return _company_row(
+            company_id=company_id,
+            litellm_organization_id=f"org-{company_id}",
+        )
+
+    async def _find_company_member(*, where):
+        key = where["company_id_user_id"]
+        if key["company_id"] == "company-1" and key["user_id"] == "user-1":
+            return SimpleNamespace(
+                company_id="company-1",
+                user_id="user-1",
+                role="viewer",
+            )
+        return None
+
+    db.cavadalabs_companytable = MagicMock()
+    db.cavadalabs_companytable.find_unique = AsyncMock(side_effect=_find_company)
+    db.cavadalabs_companytable.find_many = AsyncMock(return_value=[])
+    db.cavadalabs_projecttable = MagicMock()
+    db.cavadalabs_projecttable.find_many = AsyncMock(return_value=[])
+    db.cavadalabs_companymembertable = MagicMock()
+    db.cavadalabs_companymembertable.find_unique = AsyncMock(
+        side_effect=_find_company_member
+    )
+    db.cavadalabs_companymembertable.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                company_id="company-1",
+                user_id="user-1",
+                role="viewer",
+            )
+        ]
+    )
+    db.cavadalabs_projectmembertable = MagicMock()
+    db.cavadalabs_projectmembertable.find_unique = AsyncMock(return_value=None)
+    db.cavadalabs_projectmembertable.find_many = AsyncMock(return_value=[])
+    db.litellm_organizationmembership = MagicMock()
+    db.litellm_organizationmembership.find_unique = AsyncMock(return_value=None)
+    db.litellm_organizationmembership.find_many = AsyncMock(return_value=[])
+    db.litellm_usertable = MagicMock()
+    db.litellm_usertable.find_unique = AsyncMock(return_value=None)
+    db.litellm_teamtable = MagicMock()
+    db.litellm_teamtable.find_unique = AsyncMock(return_value=None)
+    db.cavadalabs_billingreporttable = MagicMock()
+    db.cavadalabs_billingreporttable.find_many = AsyncMock(
+        return_value=[
+            _billing_report_row(report_id="billing-report-1", company_id="company-1")
+        ]
+    )
+    db.cavadalabs_billingreporttable.find_unique = AsyncMock(
+        return_value=_billing_report_row(
+            report_id="billing-report-1",
+            company_id="company-1",
+        )
+    )
+    return db
+
+
+def _patch_proxy_prisma(monkeypatch, db):
+    monkeypatch.setattr(proxy_server, "prisma_client", SimpleNamespace(db=db))
 
 
 @pytest.mark.asyncio
@@ -176,7 +269,7 @@ async def test_should_generate_monthly_billing_report_with_artifacts_and_checksu
         return_value=_company_row()
     )
     prisma_client.db.cavadalabs_requestledgertable.find_many = AsyncMock(
-        side_effect=[company_rows, all_node_rows]
+        side_effect=[[], company_rows, all_node_rows]
     )
     prisma_client.db.cavadalabs_nodedailyreporttable.find_many = AsyncMock(
         return_value=[_daily_report_row(node_cost_estimate=30.0)]
@@ -224,6 +317,367 @@ async def test_should_generate_monthly_billing_report_with_artifacts_and_checksu
 
 
 @pytest.mark.asyncio
+async def test_should_generate_billing_from_existing_ledger_when_key_backfill_schema_missing():
+    service, prisma_client = _service()
+    company_rows = [_ledger_row(request_id="request-existing", total_tokens=150)]
+    prisma_client.db.litellm_deletedverificationtoken = None
+    prisma_client.db.cavadalabs_companytable.find_unique = AsyncMock(
+        return_value=_company_row()
+    )
+    prisma_client.db.cavadalabs_requestledgertable.find_many = AsyncMock(
+        side_effect=[[], company_rows, company_rows]
+    )
+    prisma_client.db.cavadalabs_nodedailyreporttable.find_many = AsyncMock(
+        return_value=[]
+    )
+    prisma_client.db.cavadalabs_billingreporttable.find_many = AsyncMock(
+        return_value=[]
+    )
+    prisma_client.db.cavadalabs_billingreporttable.find_unique = AsyncMock(
+        return_value=None
+    )
+
+    async def _create_report(*args, **kwargs):
+        return _billing_report_row(**kwargs["data"])
+
+    prisma_client.db.cavadalabs_billingreporttable.create = AsyncMock(
+        side_effect=_create_report
+    )
+
+    response = await service.generate_monthly_report(
+        CavadaLabsBillingReportGenerateRequest(
+            company_id="company-1",
+            year=2026,
+            month=5,
+            formats=["json"],
+        ),
+        _admin(),
+    )
+
+    assert response.total_requests == 1
+    assert response.total_tokens == 150
+    assert response.total_spend == pytest.approx(0.15)
+    prisma_client.db.cavadalabs_requestledgertable.create_many.assert_not_awaited()
+    prisma_client.db.cavadalabs_billingreporttable.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_should_generate_billing_from_existing_ledger_when_spendlogs_repair_schema_missing():
+    service, prisma_client = _service()
+    company_rows = [_ledger_row(request_id="request-existing", total_tokens=150)]
+    prisma_client.db.litellm_spendlogs.count = AsyncMock(
+        side_effect=Exception('column "model_group" does not exist')
+    )
+    prisma_client.db.cavadalabs_companytable.find_unique = AsyncMock(
+        return_value=_company_row()
+    )
+    prisma_client.db.cavadalabs_companytable.find_many = AsyncMock(
+        return_value=[_company_row(litellm_organization_id="org-company-1")]
+    )
+    prisma_client.db.cavadalabs_projecttable.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                project_id="project-1",
+                company_id="company-1",
+                litellm_team_id="team-project-1",
+            )
+        ]
+    )
+    prisma_client.db.cavadalabs_requestledgertable.find_many = AsyncMock(
+        side_effect=[[], company_rows, company_rows]
+    )
+    prisma_client.db.cavadalabs_nodedailyreporttable.find_many = AsyncMock(
+        return_value=[]
+    )
+    prisma_client.db.cavadalabs_billingreporttable.find_many = AsyncMock(
+        return_value=[]
+    )
+    prisma_client.db.cavadalabs_billingreporttable.find_unique = AsyncMock(
+        return_value=None
+    )
+
+    async def _create_report(*args, **kwargs):
+        return _billing_report_row(**kwargs["data"])
+
+    prisma_client.db.cavadalabs_billingreporttable.create = AsyncMock(
+        side_effect=_create_report
+    )
+
+    response = await service.generate_monthly_report(
+        CavadaLabsBillingReportGenerateRequest(
+            company_id="company-1",
+            year=2026,
+            month=5,
+            formats=["json"],
+        ),
+        _admin(),
+    )
+
+    assert response.total_requests == 1
+    assert response.total_tokens == 150
+    assert response.total_spend == pytest.approx(0.15)
+    prisma_client.db.cavadalabs_requestledgertable.create_many.assert_not_awaited()
+    prisma_client.db.cavadalabs_billingreporttable.create.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_should_report_missing_usage_schema_for_billing_generation():
+    service, prisma_client = _service()
+    prisma_client.db.cavadalabs_companytable.find_unique = AsyncMock(
+        return_value=_company_row()
+    )
+    prisma_client.db.cavadalabs_requestledgertable.find_many = AsyncMock(
+        side_effect=Exception('relation "CavadaLabs_RequestLedgerTable" does not exist')
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.generate_monthly_report(
+            CavadaLabsBillingReportGenerateRequest(
+                company_id="company-1",
+                year=2026,
+                month=5,
+                formats=["json"],
+            ),
+            _admin(),
+        )
+
+    assert exc_info.value.status_code == 503
+    detail = exc_info.value.detail
+    assert detail["operation"] == "generate_cavadalabs_billing_report"
+    assert detail["schema_status"] == "missing_schema"
+    assert detail["migration_status"] == "schema_missing"
+    assert detail["recommended_action"] == "run_migration_backfill"
+    assert "prisma migrate deploy" in detail["migration_command"]
+    assert detail["missing_schema"]
+    prisma_client.db.cavadalabs_billingreporttable.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_should_repair_empty_billing_ledger_from_cavadalabs_spend_logs():
+    service, prisma_client = _service()
+    ledger_row = _ledger_row(
+        ledger_id="ledger-repaired",
+        request_id="request-repaired",
+        spend=0.42,
+        total_tokens=42,
+        node_id=None,
+        gpu_id=None,
+        loaded_model_id=None,
+        model_load_request_id=None,
+    )
+    prisma_client.db.cavadalabs_companytable.find_unique = AsyncMock(
+        return_value=_company_row()
+    )
+    prisma_client.db.cavadalabs_companytable.find_many = AsyncMock(
+        return_value=[
+            _company_row(
+                company_id="company-1",
+                litellm_organization_id="org-compat-1",
+            )
+        ]
+    )
+    prisma_client.db.cavadalabs_projecttable.find_many = AsyncMock(
+        return_value=[
+            _row(
+                project_id="project-1",
+                company_id="company-1",
+                litellm_team_id="team-compat-1",
+            )
+        ]
+    )
+    prisma_client.db.cavadalabs_requestledgertable.find_many = AsyncMock(
+        side_effect=[
+            [],
+            [],
+            [ledger_row],
+            [ledger_row],
+        ]
+    )
+    prisma_client.db.litellm_spendlogs.find_many = AsyncMock(
+        return_value=[
+            _row(
+                request_id="request-repaired",
+                api_key="hashed-key",
+                spend=0.42,
+                prompt_tokens=21,
+                completion_tokens=21,
+                total_tokens=42,
+                startTime=datetime(2026, 5, 14, 12, tzinfo=timezone.utc),
+                model="openai/gpt-4.1",
+                model_group="openai/gpt-4.1",
+                custom_llm_provider="openai",
+                team_id="team-compat-1",
+                organization_id="org-compat-1",
+                metadata={
+                    "spend_logs_metadata": {
+                        "cavadalabs_company_id": "company-1",
+                        "cavadalabs_project_id": "project-1",
+                    }
+                },
+                status="success",
+            )
+        ]
+    )
+    prisma_client.db.cavadalabs_nodedailyreporttable.find_many = AsyncMock(
+        return_value=[]
+    )
+    prisma_client.db.cavadalabs_billingreporttable.find_many = AsyncMock(
+        return_value=[]
+    )
+    prisma_client.db.cavadalabs_billingreporttable.find_unique = AsyncMock(
+        return_value=None
+    )
+
+    async def _create_report(*args, **kwargs):
+        return _billing_report_row(**kwargs["data"])
+
+    prisma_client.db.cavadalabs_billingreporttable.create = AsyncMock(
+        side_effect=_create_report
+    )
+
+    response = await service.generate_monthly_report(
+        CavadaLabsBillingReportGenerateRequest(
+            company_id="company-1",
+            year=2026,
+            month=5,
+            formats=["json"],
+        ),
+        _admin(),
+    )
+
+    prisma_client.db.cavadalabs_requestledgertable.create_many.assert_awaited_once()
+    create_call = (
+        prisma_client.db.cavadalabs_requestledgertable.create_many.call_args.kwargs
+    )
+    assert create_call["skip_duplicates"] is True
+    assert create_call["data"][0]["request_id"] == "request-repaired"
+    assert create_call["data"][0]["company_id"] == "company-1"
+    assert create_call["data"][0]["project_id"] == "project-1"
+    assert response.total_requests == 1
+    assert response.total_spend == pytest.approx(0.42)
+    spend_where = prisma_client.db.litellm_spendlogs.find_many.call_args.kwargs["where"]
+    assert {"team_id": {"in": ["team-compat-1"]}} in spend_where["AND"][0]["OR"]
+
+
+@pytest.mark.asyncio
+async def test_should_repair_partial_billing_ledger_from_cavadalabs_spend_logs():
+    service, prisma_client = _service()
+    existing_row = _ledger_row(
+        ledger_id="ledger-existing",
+        request_id="request-existing",
+        spend=0.10,
+        total_tokens=10,
+        node_id=None,
+        gpu_id=None,
+        loaded_model_id=None,
+        model_load_request_id=None,
+    )
+    repaired_row = _ledger_row(
+        ledger_id="ledger-repaired",
+        request_id="request-repaired",
+        spend=0.42,
+        total_tokens=42,
+        node_id=None,
+        gpu_id=None,
+        loaded_model_id=None,
+        model_load_request_id=None,
+    )
+    prisma_client.db.cavadalabs_companytable.find_unique = AsyncMock(
+        return_value=_company_row()
+    )
+    prisma_client.db.cavadalabs_companytable.find_many = AsyncMock(
+        return_value=[
+            _company_row(
+                company_id="company-1",
+                litellm_organization_id="org-compat-1",
+            )
+        ]
+    )
+    prisma_client.db.cavadalabs_projecttable.find_many = AsyncMock(
+        return_value=[
+            _row(
+                project_id="project-1",
+                company_id="company-1",
+                litellm_team_id="team-compat-1",
+            )
+        ]
+    )
+    prisma_client.db.cavadalabs_requestledgertable.find_many = AsyncMock(
+        side_effect=[
+            [],
+            [existing_row],
+            [existing_row, repaired_row],
+        ]
+    )
+    prisma_client.db.litellm_spendlogs.count = AsyncMock(return_value=2)
+    prisma_client.db.litellm_spendlogs.find_many = AsyncMock(
+        return_value=[
+            _row(
+                request_id="request-repaired",
+                api_key="hashed-key",
+                spend=0.42,
+                prompt_tokens=21,
+                completion_tokens=21,
+                total_tokens=42,
+                startTime=datetime(2026, 5, 14, 12, tzinfo=timezone.utc),
+                model="openai/gpt-4.1",
+                model_group="openai/gpt-4.1",
+                custom_llm_provider="openai",
+                team_id="team-compat-1",
+                organization_id="org-compat-1",
+                metadata={
+                    "spend_logs_metadata": {
+                        "cavadalabs_company_id": "company-1",
+                        "cavadalabs_project_id": "project-1",
+                    }
+                },
+                status="success",
+            )
+        ]
+    )
+    prisma_client.db.cavadalabs_nodedailyreporttable.find_many = AsyncMock(
+        return_value=[]
+    )
+    prisma_client.db.cavadalabs_billingreporttable.find_many = AsyncMock(
+        return_value=[]
+    )
+    prisma_client.db.cavadalabs_billingreporttable.find_unique = AsyncMock(
+        return_value=None
+    )
+
+    async def _create_report(*args, **kwargs):
+        return _billing_report_row(**kwargs["data"])
+
+    prisma_client.db.cavadalabs_billingreporttable.create = AsyncMock(
+        side_effect=_create_report
+    )
+
+    response = await service.generate_monthly_report(
+        CavadaLabsBillingReportGenerateRequest(
+            company_id="company-1",
+            year=2026,
+            month=5,
+            formats=["json"],
+        ),
+        _admin(),
+    )
+
+    assert prisma_client.db.litellm_spendlogs.count.await_count >= 1
+    count_where = prisma_client.db.litellm_spendlogs.count.await_args.kwargs["where"]
+    assert {"team_id": {"in": ["team-compat-1"]}} in count_where["AND"][0]["OR"]
+    prisma_client.db.cavadalabs_requestledgertable.create_many.assert_awaited_once()
+    create_call = (
+        prisma_client.db.cavadalabs_requestledgertable.create_many.call_args.kwargs
+    )
+    assert create_call["skip_duplicates"] is True
+    assert create_call["data"][0]["request_id"] == "request-repaired"
+    assert create_call["data"][0]["company_id"] == "company-1"
+    assert create_call["data"][0]["project_id"] == "project-1"
+    assert response.total_requests == 2
+    assert response.total_spend == pytest.approx(0.52)
+
+
+@pytest.mark.asyncio
 async def test_should_return_existing_report_when_checksum_matches():
     service, prisma_client = _service()
     existing_report = _billing_report_row(checksum="existing-checksum")
@@ -231,7 +685,7 @@ async def test_should_return_existing_report_when_checksum_matches():
         return_value=_company_row()
     )
     prisma_client.db.cavadalabs_requestledgertable.find_many = AsyncMock(
-        side_effect=[[], []]
+        return_value=[]
     )
     prisma_client.db.cavadalabs_nodedailyreporttable.find_many = AsyncMock(
         return_value=[]
@@ -312,3 +766,66 @@ async def test_should_return_empty_billing_reports_for_empty_company_scope():
     assert listed.count == 0
     assert listed.billing_reports == []
     prisma_client.db.cavadalabs_billingreporttable.find_many.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_billing_list_endpoint_filters_to_native_cavadalabs_company_scope(
+    monkeypatch,
+):
+    db = _billing_endpoint_db()
+    _patch_proxy_prisma(monkeypatch, db)
+
+    response = await billing_endpoints.list_billing_reports(
+        http_request=MagicMock(),
+        company_id=None,
+        year=None,
+        month=None,
+        take=100,
+        skip=0,
+        user_api_key_dict=_internal_user(),
+    )
+
+    assert response.count == 1
+    where = db.cavadalabs_billingreporttable.find_many.call_args.kwargs["where"]
+    assert where["company_id"] == {"in": ["company-1"]}
+
+
+@pytest.mark.asyncio
+async def test_billing_list_endpoint_rejects_cross_company_scope(monkeypatch):
+    db = _billing_endpoint_db()
+    _patch_proxy_prisma(monkeypatch, db)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await billing_endpoints.list_billing_reports(
+            http_request=MagicMock(),
+            company_id="company-2",
+            year=None,
+            month=None,
+            take=100,
+            skip=0,
+            user_api_key_dict=_internal_user(),
+        )
+
+    assert exc_info.value.status_code == 403
+    db.cavadalabs_billingreporttable.find_many.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_billing_generate_endpoint_rejects_company_viewer(monkeypatch):
+    db = _billing_endpoint_db()
+    _patch_proxy_prisma(monkeypatch, db)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await billing_endpoints.generate_billing_report(
+            data=CavadaLabsBillingReportGenerateRequest(
+                company_id="company-1",
+                year=2026,
+                month=5,
+                formats=["json"],
+            ),
+            http_request=MagicMock(),
+            user_api_key_dict=_internal_user(),
+        )
+
+    assert exc_info.value.status_code == 403
+    db.cavadalabs_billingreporttable.create.assert_not_called()

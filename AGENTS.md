@@ -2,6 +2,21 @@
 
 This document provides comprehensive instructions for AI agents working in the LiteLLM repository.
 
+## CAVADALABS PRODUCT DIRECTIVE
+
+When working on CavadaLabs, Companies and Projects are the product tenant model. LiteLLM Organizations and Teams may remain as internal compatibility concepts only where the existing platform still requires them. Do not expose Organization as the CavadaLabs tenant in new product UI/API.
+
+The active priority is the CavadaLabs Chatbot Creator. It must be a real product flow inside the existing LiteLLM/CavadaLabs system, not a parallel module. The creator must support chatbot creation, server API key creation or selection, browser/web token creation for website embedding, prompt/system-instruction customization, guardrails/policy wiring, RAG/knowledge reference attachment, and usage attribution through Company, Project, and Chatbot.
+
+Implementation expectations:
+
+- Reuse existing CavadaLabs schema, endpoint, access-control, key-context, token, usage, and runtime-auth modules before adding new ones.
+- Keep backend code modular: validation, resolution, service, schema, and access checks should be separated when complexity grows.
+- Keep UI production-ready: Company -> Project -> Chatbot settings -> key/token/embed -> prompt/guardrails/RAG must feel like one creator flow, not loose CRUD panels.
+- Do not add mocks, TODO placeholders, fake RAG, fake guardrails, or unimplemented embed snippets.
+- Add targeted backend/frontend tests for every changed contract.
+- See `docs/CODEX_NEXT_STEPS.md` for the current CavadaLabs work plan.
+
 ## OVERVIEW
 
 LiteLLM is a unified interface for 100+ LLMs that:

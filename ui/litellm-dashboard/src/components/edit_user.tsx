@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
-import { TextInput, SelectItem } from "@tremor/react";
+import { useEffect, useMemo } from "react";
+import { TextInput } from "@tremor/react";
 
 import { Button as Button2, Modal, Form, Select as Select2, InputNumber } from "antd";
 
 import NumericalInput from "./shared/numerical_input";
 import BudgetDurationDropdown from "./common_components/budget_duration_dropdown";
+import type { CavadaLabsCompanyOption, CavadaLabsProjectOption } from "./cavadalabs/keyContext";
+import { getCavadaLabsCompanyDisplayName, getCavadaLabsProjectDisplayName } from "./cavadalabs/keyContext";
 
 interface EditUserModalProps {
   visible: boolean;
@@ -12,15 +14,69 @@ interface EditUserModalProps {
   onCancel: () => void;
   user: any;
   onSubmit: (data: any) => void;
+  cavadalabsCompanies?: CavadaLabsCompanyOption[];
+  cavadalabsProjects?: CavadaLabsProjectOption[];
 }
 
-const EditUserModal: React.FC<EditUserModalProps> = ({ visible, possibleUIRoles, onCancel, user, onSubmit }) => {
-  const [editedUser, setEditedUser] = useState(user);
+const normalizeCavadaLabsSelection = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+  }
+  if (typeof value === "string" && value.length > 0) {
+    return [value];
+  }
+  return [];
+};
+
+const EditUserModal: React.FC<EditUserModalProps> = ({
+  visible,
+  possibleUIRoles,
+  onCancel,
+  user,
+  onSubmit,
+  cavadalabsCompanies = [],
+  cavadalabsProjects = [],
+}) => {
   const [form] = Form.useForm();
+  const selectedCompanyIds = Form.useWatch("cavadalabs_company_ids", form);
+  const hasCavadaLabsContext = cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
+
+  const initialFormValues = useMemo(() => {
+    const companyMemberships = Array.isArray(user?.cavadalabs_company_memberships)
+      ? user.cavadalabs_company_memberships
+      : [];
+    const projectMemberships = Array.isArray(user?.cavadalabs_project_memberships)
+      ? user.cavadalabs_project_memberships
+      : [];
+    return {
+      ...user,
+      cavadalabs_company_ids: companyMemberships
+        .map((membership: { company_id?: string }) => membership.company_id)
+        .filter(Boolean),
+      cavadalabs_company_role: companyMemberships[0]?.role ?? "viewer",
+      cavadalabs_project_ids: projectMemberships
+        .map((membership: { project_id?: string }) => membership.project_id)
+        .filter(Boolean),
+      cavadalabs_project_role: projectMemberships[0]?.role ?? "operator",
+    };
+  }, [user]);
+
+  const selectedCompanyIdSet = useMemo(
+    () => new Set(normalizeCavadaLabsSelection(selectedCompanyIds)),
+    [selectedCompanyIds],
+  );
+
+  const filteredProjects = useMemo(() => {
+    if (selectedCompanyIdSet.size === 0) {
+      return cavadalabsProjects;
+    }
+    return cavadalabsProjects.filter((project) => selectedCompanyIdSet.has(project.company_id));
+  }, [cavadalabsProjects, selectedCompanyIdSet]);
 
   useEffect(() => {
     form.resetFields();
-  }, [user]);
+    form.setFieldsValue(initialFormValues);
+  }, [form, initialFormValues]);
 
   const handleCancel = async () => {
     form.resetFields();
@@ -28,8 +84,40 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ visible, possibleUIRoles,
   };
 
   const handleEditSubmit = async (formValues: Record<string, any>) => {
-    // Call API to update team with teamId and values
-    onSubmit(formValues);
+    const values = { ...formValues };
+    if (hasCavadaLabsContext) {
+      const companyIds = normalizeCavadaLabsSelection(values.cavadalabs_company_ids);
+      const projectIds = normalizeCavadaLabsSelection(values.cavadalabs_project_ids);
+      const invalidProjectId = projectIds.find((projectId) => {
+        const project = cavadalabsProjects.find((item) => item.project_id === projectId);
+        return project !== undefined && companyIds.length > 0 && !companyIds.includes(project.company_id);
+      });
+      if (invalidProjectId) {
+        form.setFields([
+          {
+            name: "cavadalabs_project_ids",
+            errors: ["Project must belong to the selected Company."],
+          },
+        ]);
+        return;
+      }
+      values.cavadalabs_company_memberships = companyIds.map((companyId) => ({
+        company_id: companyId,
+        role: values.cavadalabs_company_role ?? "viewer",
+      }));
+      values.cavadalabs_project_memberships = projectIds.map((projectId) => ({
+        project_id: projectId,
+        role: values.cavadalabs_project_role ?? "operator",
+      }));
+      delete values.cavadalabs_company_ids;
+      delete values.cavadalabs_company_role;
+      delete values.cavadalabs_project_ids;
+      delete values.cavadalabs_project_role;
+      delete values.organizations;
+      delete values.organization_id;
+      delete values.team_id;
+    }
+    onSubmit(values);
     form.resetFields();
     onCancel();
   };
@@ -43,7 +131,7 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ visible, possibleUIRoles,
       <Form
         form={form}
         onFinish={handleEditSubmit}
-        initialValues={user} // Pass initial values here
+        initialValues={initialFormValues}
         labelCol={{ span: 8 }}
         wrapperCol={{ span: 16 }}
         labelAlign="left"
@@ -58,19 +146,23 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ visible, possibleUIRoles,
           </Form.Item>
 
           <Form.Item label="User Role" name="user_role">
-            <Select2>
-              {possibleUIRoles &&
-                Object.entries(possibleUIRoles).map(([role, { ui_label, description }]) => (
-                  <SelectItem key={role} value={role} title={ui_label}>
-                    <div className="flex">
-                      {ui_label}{" "}
-                      <p className="ml-2" style={{ color: "gray", fontSize: "12px" }}>
-                        {description}
-                      </p>
-                    </div>
-                  </SelectItem>
-                ))}
-            </Select2>
+            <Select2
+              options={
+                possibleUIRoles
+                  ? Object.entries(possibleUIRoles).map(([role, { ui_label, description }]) => ({
+                      value: role,
+                      label: (
+                        <div className="flex">
+                          {ui_label}{" "}
+                          <p className="ml-2" style={{ color: "gray", fontSize: "12px" }}>
+                            {description}
+                          </p>
+                        </div>
+                      ),
+                    }))
+                  : []
+              }
+            />
           </Form.Item>
 
           <Form.Item
@@ -95,9 +187,54 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ visible, possibleUIRoles,
             <BudgetDurationDropdown />
           </Form.Item>
 
-          <div style={{ textAlign: "right", marginTop: "10px" }}>
-            <Button2 htmlType="submit">Save</Button2>
-          </div>
+          {hasCavadaLabsContext ? (
+            <>
+              <Form.Item label="Company" name="cavadalabs_company_ids">
+                <Select2
+                  mode="multiple"
+                  placeholder="Select Companies"
+                  options={cavadalabsCompanies.map((company) => ({
+                    label: getCavadaLabsCompanyDisplayName(company),
+                    value: company.company_id,
+                  }))}
+                  onChange={() => {
+                    form.setFieldValue("cavadalabs_project_ids", []);
+                  }}
+                />
+              </Form.Item>
+
+              <Form.Item label="Company Role" name="cavadalabs_company_role">
+                <Select2
+                  options={[
+                    { label: "Company Admin", value: "company_admin" },
+                    { label: "Operator", value: "operator" },
+                    { label: "Viewer", value: "viewer" },
+                  ]}
+                />
+              </Form.Item>
+
+              <Form.Item label="Project" name="cavadalabs_project_ids">
+                <Select2
+                  mode="multiple"
+                  placeholder="Select Projects"
+                  options={filteredProjects.map((project) => ({
+                    label: getCavadaLabsProjectDisplayName(project),
+                    value: project.project_id,
+                  }))}
+                />
+              </Form.Item>
+
+              <Form.Item label="Project Role" name="cavadalabs_project_role">
+                <Select2
+                  options={[
+                    { label: "Project Admin", value: "project_admin" },
+                    { label: "Operator", value: "operator" },
+                    { label: "Viewer", value: "viewer" },
+                  ]}
+                />
+              </Form.Item>
+            </>
+          ) : null}
 
           <div style={{ textAlign: "right", marginTop: "10px" }}>
             <Button2 htmlType="submit">Save</Button2>

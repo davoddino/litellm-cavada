@@ -1105,6 +1105,38 @@ class GenerateKeyRequest(KeyRequestBase):
     cavadalabs_project_id: Optional[str] = None
 
 
+def _dict_from_metadata_value(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _optional_metadata_str(value: Any) -> Optional[str]:
+    return value if isinstance(value, str) and value else None
+
+
+def _cavadalabs_context_from_metadata(metadata: Any) -> Dict[str, Optional[str]]:
+    metadata_dict = _dict_from_metadata_value(metadata)
+    cavadalabs_metadata = _dict_from_metadata_value(metadata_dict.get("cavadalabs"))
+    spend_logs_metadata = _dict_from_metadata_value(
+        metadata_dict.get("spend_logs_metadata")
+    )
+    return {
+        "company_id": _optional_metadata_str(metadata_dict.get("cavadalabs_company_id"))
+        or _optional_metadata_str(cavadalabs_metadata.get("company_id"))
+        or _optional_metadata_str(spend_logs_metadata.get("cavadalabs_company_id")),
+        "project_id": _optional_metadata_str(metadata_dict.get("cavadalabs_project_id"))
+        or _optional_metadata_str(cavadalabs_metadata.get("project_id"))
+        or _optional_metadata_str(spend_logs_metadata.get("cavadalabs_project_id")),
+    }
+
+
 class GenerateKeyResponse(KeyRequestBase):
     key: str  # type: ignore
     key_name: Optional[str] = None
@@ -1144,25 +1176,11 @@ class GenerateKeyResponse(KeyRequestBase):
                 except json.JSONDecodeError:
                     raise ValueError(f"Field {field} should be a valid dictionary")
 
-        metadata = values.get("metadata")
-        if isinstance(metadata, dict):
-            cavadalabs_metadata = metadata.get("cavadalabs")
-            if values.get("cavadalabs_company_id") is None:
-                values["cavadalabs_company_id"] = metadata.get(
-                    "cavadalabs_company_id"
-                ) or (
-                    cavadalabs_metadata.get("company_id")
-                    if isinstance(cavadalabs_metadata, dict)
-                    else None
-                )
-            if values.get("cavadalabs_project_id") is None:
-                values["cavadalabs_project_id"] = metadata.get(
-                    "cavadalabs_project_id"
-                ) or (
-                    cavadalabs_metadata.get("project_id")
-                    if isinstance(cavadalabs_metadata, dict)
-                    else None
-                )
+        cavadalabs_context = _cavadalabs_context_from_metadata(values.get("metadata"))
+        if values.get("cavadalabs_company_id") is None:
+            values["cavadalabs_company_id"] = cavadalabs_context["company_id"]
+        if values.get("cavadalabs_project_id") is None:
+            values["cavadalabs_project_id"] = cavadalabs_context["project_id"]
 
         return values
 
@@ -1589,6 +1607,16 @@ class NewUserRequestTeam(LiteLLMPydanticObjectBase):
     user_role: Literal["user", "admin"] = "user"
 
 
+class CavadaLabsCompanyMembershipRequest(LiteLLMPydanticObjectBase):
+    company_id: str
+    role: Literal["company_admin", "operator", "viewer"] = "viewer"
+
+
+class CavadaLabsProjectMembershipRequest(LiteLLMPydanticObjectBase):
+    project_id: str
+    role: Literal["project_admin", "operator", "viewer"] = "operator"
+
+
 class NewUserRequest(GenerateRequestBase):
     max_budget: Optional[float] = None
     user_email: Optional[str] = None
@@ -1608,6 +1636,12 @@ class NewUserRequest(GenerateRequestBase):
     send_invite_email: Optional[bool] = None
     sso_user_id: Optional[str] = None
     organizations: Optional[List[str]] = None
+    cavadalabs_company_memberships: Optional[
+        List[CavadaLabsCompanyMembershipRequest]
+    ] = None
+    cavadalabs_project_memberships: Optional[
+        List[CavadaLabsProjectMembershipRequest]
+    ] = None
 
 
 class NewUserResponse(GenerateKeyResponse):
@@ -1644,6 +1678,12 @@ class UpdateUserRequestNoUserIDorEmail(
         ]
     ] = None
     max_budget: Optional[float] = None
+    cavadalabs_company_memberships: Optional[
+        List[CavadaLabsCompanyMembershipRequest]
+    ] = None
+    cavadalabs_project_memberships: Optional[
+        List[CavadaLabsProjectMembershipRequest]
+    ] = None
 
 
 class UpdateUserRequest(UpdateUserRequestNoUserIDorEmail):
@@ -1843,6 +1883,7 @@ class TeamBase(LiteLLMPydanticObjectBase):
 class NewTeamRequest(TeamBase):
     model_aliases: Optional[dict] = None
     tags: Optional[list] = None
+    cavadalabs_company_id: Optional[str] = None
     guardrails: Optional[List[str]] = None
     policies: Optional[List[str]] = None
     prompts: Optional[List[str]] = None
@@ -2590,27 +2631,11 @@ class LiteLLM_VerificationToken(LiteLLMPydanticObjectBase):
     def set_cavadalabs_context_from_metadata(cls, values):
         if not isinstance(values, dict):
             return values
-        metadata = values.get("metadata")
-        if isinstance(metadata, str):
-            try:
-                metadata = json.loads(metadata)
-            except json.JSONDecodeError:
-                metadata = {}
-        if not isinstance(metadata, dict):
-            return values
-        cavadalabs_metadata = metadata.get("cavadalabs")
+        cavadalabs_context = _cavadalabs_context_from_metadata(values.get("metadata"))
         if values.get("cavadalabs_company_id") is None:
-            values["cavadalabs_company_id"] = metadata.get("cavadalabs_company_id") or (
-                cavadalabs_metadata.get("company_id")
-                if isinstance(cavadalabs_metadata, dict)
-                else None
-            )
+            values["cavadalabs_company_id"] = cavadalabs_context["company_id"]
         if values.get("cavadalabs_project_id") is None:
-            values["cavadalabs_project_id"] = metadata.get("cavadalabs_project_id") or (
-                cavadalabs_metadata.get("project_id")
-                if isinstance(cavadalabs_metadata, dict)
-                else None
-            )
+            values["cavadalabs_project_id"] = cavadalabs_context["project_id"]
         return values
 
 
@@ -3525,6 +3550,15 @@ class SpendLogsMetadata(TypedDict):
     user_api_key_team_alias: Optional[str]
     cavadalabs_company_id: Optional[str]
     cavadalabs_project_id: Optional[str]
+    cavadalabs_chatbot_id: Optional[str]
+    cavadalabs_web_token_id: Optional[str]
+    cavadalabs_session_id: Optional[str]
+    cavadalabs_node_id: Optional[str]
+    cavadalabs_gpu_id: Optional[str]
+    cavadalabs_loaded_model_id: Optional[str]
+    cavadalabs_model_load_request_id: Optional[str]
+    cavadalabs_provider: Optional[str]
+    cavadalabs_model_alias: Optional[str]
     spend_logs_metadata: Optional[
         dict
     ]  # special param to log k,v pairs to spendlogs for a call

@@ -132,6 +132,8 @@ const FilterComponent: React.FC<FilterComponentProps> = ({
   // Define the order of filters
   const orderedFilters = [
     "Team ID",
+    "Company",
+    "Project",
     "Status",
     "Organization ID",
     "Key Alias",

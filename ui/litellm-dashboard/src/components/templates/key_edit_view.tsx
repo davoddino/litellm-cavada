@@ -2,8 +2,8 @@ import GuardrailSelector from "@/components/guardrails/GuardrailSelector";
 import PolicySelector from "@/components/policies/PolicySelector";
 import { InfoCircleOutlined } from "@ant-design/icons";
 import { TextInput, Button as TremorButton } from "@tremor/react";
-import { Form, Input, Select, Switch, Tooltip } from "antd";
-import { useEffect, useState } from "react";
+import { Alert, Form, Input, Select, Switch, Tooltip } from "antd";
+import { useEffect, useMemo, useState } from "react";
 import { rolesWithWriteAccess } from "../../utils/roles";
 import AgentSelector from "../agent_management/AgentSelector";
 import AccessGroupSelector from "../common_components/AccessGroupSelector";
@@ -12,10 +12,17 @@ import KeyLifecycleSettings from "../common_components/KeyLifecycleSettings";
 import PassThroughRoutesSelector from "../common_components/PassThroughRoutesSelector";
 import RateLimitTypeFormItem from "../common_components/RateLimitTypeFormItem";
 import {
+  filterManageableCavadaLabsCompanies,
+  filterManageableCavadaLabsProjects,
+  findCavadaLabsCompanyForCompatibilityOrganization,
+  findCavadaLabsProjectForCompatibilityTeam,
   getKeyCavadaLabsCompanyId,
   getKeyCavadaLabsProjectId,
+  resolveCavadaLabsProjectCompatibilityTeamId,
+  stripLiteLLMCompatibilityFieldsForCavadaLabsKey,
   useCavadaLabsKeyContextOptions,
 } from "../cavadalabs/keyContext";
+import { cavadalabsMissingSchemaDetailLines, isCavadaLabsMissingSchemaDetail } from "../cavadalabs/api";
 import { extractLoggingSettings, formatMetadataForDisplay, stripTagsFromMetadata } from "../key_info_utils";
 import { BudgetWindowEntry, BudgetWindowsEditor } from "../key_team_helpers/BudgetWindowsEditor";
 import { KeyResponse } from "../key_team_helpers/key_list";
@@ -113,7 +120,43 @@ export function KeyEditView({
     companies: cavadalabsCompanies,
     projects: cavadalabsProjects,
     isLoading: isCavadalabsContextLoading,
+    errorDetail: cavadalabsContextErrorDetail,
   } = useCavadaLabsKeyContextOptions(accessToken);
+  const manageableCavadaLabsCompanies = useMemo(
+    () => filterManageableCavadaLabsCompanies(cavadalabsCompanies),
+    [cavadalabsCompanies],
+  );
+  const manageableCavadaLabsProjects = useMemo(
+    () => filterManageableCavadaLabsProjects(cavadalabsProjects),
+    [cavadalabsProjects],
+  );
+  const explicitCavadaLabsCompanyId = getKeyCavadaLabsCompanyId(keyData);
+  const explicitCavadaLabsProjectId = getKeyCavadaLabsProjectId(keyData);
+  const compatibilityCompany = explicitCavadaLabsCompanyId
+    ? null
+    : findCavadaLabsCompanyForCompatibilityOrganization(
+        cavadalabsCompanies,
+        keyData.organization_id ?? keyData.org_id ?? null,
+      );
+  const compatibilityProject = explicitCavadaLabsProjectId
+    ? null
+    : findCavadaLabsProjectForCompatibilityTeam(cavadalabsProjects, keyData.team_id);
+  const resolvedCavadaLabsCompanyId =
+    explicitCavadaLabsCompanyId ?? compatibilityCompany?.company_id ?? compatibilityProject?.company_id ?? null;
+  const resolvedCavadaLabsProjectId = explicitCavadaLabsProjectId ?? compatibilityProject?.project_id ?? null;
+  const selectedProject = selectedProjectId
+    ? cavadalabsProjects.find((project) => project.project_id === selectedProjectId)
+    : null;
+  const selectedProjectCompanyMismatch = Boolean(
+    selectedCompanyId && selectedProject?.company_id && selectedProject.company_id !== selectedCompanyId,
+  );
+  const hasCavadaLabsMissingSchema = isCavadaLabsMissingSchemaDetail(cavadalabsContextErrorDetail);
+  const hasCavadaLabsTenantOptions = cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
+  const hasManageableCavadaLabsTenantOptions =
+    manageableCavadaLabsCompanies.length > 0 && manageableCavadaLabsProjects.length > 0;
+  const cavadalabsMissingSchemaLines = hasCavadaLabsMissingSchema
+    ? cavadalabsMissingSchemaDetailLines(cavadalabsContextErrorDetail)
+    : [];
 
   useEffect(() => {
     const fetchModels = async () => {
@@ -121,7 +164,7 @@ export function KeyEditView({
 
       try {
         if (selectedProjectId) {
-          const project = cavadalabsProjects.find((item) => item.project_id === selectedProjectId);
+          const project = manageableCavadaLabsProjects.find((item) => item.project_id === selectedProjectId);
           setAvailableModels(project?.allowed_models ?? []);
           return;
         }
@@ -152,7 +195,7 @@ export function KeyEditView({
 
     fetchPrompts();
     fetchModels();
-  }, [userID, userRole, accessToken, team, keyData.team_id, selectedProjectId, cavadalabsProjects]);
+  }, [userID, userRole, accessToken, team, keyData.team_id, selectedProjectId, manageableCavadaLabsProjects]);
 
   // Sync disabled callbacks with form when component mounts
   useEffect(() => {
@@ -174,8 +217,8 @@ export function KeyEditView({
   const initialValues = {
     ...keyData,
     token: keyData.token || keyData.token_id,
-    cavadalabs_company_id: getKeyCavadaLabsCompanyId(keyData),
-    cavadalabs_project_id: getKeyCavadaLabsProjectId(keyData),
+    cavadalabs_company_id: resolvedCavadaLabsCompanyId,
+    cavadalabs_project_id: resolvedCavadaLabsProjectId,
     budget_duration: getBudgetDuration(keyData.budget_duration),
     metadata: formatMetadataForDisplay(stripTagsFromMetadata(keyData.metadata)),
     guardrails: keyData.metadata?.guardrails,
@@ -206,13 +249,13 @@ export function KeyEditView({
   };
 
   useEffect(() => {
-    setSelectedCompanyId(getKeyCavadaLabsCompanyId(keyData));
-    setSelectedProjectId(getKeyCavadaLabsProjectId(keyData));
+    setSelectedCompanyId(resolvedCavadaLabsCompanyId);
+    setSelectedProjectId(resolvedCavadaLabsProjectId);
     form.setFieldsValue({
       ...keyData,
       token: keyData.token || keyData.token_id,
-      cavadalabs_company_id: getKeyCavadaLabsCompanyId(keyData),
-      cavadalabs_project_id: getKeyCavadaLabsProjectId(keyData),
+      cavadalabs_company_id: resolvedCavadaLabsCompanyId,
+      cavadalabs_project_id: resolvedCavadaLabsProjectId,
       budget_duration: getBudgetDuration(keyData.budget_duration),
       metadata: formatMetadataForDisplay(stripTagsFromMetadata(keyData.metadata)),
       guardrails: keyData.metadata?.guardrails,
@@ -237,7 +280,7 @@ export function KeyEditView({
           ? keyData.allowed_routes.join(", ")
           : "",
     });
-  }, [keyData, form]);
+  }, [keyData, form, resolvedCavadaLabsCompanyId, resolvedCavadaLabsProjectId]);
 
   // Sync auto-rotation state with form values
   useEffect(() => {
@@ -303,17 +346,79 @@ export function KeyEditView({
       );
       values.budget_limits = validWindows.length > 0 ? validWindows : undefined;
 
+      const submittedCompanyId = values.cavadalabs_company_id || null;
+      const submittedProjectId = values.cavadalabs_project_id || null;
+      if (submittedCompanyId || submittedProjectId) {
+        if (!submittedCompanyId || !submittedProjectId) {
+          NotificationsManager.fromBackend("Select both Company and Project before saving a CavadaLabs key");
+          return;
+        }
+        const submittedProject = manageableCavadaLabsProjects.find(
+          (project) => project.project_id === submittedProjectId,
+        );
+        if (!submittedProject) {
+          NotificationsManager.fromBackend(`Project ${submittedProjectId} is not available`);
+          return;
+        }
+        if (submittedProject.company_id !== submittedCompanyId) {
+          NotificationsManager.fromBackend("Selected Project belongs to a different Company");
+          return;
+        }
+      }
+
+      if (selectedProjectCompanyMismatch) {
+        NotificationsManager.fromBackend("Selected Project belongs to a different Company");
+        return;
+      }
+
+      stripLiteLLMCompatibilityFieldsForCavadaLabsKey(values);
+
       await onSubmit(values);
     } finally {
       setIsKeySaving(false);
     }
   };
+  const hasCavadaLabsContext = Boolean(selectedCompanyId || selectedProjectId);
+  const shouldUseCavadaLabsKeyContext =
+    hasCavadaLabsContext || hasCavadaLabsTenantOptions || hasCavadaLabsMissingSchema;
+  const showCavadaLabsManageScopeWarning =
+    shouldUseCavadaLabsKeyContext && !hasCavadaLabsMissingSchema && !hasManageableCavadaLabsTenantOptions;
 
   return (
     <Form form={form} onFinish={handleSubmit} initialValues={initialValues} layout="vertical">
       <Form.Item label="Key Alias" name="key_alias">
         <TextInput />
       </Form.Item>
+
+      {hasCavadaLabsMissingSchema && (
+        <Alert
+          className="mb-4"
+          type="error"
+          showIcon
+          message="CavadaLabs key schema migration required"
+          description={
+            <div className="space-y-1">
+              <div>
+                Company and Project key context cannot be loaded until the CavadaLabs Prisma migrations are applied.
+              </div>
+              {cavadalabsMissingSchemaLines.map((line) => (
+                <div key={line}>
+                  <code>{line}</code>
+                </div>
+              ))}
+            </div>
+          }
+        />
+      )}
+      {showCavadaLabsManageScopeWarning && (
+        <Alert
+          className="mb-4"
+          type="warning"
+          showIcon
+          message="Company or Project admin access required"
+          description="Editing a CavadaLabs server API key requires a manageable Company and Project scope."
+        />
+      )}
 
       <Form.Item label="Models" name="models">
         <Form.Item
@@ -662,98 +767,123 @@ export function KeyEditView({
         />
       </Form.Item>
 
-      <Form.Item
-        label={
-          <span>
-            Company{" "}
-            <Tooltip title="The CavadaLabs company this key belongs to.">
-              <InfoCircleOutlined style={{ marginLeft: "4px" }} />
-            </Tooltip>
-          </span>
-        }
-        name="cavadalabs_company_id"
-      >
-        <Select
-          showSearch
-          allowClear
-          loading={isCavadalabsContextLoading}
-          placeholder="Select company"
-          optionFilterProp="label"
-          onChange={(companyId) => {
-            setSelectedCompanyId(companyId || null);
-            setSelectedProjectId(null);
-            form.setFieldValue("cavadalabs_project_id", undefined);
-          }}
-          options={cavadalabsCompanies.map((company) => ({
-            label: `${company.legal_name || company.company_id} (${company.company_id})`,
-            value: company.company_id,
-          }))}
-        />
-      </Form.Item>
-
-      <Form.Item
-        label={
-          <span>
-            Project{" "}
-            <Tooltip title="The CavadaLabs project this key is scoped to for usage, billing, and product governance.">
-              <InfoCircleOutlined style={{ marginLeft: "4px" }} />
-            </Tooltip>
-          </span>
-        }
-        name="cavadalabs_project_id"
-      >
-        <Select
-          showSearch
-          allowClear
-          loading={isCavadalabsContextLoading}
-          placeholder="Select project"
-          optionFilterProp="label"
-          onChange={(projectId) => {
-            if (!projectId) {
-              setSelectedProjectId(null);
-              return;
+      {shouldUseCavadaLabsKeyContext && (
+        <>
+          <Form.Item
+            label={
+              <span>
+                Company{" "}
+                <Tooltip title="The CavadaLabs company this key belongs to.">
+                  <InfoCircleOutlined style={{ marginLeft: "4px" }} />
+                </Tooltip>
+              </span>
             }
-            const project = cavadalabsProjects.find((item) => item.project_id === projectId);
-            setSelectedProjectId(projectId);
-            if (project?.company_id) {
-              setSelectedCompanyId(project.company_id);
-              form.setFieldValue("cavadalabs_company_id", project.company_id);
-            }
-          }}
-          options={cavadalabsProjects
-            .filter((project) => !selectedCompanyId || project.company_id === selectedCompanyId)
-            .map((project) => ({
-              label: `${project.name || project.project_id} (${project.project_id})`,
-              value: project.project_id,
-            }))}
-        />
-      </Form.Item>
+            name="cavadalabs_company_id"
+          >
+            <Select
+              aria-label="CavadaLabs Company"
+              showSearch
+              allowClear
+              loading={isCavadalabsContextLoading}
+              placeholder="Select company"
+              optionFilterProp="label"
+              onChange={(companyId) => {
+                setSelectedCompanyId(companyId || null);
+                setSelectedProjectId(null);
+                form.setFieldValue("cavadalabs_project_id", undefined);
+                form.setFieldValue("team_id", undefined);
+              }}
+              options={manageableCavadaLabsCompanies.map((company) => ({
+                label: `${company.legal_name || company.company_id} (${company.company_id})`,
+                value: company.company_id,
+              }))}
+            />
+          </Form.Item>
 
-      <Form.Item
-        label="Team ID"
-        name="team_id"
-      >
-        <Select
-          placeholder="Select team"
-          showSearch
-          style={{ width: "100%" }}
-          onChange={(teamId) => {
-            const selectedTeam = teams?.find((t) => t.team_id === teamId) || null;
-            if (!selectedTeam) form.setFieldValue("team_id", undefined);
-          }}
-          filterOption={(input, option) => {
-            const team = teams?.find((t) => t.team_id === option?.value);
-            if (!team) return false;
-            return team.team_alias?.toLowerCase().includes(input.toLowerCase()) ?? false;
-          }}
-        >
-          {teams?.map((team) => (
-            <Select.Option key={team.team_id} value={team.team_id}>
-              {`${team.team_alias} (${team.team_id})`}
-            </Select.Option>
-          ))}
-        </Select>
-      </Form.Item>
+          <Form.Item
+            label={
+              <span>
+                Project{" "}
+                <Tooltip title="The CavadaLabs project this key is scoped to for usage, billing, and product governance.">
+                  <InfoCircleOutlined style={{ marginLeft: "4px" }} />
+                </Tooltip>
+              </span>
+            }
+            name="cavadalabs_project_id"
+          >
+            <Select
+              aria-label="CavadaLabs Project"
+              showSearch
+              allowClear
+              disabled={!selectedCompanyId || isCavadalabsContextLoading}
+              loading={isCavadalabsContextLoading}
+              placeholder={selectedCompanyId ? "Select project" : "Select company first"}
+              optionFilterProp="label"
+              onChange={(projectId) => {
+                if (!projectId) {
+                  setSelectedProjectId(null);
+                  form.setFieldValue("team_id", undefined);
+                  return;
+                }
+                const project = manageableCavadaLabsProjects.find((item) => item.project_id === projectId);
+                setSelectedProjectId(projectId);
+                if (project?.company_id) {
+                  setSelectedCompanyId(project.company_id);
+                  form.setFieldValue("cavadalabs_company_id", project.company_id);
+                }
+                form.setFieldValue(
+                  "team_id",
+                  resolveCavadaLabsProjectCompatibilityTeamId(projectId, manageableCavadaLabsProjects),
+                );
+              }}
+              options={manageableCavadaLabsProjects
+                .filter((project) => !selectedCompanyId || project.company_id === selectedCompanyId)
+                .map((project) => ({
+                  label: project.litellm_team_id
+                    ? `${project.name || project.project_id} (${project.project_id})`
+                    : `${project.name || project.project_id} (${project.project_id}) - mapping required`,
+                  value: project.project_id,
+                  disabled: !project.litellm_team_id,
+                }))}
+            />
+          </Form.Item>
+
+          {selectedProjectCompanyMismatch && (
+            <div className="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              Selected Project belongs to a different Company. Choose a Project from the selected Company before saving.
+            </div>
+          )}
+        </>
+      )}
+
+      {shouldUseCavadaLabsKeyContext ? (
+        <Form.Item name="team_id" hidden>
+          <Input type="hidden" />
+        </Form.Item>
+      ) : (
+        <Form.Item label="Team ID" name="team_id">
+          <Select
+            placeholder="Select team"
+            showSearch
+            style={{ width: "100%" }}
+            onChange={(teamId) => {
+              const selectedTeam = teams?.find((t) => t.team_id === teamId) || null;
+              if (!selectedTeam) form.setFieldValue("team_id", undefined);
+            }}
+            filterOption={(input, option) => {
+              const team = teams?.find((t) => t.team_id === option?.value);
+              if (!team) return false;
+              return team.team_alias?.toLowerCase().includes(input.toLowerCase()) ?? false;
+            }}
+          >
+            {teams?.map((team) => (
+              <Select.Option key={team.team_id} value={team.team_id}>
+                {`${team.team_alias} (${team.team_id})`}
+              </Select.Option>
+            ))}
+          </Select>
+        </Form.Item>
+      )}
       <Form.Item label="Logging Settings" name="logging_settings">
         <EditLoggingSettings
           value={form.getFieldValue("logging_settings")}

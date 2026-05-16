@@ -552,6 +552,156 @@ async def test_new_team_with_mcp_tool_permissions(mock_db_client, mock_admin_aut
     assert created_permission_data["mcp_servers"] == ["server_a", "server_b"]
 
 
+def _setup_new_team_create_mocks(mock_db_client):
+    mock_db_client.jsonify_team_object = lambda db_data: db_data
+    mock_db_client.get_data = AsyncMock(return_value=None)
+    mock_db_client.update_data = AsyncMock(return_value=MagicMock())
+    mock_db_client.db = MagicMock()
+
+    mock_db_client.db.litellm_teamtable = MagicMock()
+    team_create_result = MagicMock(
+        team_id="team-1",
+        team_alias="Dispatch Project",
+        organization_id="org-company-1",
+    )
+    team_create_result.model_dump.return_value = {
+        "team_id": "team-1",
+        "team_alias": "Dispatch Project",
+        "organization_id": "org-company-1",
+    }
+    mock_db_client.db.litellm_teamtable.count = AsyncMock(return_value=0)
+    mock_db_client.db.litellm_teamtable.create = AsyncMock(
+        return_value=team_create_result
+    )
+    mock_db_client.db.litellm_teamtable.update = AsyncMock(
+        return_value=team_create_result
+    )
+
+    mock_db_client.db.litellm_usertable = MagicMock()
+    mock_db_client.db.litellm_usertable.update = AsyncMock(return_value=MagicMock())
+    mock_db_client.db.litellm_modeltable = MagicMock()
+    mock_db_client.db.litellm_modeltable.create = AsyncMock(
+        return_value=MagicMock(id="model-1")
+    )
+    mock_db_client.db.litellm_objectpermissiontable = MagicMock()
+    mock_db_client.db.litellm_objectpermissiontable.create = AsyncMock(
+        return_value=MagicMock(object_permission_id="object-permission-1")
+    )
+    return team_create_result
+
+
+@pytest.mark.asyncio
+async def test_new_team_accepts_cavadalabs_company_context(
+    mock_db_client, mock_admin_auth
+):
+    from fastapi import Request
+
+    from litellm.proxy._types import NewTeamRequest
+    from litellm.proxy.management_endpoints.team_endpoints import new_team
+
+    _setup_new_team_create_mocks(mock_db_client)
+    company = MagicMock(litellm_organization_id="org-company-1")
+    org_table = MagicMock(
+        organization_id="org-company-1",
+        models=[],
+        litellm_budget_table=None,
+    )
+
+    with (
+        patch(
+            "litellm.proxy.management_endpoints.team_endpoints.require_company_access",
+            new=AsyncMock(return_value=company),
+        ) as require_company_access_mock,
+        patch(
+            "litellm.proxy.management_endpoints.team_endpoints.get_org_object",
+            new=AsyncMock(return_value=org_table),
+        ),
+    ):
+        await new_team(
+            data=NewTeamRequest(
+                team_alias="Dispatch Project",
+                cavadalabs_company_id="company-1",
+                metadata={"source": "cavadalabs"},
+            ),
+            http_request=MagicMock(spec=Request),
+            user_api_key_dict=mock_admin_auth,
+        )
+
+    require_company_access_mock.assert_awaited_once_with(
+        mock_db_client.db,
+        company_id="company-1",
+        user_api_key_dict=mock_admin_auth,
+        require_admin=True,
+    )
+    team_data = mock_db_client.db.litellm_teamtable.create.call_args.kwargs["data"]
+    assert team_data["organization_id"] == "org-company-1"
+    assert team_data["metadata"]["source"] == "cavadalabs"
+    assert team_data["metadata"]["cavadalabs_company_id"] == "company-1"
+
+
+@pytest.mark.asyncio
+async def test_new_team_rejects_cavadalabs_company_organization_mismatch(
+    mock_db_client, mock_admin_auth
+):
+    from fastapi import Request
+
+    from litellm.proxy._types import NewTeamRequest
+    from litellm.proxy.management_endpoints.team_endpoints import new_team
+
+    _setup_new_team_create_mocks(mock_db_client)
+    company = MagicMock(litellm_organization_id="org-company-1")
+
+    with patch(
+        "litellm.proxy.management_endpoints.team_endpoints.require_company_access",
+        new=AsyncMock(return_value=company),
+    ):
+        with pytest.raises(ProxyException) as exc_info:
+            await new_team(
+                data=NewTeamRequest(
+                    team_alias="Wrong Mapping",
+                    cavadalabs_company_id="company-1",
+                    organization_id="org-other",
+                ),
+                http_request=MagicMock(spec=Request),
+                user_api_key_dict=mock_admin_auth,
+            )
+
+    assert exc_info.value.code == "400"
+    assert "does not match organization_id" in exc_info.value.message
+    mock_db_client.db.litellm_teamtable.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_new_team_rejects_cavadalabs_company_without_compatibility_mapping(
+    mock_db_client, mock_admin_auth
+):
+    from fastapi import Request
+
+    from litellm.proxy._types import NewTeamRequest
+    from litellm.proxy.management_endpoints.team_endpoints import new_team
+
+    _setup_new_team_create_mocks(mock_db_client)
+    company = MagicMock(litellm_organization_id=None)
+
+    with patch(
+        "litellm.proxy.management_endpoints.team_endpoints.require_company_access",
+        new=AsyncMock(return_value=company),
+    ):
+        with pytest.raises(ProxyException) as exc_info:
+            await new_team(
+                data=NewTeamRequest(
+                    team_alias="No Mapping",
+                    cavadalabs_company_id="company-1",
+                ),
+                http_request=MagicMock(spec=Request),
+                user_api_key_dict=mock_admin_auth,
+            )
+
+    assert exc_info.value.code == "400"
+    assert "missing its LiteLLM compatibility organization" in exc_info.value.message
+    mock_db_client.db.litellm_teamtable.create.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_team_update_object_permissions_existing_permission(monkeypatch):
     """
@@ -3185,6 +3335,122 @@ async def test_list_team_v2_search_builds_or_clause():
                 {"team_alias": {"contains": "platform", "mode": "insensitive"}},
             ]
         }
+
+
+@pytest.mark.asyncio
+async def test_list_team_v2_resolves_cavadalabs_company_project_filters():
+    from unittest.mock import AsyncMock, Mock, patch
+
+    from fastapi import Request
+
+    from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
+    from litellm.proxy.management_endpoints.team_endpoints import list_team_v2
+
+    mock_request = Mock(spec=Request)
+    mock_admin = UserAPIKeyAuth(
+        user_role=LitellmUserRoles.PROXY_ADMIN, user_id="admin_user"
+    )
+
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client") as mock_prisma_client,
+        patch(
+            "litellm.proxy.management_endpoints.team_endpoints.resolve_cavadalabs_team_list_filters",
+            new=AsyncMock(return_value=("org-company-1", "team-project-1")),
+        ) as resolve_scope,
+    ):
+        mock_db = Mock()
+        mock_prisma_client.db = mock_db
+        mock_db.litellm_teamtable.find_many = AsyncMock(return_value=[])
+        mock_db.litellm_teamtable.count = AsyncMock(return_value=0)
+
+        await list_team_v2(
+            http_request=mock_request,
+            user_id=None,
+            organization_id=None,
+            team_id=None,
+            team_alias=None,
+            search=None,
+            user_api_key_dict=mock_admin,
+            page=1,
+            page_size=10,
+            status=None,
+            cavadalabs_company_id="company-1",
+            cavadalabs_project_id="project-1",
+        )
+
+        resolve_scope.assert_awaited_once_with(
+            mock_db,
+            user_api_key_dict=mock_admin,
+            cavadalabs_company_id="company-1",
+            cavadalabs_project_id="project-1",
+        )
+        find_many_kwargs = mock_db.litellm_teamtable.find_many.call_args.kwargs
+        assert find_many_kwargs["where"]["organization_id"] == "org-company-1"
+        assert find_many_kwargs["where"]["team_id"] == "team-project-1"
+
+
+@pytest.mark.asyncio
+async def test_list_team_v2_cavadalabs_scope_does_not_require_legacy_org_admin():
+    from unittest.mock import AsyncMock, Mock, patch
+
+    from fastapi import Request
+
+    from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
+    from litellm.proxy.management_endpoints.team_endpoints import list_team_v2
+
+    mock_request = Mock(spec=Request)
+    cavadalabs_project_viewer = UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="project-viewer",
+    )
+
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client") as mock_prisma_client,
+        patch("litellm.proxy.proxy_server.user_api_key_cache"),
+        patch("litellm.proxy.proxy_server.proxy_logging_obj"),
+        patch(
+            "litellm.proxy.management_endpoints.team_endpoints.resolve_cavadalabs_team_list_filters",
+            new=AsyncMock(return_value=("org-company-1", "team-project-1")),
+        ) as resolve_scope,
+        patch(
+            "litellm.proxy.management_endpoints.team_endpoints.get_user_object",
+            new=AsyncMock(
+                side_effect=AssertionError(
+                    "CavadaLabs scoped team list should not require legacy org_admin lookup"
+                )
+            ),
+        ),
+    ):
+        mock_db = Mock()
+        mock_prisma_client.db = mock_db
+        mock_db.litellm_teamtable.find_many = AsyncMock(return_value=[])
+        mock_db.litellm_teamtable.count = AsyncMock(return_value=0)
+
+        response = await list_team_v2(
+            http_request=mock_request,
+            user_id=None,
+            organization_id=None,
+            team_id=None,
+            team_alias=None,
+            search=None,
+            user_api_key_dict=cavadalabs_project_viewer,
+            page=1,
+            page_size=10,
+            status=None,
+            cavadalabs_company_id="company-1",
+            cavadalabs_project_id="project-1",
+        )
+
+        assert response["total"] == 0
+        resolve_scope.assert_awaited_once_with(
+            mock_db,
+            user_api_key_dict=cavadalabs_project_viewer,
+            cavadalabs_company_id="company-1",
+            cavadalabs_project_id="project-1",
+        )
+        find_many_kwargs = mock_db.litellm_teamtable.find_many.call_args.kwargs
+        assert find_many_kwargs["where"]["organization_id"] == "org-company-1"
+        assert find_many_kwargs["where"]["team_id"] == "team-project-1"
 
 
 @pytest.mark.asyncio
@@ -7367,6 +7633,149 @@ async def test_list_team_v1_batches_key_queries():
         assert result[0].keys == [key1, key2]
         assert result[1].team_id == "team-2"
         assert result[1].keys == [key3]
+
+
+@pytest.mark.asyncio
+async def test_list_team_v1_cavadalabs_scope_does_not_require_legacy_org_admin():
+    from unittest.mock import AsyncMock, Mock, patch
+
+    from fastapi import Request
+
+    from litellm.proxy._types import (
+        LiteLLM_TeamTable,
+        LitellmUserRoles,
+        UserAPIKeyAuth,
+    )
+    from litellm.proxy.management_endpoints.team_endpoints import list_team
+
+    mock_request = Mock(spec=Request)
+    cavadalabs_project_viewer = UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="project-viewer",
+    )
+    scoped_team = LiteLLM_TeamTable(
+        team_id="team-project-1",
+        team_alias="Project One",
+        organization_id="org-company-1",
+        members_with_roles=[],
+    )
+
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client") as mock_prisma_client,
+        patch("litellm.proxy.proxy_server.user_api_key_cache"),
+        patch("litellm.proxy.proxy_server.proxy_logging_obj"),
+        patch(
+            "litellm.proxy.management_endpoints.team_endpoints.resolve_cavadalabs_team_list_filters",
+            new=AsyncMock(return_value=("org-company-1", "team-project-1")),
+        ),
+        patch(
+            "litellm.proxy.management_endpoints.team_endpoints.get_user_object",
+            new=AsyncMock(
+                side_effect=AssertionError(
+                    "CavadaLabs scoped team list should not require legacy org_admin lookup"
+                )
+            ),
+        ),
+        patch(
+            "litellm.proxy.management_endpoints.team_endpoints.get_all_team_memberships",
+            new_callable=AsyncMock,
+            return_value=[],
+        ),
+    ):
+        mock_db = Mock()
+        mock_prisma_client.db = mock_db
+        mock_db.litellm_teamtable.find_many = AsyncMock(return_value=[scoped_team])
+        mock_db.litellm_verificationtoken.find_many = AsyncMock(return_value=[])
+
+        result = await list_team(
+            http_request=mock_request,
+            user_id=None,
+            user_api_key_dict=cavadalabs_project_viewer,
+            cavadalabs_company_id="company-1",
+            cavadalabs_project_id="project-1",
+        )
+
+        assert [team.team_id for team in result] == ["team-project-1"]
+        find_many_kwargs = mock_db.litellm_teamtable.find_many.call_args.kwargs
+        assert find_many_kwargs["where"] == {
+            "organization_id": "org-company-1",
+            "team_id": "team-project-1",
+        }
+
+
+@pytest.mark.asyncio
+async def test_list_team_v2_includes_cavadalabs_project_context_from_native_project():
+    from unittest.mock import AsyncMock, Mock, patch
+
+    from fastapi import Request
+
+    from litellm.proxy._types import (
+        LiteLLM_TeamTable,
+        LitellmUserRoles,
+        UserAPIKeyAuth,
+    )
+    from litellm.proxy.management_endpoints.team_endpoints import list_team_v2
+
+    mock_request = Mock(spec=Request)
+    scoped_team = LiteLLM_TeamTable(
+        team_id="team-project-1",
+        team_alias="Compatibility Team",
+        organization_id="org-company-1",
+        members_with_roles=[],
+    )
+    project_row = Mock()
+    project_row.litellm_team_id = "team-project-1"
+    project_row.project_id = "project-1"
+    project_row.company_id = "company-1"
+    project_row.name = "Dispatch Project"
+    project_row.status = "production"
+
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client") as mock_prisma_client,
+        patch("litellm.proxy.proxy_server.user_api_key_cache"),
+        patch("litellm.proxy.proxy_server.proxy_logging_obj"),
+        patch(
+            "litellm.proxy.management_endpoints.team_endpoints.resolve_cavadalabs_team_list_filters",
+            new=AsyncMock(return_value=("org-company-1", "team-project-1")),
+        ),
+    ):
+        mock_db = Mock()
+        mock_prisma_client.db = mock_db
+        mock_db.litellm_teamtable.find_many = AsyncMock(return_value=[scoped_team])
+        mock_db.litellm_teamtable.count = AsyncMock(return_value=1)
+        mock_db.cavadalabs_projecttable.find_many = AsyncMock(
+            return_value=[project_row]
+        )
+
+        response = await list_team_v2(
+            http_request=mock_request,
+            user_id=None,
+            organization_id=None,
+            team_id=None,
+            team_alias=None,
+            search=None,
+            page=1,
+            page_size=10,
+            sort_by=None,
+            sort_order="asc",
+            status=None,
+            cavadalabs_company_id="company-1",
+            cavadalabs_project_id="project-1",
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="project-viewer",
+                user_role=LitellmUserRoles.INTERNAL_USER,
+            ),
+        )
+
+    team = response["teams"][0]
+    assert team.team_id == "team-project-1"
+    assert team.cavadalabs_company_id == "company-1"
+    assert team.cavadalabs_project_id == "project-1"
+    assert team.cavadalabs_project_name == "Dispatch Project"
+    mock_db.litellm_teamtable.find_many.assert_awaited_once()
+    mock_db.cavadalabs_projecttable.find_many.assert_awaited_once_with(
+        where={"litellm_team_id": {"in": ["team-project-1"]}}
+    )
 
 
 def test_new_team_request_accepts_team_member_budget_duration():

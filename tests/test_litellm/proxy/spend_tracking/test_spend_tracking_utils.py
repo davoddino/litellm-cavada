@@ -4,10 +4,10 @@ import json
 import os
 import sys
 from datetime import timezone
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from fastapi.testclient import TestClient
 
 sys.path.insert(
     0, os.path.abspath("../../../..")
@@ -15,7 +15,6 @@ sys.path.insert(
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import litellm
 from litellm.constants import (
     LITELLM_TRUNCATED_PAYLOAD_FIELD,
     LITELLM_TRUNCATION_DB_SAFEGUARD_NOTE,
@@ -35,7 +34,11 @@ from litellm.proxy.spend_tracking.spend_tracking_utils import (
     get_logging_payload,
 )
 from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy.cavadalabs.usage_tracking import (
+    process_spend_logs_cavadalabs_ledger,
+)
 from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
+from litellm.proxy.utils import update_spend_logs_job
 from litellm.types.utils import (
     StandardLoggingHiddenParams,
     StandardLoggingMetadata,
@@ -104,6 +107,206 @@ def test_get_logging_payload_keeps_cavadalabs_context_for_spend_logs():
     metadata = json.loads(payload["metadata"])
     assert metadata["cavadalabs_company_id"] == "company-1"
     assert metadata["cavadalabs_project_id"] == "project-1"
+
+
+@pytest.mark.asyncio
+async def test_cavadalabs_ledger_resolves_key_context_from_metadata_key_hash():
+    db = SimpleNamespace(
+        litellm_verificationtoken=SimpleNamespace(
+            find_many=AsyncMock(
+                return_value=[
+                    SimpleNamespace(
+                        token="hashed-key",
+                        metadata={
+                            "cavadalabs_company_id": "company-1",
+                            "cavadalabs_project_id": "project-1",
+                        },
+                        team_id=None,
+                        organization_id=None,
+                    )
+                ]
+            )
+        ),
+        litellm_deletedverificationtoken=SimpleNamespace(
+            find_many=AsyncMock(return_value=[])
+        ),
+        cavadalabs_projecttable=SimpleNamespace(
+            find_many=AsyncMock(
+                return_value=[
+                    SimpleNamespace(project_id="project-1", company_id="company-1")
+                ]
+            )
+        ),
+        cavadalabs_companytable=SimpleNamespace(find_many=AsyncMock(return_value=[])),
+        cavadalabs_requestledgertable=SimpleNamespace(
+            create_many=AsyncMock(return_value=SimpleNamespace(count=1))
+        ),
+    )
+
+    created = await process_spend_logs_cavadalabs_ledger(
+        prisma_client=SimpleNamespace(db=db),
+        logs_to_process=[
+            {
+                "request_id": "req-metadata-key-hash",
+                "metadata": json.dumps({"user_api_key_hash": "hashed-key"}),
+                "custom_llm_provider": "openai",
+                "model": "openai/gpt-4.1",
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "spend": 0.05,
+                "status": "success",
+                "startTime": datetime.datetime.now(timezone.utc),
+            }
+        ],
+    )
+
+    assert created == 1
+    db.litellm_verificationtoken.find_many.assert_awaited_once_with(
+        where={"token": {"in": ["hashed-key"]}}
+    )
+    ledger_row = db.cavadalabs_requestledgertable.create_many.call_args.kwargs["data"][
+        0
+    ]
+    assert ledger_row["request_id"] == "req-metadata-key-hash"
+    assert ledger_row["company_id"] == "company-1"
+    assert ledger_row["project_id"] == "project-1"
+    assert ledger_row["api_key_hash"] == "hashed-key"
+
+
+@pytest.mark.asyncio
+async def test_update_spend_logs_job_mirrors_live_cavadalabs_key_context_to_ledger():
+    db = SimpleNamespace(
+        cavadalabs_projecttable=SimpleNamespace(
+            find_many=AsyncMock(
+                return_value=[
+                    SimpleNamespace(project_id="project-1", company_id="company-1")
+                ]
+            )
+        ),
+        cavadalabs_companytable=SimpleNamespace(find_many=AsyncMock(return_value=[])),
+        cavadalabs_requestledgertable=SimpleNamespace(
+            create_many=AsyncMock(return_value=SimpleNamespace(count=1))
+        ),
+    )
+    prisma_client = SimpleNamespace(
+        db=db,
+        _spend_log_transactions_lock=asyncio.Lock(),
+        spend_log_transactions=[],
+    )
+    request_data = {"metadata": {}}
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="hashed-key",
+        cavadalabs_company_id="company-1",
+        cavadalabs_project_id="project-1",
+    )
+    LiteLLMProxyRequestSetup.add_user_api_key_auth_to_request_metadata(
+        data=request_data,
+        user_api_key_dict=user_api_key_dict,
+        _metadata_variable_name="metadata",
+    )
+    start_time = datetime.datetime.now(timezone.utc)
+    payload = get_logging_payload(
+        kwargs={
+            "litellm_params": {"metadata": request_data["metadata"]},
+            "call_type": "acompletion",
+            "model": "openai/gpt-4.1",
+            "custom_llm_provider": "openai",
+            "response_cost": 0.25,
+        },
+        response_obj={
+            "id": "chatcmpl-live-cavadalabs",
+            "usage": {
+                "prompt_tokens": 12,
+                "completion_tokens": 8,
+                "total_tokens": 20,
+            },
+        },
+        start_time=start_time,
+        end_time=start_time + datetime.timedelta(milliseconds=150),
+    )
+    prisma_client.spend_log_transactions.append(payload)
+
+    with (
+        patch(
+            "litellm.proxy.utils.ProxyUpdateSpend.update_spend_logs",
+            new=AsyncMock(),
+        ),
+        patch(
+            "litellm.proxy.guardrails.usage_tracking.process_spend_logs_guardrail_usage",
+            new=AsyncMock(),
+        ),
+        patch(
+            "litellm.proxy.db.spend_log_tool_index.process_spend_logs_tool_usage",
+            new=AsyncMock(),
+        ),
+    ):
+        await update_spend_logs_job(
+            prisma_client=prisma_client,
+            db_writer_client=None,
+            proxy_logging_obj=MagicMock(),
+        )
+
+    assert prisma_client.spend_log_transactions == []
+    db.cavadalabs_requestledgertable.create_many.assert_awaited_once()
+    ledger_row = db.cavadalabs_requestledgertable.create_many.call_args.kwargs["data"][
+        0
+    ]
+    assert ledger_row["request_id"] == "chatcmpl-live-cavadalabs"
+    assert ledger_row["company_id"] == "company-1"
+    assert ledger_row["project_id"] == "project-1"
+    assert ledger_row["api_key_hash"] == "hashed-key"
+    assert ledger_row["total_tokens"] == 20
+    assert ledger_row["spend"] == 0.25
+
+
+@pytest.mark.asyncio
+async def test_cavadalabs_ledger_does_not_guess_context_for_unmapped_key_hash():
+    db = SimpleNamespace(
+        litellm_verificationtoken=SimpleNamespace(
+            find_many=AsyncMock(
+                return_value=[
+                    SimpleNamespace(
+                        token="hashed-key",
+                        metadata={},
+                        team_id=None,
+                        organization_id=None,
+                    )
+                ]
+            )
+        ),
+        litellm_deletedverificationtoken=SimpleNamespace(
+            find_many=AsyncMock(return_value=[])
+        ),
+        cavadalabs_projecttable=SimpleNamespace(find_many=AsyncMock(return_value=[])),
+        cavadalabs_companytable=SimpleNamespace(find_many=AsyncMock(return_value=[])),
+        cavadalabs_requestledgertable=SimpleNamespace(create_many=AsyncMock()),
+    )
+
+    created = await process_spend_logs_cavadalabs_ledger(
+        prisma_client=SimpleNamespace(db=db),
+        logs_to_process=[
+            {
+                "request_id": "req-unmapped-key",
+                "api_key": "hashed-key",
+                "metadata": "{}",
+                "custom_llm_provider": "openai",
+                "model": "openai/gpt-4.1",
+                "prompt_tokens": 2,
+                "completion_tokens": 3,
+                "total_tokens": 5,
+                "spend": 0.01,
+                "status": "success",
+                "startTime": datetime.datetime.now(timezone.utc),
+            }
+        ],
+    )
+
+    assert created == 0
+    db.litellm_verificationtoken.find_many.assert_awaited_once_with(
+        where={"token": {"in": ["hashed-key"]}}
+    )
+    db.cavadalabs_requestledgertable.create_many.assert_not_awaited()
 
 
 def test_sanitize_request_body_for_spend_logs_payload_long_string():
@@ -682,8 +885,6 @@ def test_get_logging_payload_api_key_preserved_when_standard_logging_payload_is_
     assert payload["model"] == "openai/gpt-4.1"
     assert payload["user"] == "test_user"
 
-    print(f"✅ Test passed! api_key preserved: {payload['api_key']}")
-
 
 @pytest.mark.asyncio
 @patch("litellm.proxy.proxy_server.master_key", "sk-master-key")
@@ -830,18 +1031,6 @@ async def test_api_key_preserved_through_failure_hook_to_database():
     # Verify other fields
     assert payload.get("model") == "gpt-3.5-turbo"
     assert payload.get("user") == "test_user"
-
-    print("\n" + "=" * 80)
-    print("✅ CRITICAL E2E TEST PASSED")
-    print("=" * 80)
-    print(f"Token: {data['token']}")
-    print(f"Payload api_key: {payload_api_key}")
-    print(f"Match: {data['token'] == payload_api_key}")
-    print("=" * 80)
-    print("Production incident bug is FIXED and protected:")
-    print("- Failed requests preserve api_key through entire flow")
-    print("- Both SpendLogs AND DailyUserSpend will have correct api_key")
-    print("=" * 80 + "\n")
 
 
 @patch("litellm.proxy.proxy_server.master_key", None)

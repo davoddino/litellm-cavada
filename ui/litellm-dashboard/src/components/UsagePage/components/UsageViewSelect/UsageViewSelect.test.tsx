@@ -126,6 +126,13 @@ describe("UsageViewSelect", () => {
     expect(screen.queryByRole("option", { name: "Project Usage" })).not.toBeInTheDocument();
   });
 
+  it("should show CavadaLabs company and project usage options for non-admin users with CavadaLabs usage access", () => {
+    render(<UsageViewSelect value="global" onChange={mockOnChange} isAdmin={false} canViewCavadaLabsUsage={true} />);
+
+    expect(screen.getByRole("option", { name: "Company Usage" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Project Usage" })).toBeInTheDocument();
+  });
+
   it("should show Tag Usage for non-admin users with tag usage permission", () => {
     render(<UsageViewSelect value="global" onChange={mockOnChange} isAdmin={false} canViewTagUsage={true} />);
 

@@ -21,6 +21,12 @@ class CavadaLabsProjectStatus(str, enum.Enum):
     ARCHIVED = "archived"
 
 
+class CavadaLabsProjectMemberRole(str, enum.Enum):
+    PROJECT_ADMIN = "project_admin"
+    OPERATOR = "operator"
+    VIEWER = "viewer"
+
+
 class CavadaLabsChatbotStatus(str, enum.Enum):
     DRAFT = "draft"
     PUBLISHED = "published"
@@ -94,6 +100,34 @@ class CavadaLabsBillingReportFormat(str, enum.Enum):
 class CavadaLabsBillingReportStatus(str, enum.Enum):
     GENERATED = "generated"
     VOID = "void"
+
+
+class CavadaLabsUsageDiagnosticsStatus(str, enum.Enum):
+    VISIBLE = "visible"
+    BACKFILL_REQUIRED = "backfill_required"
+    SCOPED_BACKFILL_AVAILABLE = "scoped_backfill_available"
+    MISSING_COMPATIBILITY_MAPPING = "missing_compatibility_mapping"
+    NO_ATTRIBUTABLE_SPEND = "no_attributable_spend"
+    FILTERS_EXCLUDE_USAGE = "filters_exclude_usage"
+
+
+class CavadaLabsUsageDiagnosticsAction(str, enum.Enum):
+    NONE = "none"
+    RUN_SCOPED_BACKFILL = "run_scoped_backfill"
+    RUN_MIGRATION_BACKFILL = "run_migration_backfill"
+    FIX_COMPATIBILITY_MAPPING = "fix_compatibility_mapping"
+
+
+class CavadaLabsUsageSchemaStatus(str, enum.Enum):
+    READY = "ready"
+    MISSING_SCHEMA = "missing_schema"
+
+
+class CavadaLabsUsageMigrationStatus(str, enum.Enum):
+    READY = "ready"
+    SCHEMA_MISSING = "schema_missing"
+    BACKFILL_PENDING = "backfill_pending"
+    BACKFILL_REQUIRED = "backfill_required"
 
 
 class CavadaLabsGuardrailPolicyScope(str, enum.Enum):
@@ -279,6 +313,8 @@ class CavadaLabsCompanyUpdateRequest(CavadaLabsBaseModel):
 class CavadaLabsCompanyResponse(CavadaLabsCompanyCreateRequest):
     company_id: str
     litellm_organization_id: Optional[str] = None
+    cavadalabs_access_role: Optional[str] = None
+    cavadalabs_can_manage: bool = False
     created_at: datetime
     created_by: str
     updated_at: datetime
@@ -332,6 +368,8 @@ class CavadaLabsProjectUpdateRequest(CavadaLabsBaseModel):
 class CavadaLabsProjectResponse(CavadaLabsProjectCreateRequest):
     project_id: str
     litellm_team_id: Optional[str] = None
+    cavadalabs_access_role: Optional[str] = None
+    cavadalabs_can_manage: bool = False
     created_at: datetime
     created_by: str
     updated_at: datetime
@@ -341,6 +379,120 @@ class CavadaLabsProjectResponse(CavadaLabsProjectCreateRequest):
 class CavadaLabsProjectListResponse(CavadaLabsBaseModel):
     projects: List[CavadaLabsProjectResponse]
     count: int
+
+
+class CavadaLabsProjectMemberCreateRequest(CavadaLabsBaseModel):
+    user_id: str = Field(min_length=1)
+    role: CavadaLabsProjectMemberRole = CavadaLabsProjectMemberRole.OPERATOR
+
+
+class CavadaLabsProjectMemberUpdateRequest(CavadaLabsBaseModel):
+    role: CavadaLabsProjectMemberRole
+
+
+class CavadaLabsProjectMemberResponse(CavadaLabsBaseModel):
+    membership_id: str
+    project_id: str
+    company_id: str
+    user_id: str
+    role: CavadaLabsProjectMemberRole
+    created_at: datetime
+    created_by: Optional[str] = None
+    updated_at: datetime
+    updated_by: Optional[str] = None
+
+
+class CavadaLabsProjectMemberListResponse(CavadaLabsBaseModel):
+    project_id: str
+    company_id: str
+    members: List[CavadaLabsProjectMemberResponse]
+    count: int
+
+
+class CavadaLabsProjectMemberDeleteResponse(CavadaLabsBaseModel):
+    project_id: str
+    company_id: str
+    user_id: str
+    deleted: bool
+
+
+class CavadaLabsUsageDiagnosticsItem(CavadaLabsBaseModel):
+    entity_type: str
+    entity_id: str
+    status: CavadaLabsUsageDiagnosticsStatus
+    ledger_rows: int = 0
+    attributable_spend_logs: int = 0
+    metadata_spend_logs: int = 0
+    compatibility_spend_logs: int = 0
+    key_metadata_spend_logs: int = 0
+    unmapped_spend_logs: int = 0
+    unfiltered_attributable_spend_logs: int = 0
+    all_time_attributable_spend_logs: int = 0
+    ledger_gap: int = 0
+    missing_ledger_rows: int = 0
+    recommended_action: CavadaLabsUsageDiagnosticsAction = (
+        CavadaLabsUsageDiagnosticsAction.NONE
+    )
+    scoped_backfill_available: bool = False
+    filters_exclude_usage: bool = False
+    date_range_excludes_usage: bool = False
+    missing_mappings: List[str] = Field(default_factory=list)
+    missing_schema: List[str] = Field(default_factory=list)
+    message: str
+
+
+class CavadaLabsUsageMigrationStep(CavadaLabsBaseModel):
+    name: str
+    purpose: str
+
+
+class CavadaLabsUsageDiagnosticsResponse(CavadaLabsBaseModel):
+    diagnostics: List[CavadaLabsUsageDiagnosticsItem]
+    migration_name: str
+    migration_command: str
+    schema_status: CavadaLabsUsageSchemaStatus = CavadaLabsUsageSchemaStatus.READY
+    migration_status: CavadaLabsUsageMigrationStatus = (
+        CavadaLabsUsageMigrationStatus.READY
+    )
+    missing_schema: List[str] = Field(default_factory=list)
+    migration_names: List[str] = Field(default_factory=list)
+    migration_plan: List[CavadaLabsUsageMigrationStep] = Field(default_factory=list)
+
+
+class CavadaLabsUsageRepairRequest(CavadaLabsBaseModel):
+    company_ids: List[str] = Field(default_factory=list)
+    project_ids: List[str] = Field(default_factory=list)
+    start_date: str = Field(min_length=10)
+    end_date: str = Field(min_length=10)
+    timezone: Optional[int] = None
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    api_key: Optional[str] = None
+    dry_run: bool = False
+    batch_limit: Optional[int] = Field(default=None, ge=1, le=100000)
+
+
+class CavadaLabsUsageRepairResponse(CavadaLabsBaseModel):
+    entity_type: str
+    entity_ids: List[str]
+    attempted: bool
+    repaired: bool
+    dry_run: bool = False
+    batch_limit: Optional[int] = None
+    scoped_spend_logs: int
+    processed_spend_logs: int
+    batches: int
+    message: str = ""
+    diagnostics: List[CavadaLabsUsageDiagnosticsItem]
+    migration_name: str
+    migration_command: str
+    schema_status: CavadaLabsUsageSchemaStatus = CavadaLabsUsageSchemaStatus.READY
+    migration_status: CavadaLabsUsageMigrationStatus = (
+        CavadaLabsUsageMigrationStatus.READY
+    )
+    missing_schema: List[str] = Field(default_factory=list)
+    migration_names: List[str] = Field(default_factory=list)
+    migration_plan: List[CavadaLabsUsageMigrationStep] = Field(default_factory=list)
 
 
 class CavadaLabsChatbotCreateRequest(CavadaLabsBaseModel):

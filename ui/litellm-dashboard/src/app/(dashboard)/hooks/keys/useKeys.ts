@@ -1,11 +1,6 @@
 import { keepPreviousData, useQuery, UseQueryResult } from "@tanstack/react-query";
 import { createQueryKeys } from "../common/queryKeysFactory";
-import {
-  getProxyBaseUrl,
-  getGlobalLitellmHeaderName,
-  deriveErrorMessage,
-  handleError,
-} from "@/components/networking";
+import { getProxyBaseUrl, getGlobalLitellmHeaderName, deriveErrorMessage, handleError } from "@/components/networking";
 import { KeyResponse } from "@/components/key_team_helpers/key_list";
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 
@@ -34,6 +29,8 @@ export interface KeyListCallOptions {
   organizationID?: string | null;
   teamID?: string | null;
   projectID?: string | null;
+  cavadalabsCompanyID?: string | null;
+  cavadalabsProjectID?: string | null;
   selectedKeyAlias?: string | null;
   userID?: string | null;
   keyHash?: string | null;
@@ -43,23 +40,20 @@ export interface KeyListCallOptions {
   status?: string | null;
 }
 
-const keyListCall = async (
-  accessToken: string,
-  page: number,
-  pageSize: number,
-  options: KeyListCallOptions = {},
-) => {
+const keyListCall = async (accessToken: string, page: number, pageSize: number, options: KeyListCallOptions = {}) => {
   /**
    * Get all available keys on proxy
    */
   try {
     const baseUrl = getProxyBaseUrl();
-    
+
     const params = new URLSearchParams(
       Object.entries({
         team_id: options.teamID,
         project_id: options.projectID,
         organization_id: options.organizationID,
+        cavadalabs_company_id: options.cavadalabsCompanyID,
+        cavadalabs_project_id: options.cavadalabsProjectID,
         key_alias: options.selectedKeyAlias,
         key_hash: options.keyHash,
         user_id: options.userID,

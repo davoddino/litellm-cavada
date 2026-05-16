@@ -9,14 +9,14 @@ from fastapi import APIRouter, Header, HTTPException, Request, Response, status
 from jsonschema import ValidationError, validate  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
-from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.cavadalabs.dispatcher import (
     CavadaLabsDispatcherService,
-    CavadaLabsRuntimeContext,
-    hash_web_token,
 )
 from litellm.proxy.cavadalabs.guardrails import CavadaLabsGuardrailService
 from litellm.proxy.cavadalabs.rag_runtime import CavadaLabsRAGRuntimeService
+from litellm.proxy.cavadalabs.chatbot_runtime_auth import (
+    build_chatbot_runtime_user_api_key,
+)
 from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
 from litellm.proxy.utils import model_dump_with_preserved_fields
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
@@ -251,48 +251,6 @@ def _add_json_retry_instruction(payload: Dict[str, Any], reason: str) -> None:
     )
 
 
-def _runtime_user_api_key(
-    context: CavadaLabsRuntimeContext,
-    token: str,
-    payload: Optional[Dict[str, Any]] = None,
-) -> UserAPIKeyAuth:
-    allowed_models = [
-        context.primary_policy.model_alias,
-        *[
-            policy.model_alias
-            for policy in context.fallback_policies
-            if policy.fallback_enabled
-        ],
-    ]
-    if payload is not None:
-        requested_model = payload.get("model")
-        if isinstance(requested_model, str) and requested_model not in allowed_models:
-            allowed_models.append(requested_model)
-        fallbacks = payload.get("fallbacks")
-        if isinstance(fallbacks, list):
-            for fallback_model in fallbacks:
-                if (
-                    isinstance(fallback_model, str)
-                    and fallback_model not in allowed_models
-                ):
-                    allowed_models.append(fallback_model)
-    return UserAPIKeyAuth(
-        api_key=f"cavadalabs-web-token-{context.web_token.web_token_id}",
-        token=hash_web_token(token),
-        key_alias=context.web_token.name,
-        models=allowed_models,
-        user_id=f"cavadalabs-company-{context.company.company_id}",
-        project_id=context.project.project_id,
-        request_route=_CHATBOT_MESSAGES_ROUTE,
-        metadata={
-            "cavadalabs_company_id": context.company.company_id,
-            "cavadalabs_project_id": context.project.project_id,
-            "cavadalabs_chatbot_id": context.chatbot.chatbot_id,
-            "cavadalabs_web_token_id": context.web_token.web_token_id,
-        },
-    )
-
-
 @router.post(
     "/chatbots/messages",
     responses={
@@ -361,7 +319,7 @@ async def create_chatbot_message(
         request_ip=request_ip,
         rag_context=rag_context,
     )
-    user_api_key_dict = _runtime_user_api_key(
+    user_api_key_dict = build_chatbot_runtime_user_api_key(
         context=context,
         token=token,
         payload=payload,

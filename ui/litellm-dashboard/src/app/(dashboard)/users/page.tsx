@@ -4,6 +4,7 @@ import ViewUserDashboard from "@/components/view_users";
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import useTeams from "@/app/(dashboard)/hooks/useTeams";
 import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
+import { useCavadaLabsKeyContextOptions } from "@/components/cavadalabs/keyContext";
 import { isProxyAdminRole } from "@/utils/roles";
 import { useState, useMemo } from "react";
 import { Organization } from "@/components/networking";
@@ -14,27 +15,38 @@ const UsersPage = () => {
 
   const { teams } = useTeams();
   const { data: organizations, isLoading: isOrgsLoading } = useOrganizations();
+  const { companies: cavadalabsCompanies, projects: cavadalabsProjects } = useCavadaLabsKeyContextOptions(accessToken);
+  const hasCavadaLabsProductContext = cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
 
   // Three states:
   // - undefined: org data still loading (non-proxy-admin) — query should wait
   // - null: proxy admin or no org filtering needed — query runs unfiltered
   // - Array<{organization_id, organization_alias}>: org admin orgs — query runs filtered
-  const orgAdminOrgIds = useMemo((): Array<{organization_id: string, organization_alias: string}> | null | undefined => {
+  const orgAdminOrgIds = useMemo(():
+    | Array<{ organization_id: string; organization_alias: string }>
+    | null
+    | undefined => {
     if (!userId || !userRole) return null;
     // Proxy admins see all users — no org filtering
     if (isProxyAdminRole(userRole)) return null;
+    // CavadaLabs users are scoped by Company/Project in /user/list. Do not
+    // derive product visibility from legacy LiteLLM Organization membership.
+    if (hasCavadaLabsProductContext) return null;
 
     // Still loading org data — signal "not ready yet"
     if (isOrgsLoading || !organizations) return undefined;
 
     const adminOrgs = organizations
       .filter((org: Organization) =>
-        org.members?.some((member) => member.user_id === userId && member.user_role === "org_admin")
+        org.members?.some((member) => member.user_id === userId && member.user_role === "org_admin"),
       )
-      .map((org: Organization) => ({ organization_id: org.organization_id, organization_alias: org.organization_alias }));
+      .map((org: Organization) => ({
+        organization_id: org.organization_id,
+        organization_alias: org.organization_alias,
+      }));
 
     return adminOrgs.length > 0 ? adminOrgs : null;
-  }, [userId, organizations, userRole, isOrgsLoading]);
+  }, [userId, organizations, userRole, isOrgsLoading, hasCavadaLabsProductContext]);
 
   return (
     <ViewUserDashboard

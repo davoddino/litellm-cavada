@@ -50,7 +50,13 @@ vi.mock("./EntityUsage/TopKeyView", () => ({
 }));
 
 vi.mock("./EntityUsage/EntityUsage", () => ({
-  default: () => <div>Entity Usage</div>,
+  default: ({ entityType, entityList }: any) => (
+    <div>
+      <div>Entity Usage</div>
+      <div data-testid="entity-usage-type">{entityType}</div>
+      {entityList?.map((entity: any) => <div key={entity.value}>{entity.label}</div>)}
+    </div>
+  ),
   EntityList: [],
 }));
 
@@ -64,8 +70,21 @@ vi.mock("./EndpointUsage/EndpointUsage", () => ({
 
 vi.mock("./UsageViewSelect/UsageViewSelect", async () => {
   const React = await import("react");
-  const UsageViewSelect = ({ value, onChange, canViewTagUsage = false }: any) => {
+  const UsageViewSelect = ({
+    value,
+    onChange,
+    isAdmin,
+    canViewTagUsage = false,
+    canViewCavadaLabsUsage = false,
+  }: any) => {
     const tagOption = canViewTagUsage ? React.createElement("option", { value: "tag" }, "Tag Usage") : null;
+    const cavadalabsOptions =
+      isAdmin || canViewCavadaLabsUsage
+        ? [
+            React.createElement("option", { key: "company", value: "company" }, "Company Usage"),
+            React.createElement("option", { key: "project", value: "project" }, "Project Usage"),
+          ]
+        : [];
     return React.createElement(
       "select",
       {
@@ -76,8 +95,7 @@ vi.mock("./UsageViewSelect/UsageViewSelect", async () => {
       },
       React.createElement("option", { value: "global" }, "Global Usage"),
       React.createElement("option", { value: "team" }, "Team Usage"),
-      React.createElement("option", { value: "company" }, "Company Usage"),
-      React.createElement("option", { value: "project" }, "Project Usage"),
+      ...cavadalabsOptions,
       React.createElement("option", { value: "customer" }, "Customer Usage"),
       tagOption,
       React.createElement("option", { value: "agent" }, "Agent Usage"),
@@ -888,6 +906,74 @@ describe("UsagePage", () => {
           "user-123",
         );
       });
+    });
+
+    it("should expose CavadaLabs Company and Project usage for non-admin users with scoped CavadaLabs access", async () => {
+      mockUseAuthorized.mockReturnValue({
+        isLoading: false,
+        isAuthorized: true,
+        token: "mock-token",
+        accessToken: "test-token",
+        userId: "user-123",
+        userEmail: "test@example.com",
+        userRole: "internal_user",
+        premiumUser: false,
+        disabledPersonalKeyCreation: false,
+        showSSOBanner: false,
+      });
+
+      renderWithProviders(<UsagePage {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(mockListCavadaLabsResource).toHaveBeenCalledWith("test-token", "/cavadalabs/companies");
+        expect(mockListCavadaLabsResource).toHaveBeenCalledWith("test-token", "/cavadalabs/projects");
+      });
+
+      expect(screen.getByRole("option", { name: "Company Usage" })).toBeInTheDocument();
+      expect(screen.getByRole("option", { name: "Project Usage" })).toBeInTheDocument();
+
+      act(() => {
+        fireEvent.change(screen.getByTestId("usage-view-select"), { target: { value: "company" } });
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("entity-usage-type")).toHaveTextContent("company");
+      });
+      expect(screen.getByText("ACME Spa")).toBeInTheDocument();
+    });
+
+    it("should keep CavadaLabs usage hidden for non-admin users without scoped CavadaLabs resources", async () => {
+      mockUseAuthorized.mockReturnValue({
+        isLoading: false,
+        isAuthorized: true,
+        token: "mock-token",
+        accessToken: "test-token",
+        userId: "user-123",
+        userEmail: "test@example.com",
+        userRole: "internal_user",
+        premiumUser: false,
+        disabledPersonalKeyCreation: false,
+        showSSOBanner: false,
+      });
+      mockListCavadaLabsResource.mockImplementation((_token: string, path: string) => {
+        if (path === "/cavadalabs/companies") {
+          return Promise.resolve({ companies: [] });
+        }
+        if (path === "/cavadalabs/projects") {
+          return Promise.resolve({ projects: [] });
+        }
+        return Promise.resolve({});
+      });
+
+      renderWithProviders(<UsagePage {...defaultProps} />);
+
+      await waitFor(() => {
+        expect(mockListCavadaLabsResource).toHaveBeenCalledWith("test-token", "/cavadalabs/companies");
+        expect(mockListCavadaLabsResource).toHaveBeenCalledWith("test-token", "/cavadalabs/projects");
+      });
+
+      expect(screen.queryByRole("option", { name: "Company Usage" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("option", { name: "Project Usage" })).not.toBeInTheDocument();
     });
   });
 

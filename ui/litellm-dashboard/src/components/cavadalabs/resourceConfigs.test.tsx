@@ -29,6 +29,20 @@ describe("buildCavadaLabsResourceConfigs", () => {
     expect(values(field(configs.nodes.createFields, "allowed_project_ids"))).toContain("project-1");
   });
 
+  it("should expose canonical company and project context on web tokens", () => {
+    const configs = buildCavadaLabsResourceConfigs(context);
+
+    expect(configs.webTokens.filters?.map((item) => item.name)).toEqual(
+      expect.arrayContaining(["company_id", "project_id"]),
+    );
+    expect(configs.webTokens.createFields?.map((item) => item.name)).toEqual(
+      expect.arrayContaining(["company_id", "project_id"]),
+    );
+    expect(configs.webTokens.columns.map((item) => item.key)).toEqual(
+      expect.arrayContaining(["company_id", "project_id"]),
+    );
+  });
+
   it("should enforce project scoping for model policies", () => {
     const configs = buildCavadaLabsResourceConfigs(context);
 
@@ -41,6 +55,7 @@ describe("buildCavadaLabsResourceConfigs", () => {
     const configs = buildCavadaLabsResourceConfigs(context);
 
     expect(configs.companies.updatePath?.({ company_id: "company-1" })).toBe("/cavadalabs/companies/company-1");
+    expect(configs.companies.canUpdate?.({ company_id: "company-1" })).toBe(true);
     expect(configs.companies.updateFields?.map((item) => item.name)).toContain("legal_name");
     expect(
       configs.companies.rowActions?.find((action) => action.key === "archive")?.request({ company_id: "company-1" }),
@@ -50,6 +65,7 @@ describe("buildCavadaLabsResourceConfigs", () => {
     });
 
     expect(configs.projects.updatePath?.({ project_id: "project-1" })).toBe("/cavadalabs/projects/project-1");
+    expect(configs.projects.canUpdate?.({ project_id: "project-1" })).toBe(true);
     expect(configs.projects.updateFields?.map((item) => item.name)).toContain("allowed_models");
     expect(
       configs.projects.rowActions?.find((action) => action.key === "archive")?.request({ project_id: "project-1" }),
@@ -57,6 +73,47 @@ describe("buildCavadaLabsResourceConfigs", () => {
       method: "DELETE",
       path: "/cavadalabs/projects/project-1",
     });
+  });
+
+  it("should gate tenant mutations from Company and Project manage capabilities", () => {
+    const scopedContext: CavadaLabsRuntimeContext = {
+      ...context,
+      companies: [
+        { company_id: "company-admin", legal_name: "Admin Company", cavadalabs_can_manage: true },
+        { company_id: "company-viewer", legal_name: "Viewer Company", cavadalabs_can_manage: false },
+      ],
+      projects: [
+        {
+          project_id: "project-viewer",
+          company_id: "company-viewer",
+          name: "Viewer Project",
+          cavadalabs_can_manage: false,
+        },
+      ],
+    };
+    const configs = buildCavadaLabsResourceConfigs(scopedContext);
+    const companyArchive = configs.companies.rowActions?.find((action) => action.key === "archive");
+    const projectArchive = configs.projects.rowActions?.find((action) => action.key === "archive");
+
+    expect(configs.companies.canUpdate?.({ company_id: "company-viewer", cavadalabs_can_manage: false })).toBe(false);
+    expect(companyArchive?.hidden?.({ company_id: "company-viewer", cavadalabs_can_manage: false })).toBe(true);
+    expect(configs.projects.canUpdate?.({ project_id: "project-viewer", cavadalabs_can_manage: false })).toBe(false);
+    expect(projectArchive?.hidden?.({ project_id: "project-viewer", cavadalabs_can_manage: false })).toBe(true);
+    expect(values(field(configs.projects.createFields, "company_id"))).toEqual(["company-admin"]);
+    expect(values(field(configs.billingReports.createFields, "company_id"))).toEqual(["company-admin"]);
+    expect(configs.projects.canCreate?.(scopedContext)).toBe(true);
+
+    const readOnlyContext: CavadaLabsRuntimeContext = {
+      ...scopedContext,
+      companies: scopedContext.companies.map((company) => ({
+        ...company,
+        cavadalabs_can_manage: false,
+      })),
+    };
+    const readOnlyConfigs = buildCavadaLabsResourceConfigs(readOnlyContext);
+
+    expect(readOnlyConfigs.projects.canCreate?.(readOnlyContext)).toBe(false);
+    expect(readOnlyConfigs.billingReports.canCreate?.(readOnlyContext)).toBe(false);
   });
 
   it("should configure CavadaLabs usage views without legacy organizations", () => {

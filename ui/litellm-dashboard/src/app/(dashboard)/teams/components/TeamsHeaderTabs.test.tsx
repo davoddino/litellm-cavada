@@ -4,10 +4,22 @@ import { describe, expect, it, vi } from "vitest";
 import TeamsHeaderTabs from "./TeamsHeaderTabs";
 
 vi.mock("@tremor/react", () => ({
-  TabGroup: ({ children, ...props }: any) => <div data-testid="tab-group" {...props}>{children}</div>,
-  TabList: ({ children, ...props }: any) => <div data-testid="tab-list" {...props}>{children}</div>,
+  TabGroup: ({ children, ...props }: any) => (
+    <div data-testid="tab-group" {...props}>
+      {children}
+    </div>
+  ),
+  TabList: ({ children, ...props }: any) => (
+    <div data-testid="tab-list" {...props}>
+      {children}
+    </div>
+  ),
   Tab: ({ children, ...props }: any) => <button {...props}>{children}</button>,
-  TabPanels: ({ children, ...props }: any) => <div data-testid="tab-panels" {...props}>{children}</div>,
+  TabPanels: ({ children, ...props }: any) => (
+    <div data-testid="tab-panels" {...props}>
+      {children}
+    </div>
+  ),
   Text: ({ children, ...props }: any) => <span {...props}>{children}</span>,
   Icon: ({ onClick, ...props }: any) => <button data-testid="refresh-icon" onClick={onClick} />,
 }));
@@ -32,6 +44,15 @@ describe("TeamsHeaderTabs", () => {
 
     expect(screen.getByText("Your Teams")).toBeInTheDocument();
     expect(screen.getByText("Available Teams")).toBeInTheDocument();
+  });
+
+  it("should render Project tabs without Team labels in CavadaLabs product context", () => {
+    renderTabs({ isCavadaLabsProductContext: true, userRole: "Admin" });
+
+    expect(screen.getByText("Projects")).toBeInTheDocument();
+    expect(screen.queryByText("Your Teams")).not.toBeInTheDocument();
+    expect(screen.queryByText("Available Teams")).not.toBeInTheDocument();
+    expect(screen.queryByText("Default Team Settings")).not.toBeInTheDocument();
   });
 
   it("should render 'Default Team Settings' tab when user is Admin", () => {

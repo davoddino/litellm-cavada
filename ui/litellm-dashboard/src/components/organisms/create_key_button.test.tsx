@@ -3,12 +3,29 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders, screen, waitFor } from "../../../tests/test-utils";
 import CreateKey from "./create_key_button";
 
-const { formMock, setFieldsValueMock, radioGroupValueRef, formStateRef, mockKeyCreateCall } = vi.hoisted(() => {
+const {
+  formMock,
+  setFieldsValueMock,
+  radioGroupValueRef,
+  formStateRef,
+  mockKeyCreateCall,
+  mockModelAvailableCall,
+  mockNotificationsManager,
+} = vi.hoisted(() => {
   const formStateRef = { current: {} as Record<string, any> };
   const mockKeyCreateCall = vi.fn().mockResolvedValue({
     key: "test-api-key",
     soft_budget: null,
   });
+  const mockModelAvailableCall = vi.fn().mockResolvedValue({ data: [{ id: "gpt-4" }] });
+  const mockNotificationsManager = {
+    success: vi.fn(),
+    fromBackend: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+    clear: vi.fn(),
+  };
   const formMock = {
     setFieldsValue: vi.fn((values: Record<string, any>) => {
       Object.assign(formStateRef.current, values);
@@ -28,6 +45,8 @@ const { formMock, setFieldsValueMock, radioGroupValueRef, formStateRef, mockKeyC
     radioGroupValueRef,
     formStateRef,
     mockKeyCreateCall,
+    mockModelAvailableCall,
+    mockNotificationsManager,
   };
 });
 
@@ -38,12 +57,14 @@ const { cavadalabsKeyContextOptions } = vi.hoisted(() => ({
       {
         project_id: "project-1",
         company_id: "company-1",
+        litellm_team_id: "team-1",
         name: "Support",
         status: "production",
         allowed_models: ["gpt-4"],
       },
     ],
     isLoading: false,
+    errorDetail: null as any,
   },
 }));
 
@@ -77,8 +98,7 @@ vi.mock("react-copy-to-clipboard", () => ({
 vi.mock("@tremor/react", () => {
   const React = require("react");
   const Stub = ({ children }: { children?: any }) => React.createElement("div", null, children);
-  const Button = ({ children, ...props }: { children?: any }) =>
-    React.createElement("button", props, children);
+  const Button = ({ children, ...props }: { children?: any }) => React.createElement("button", props, children);
   const TextInput = (props: any) => React.createElement("input", props);
 
   return {
@@ -107,7 +127,14 @@ vi.mock("antd", () => {
     return event;
   };
 
-  const Form = ({ children, onFinish, ...props }: { children?: any; onFinish?: (values: Record<string, any>) => void }) =>
+  const Form = ({
+    children,
+    onFinish,
+    ...props
+  }: {
+    children?: any;
+    onFinish?: (values: Record<string, any>) => void;
+  }) =>
     React.createElement(
       "form",
       {
@@ -135,7 +162,16 @@ vi.mock("antd", () => {
 
   Form.useForm = () => [formMock];
 
-  const Select = ({ children, onChange, options, ...props }: { children?: any; onChange?: (value: string) => void; options?: Array<{ value: string; label: string }> }) =>
+  const Select = ({
+    children,
+    onChange,
+    options,
+    ...props
+  }: {
+    children?: any;
+    onChange?: (value: string) => void;
+    options?: Array<{ value: string; label: string }>;
+  }) =>
     React.createElement(
       "select",
       {
@@ -146,8 +182,7 @@ vi.mock("antd", () => {
       options?.map((opt: any) => React.createElement("option", { key: opt.value, value: opt.value }, opt.label)),
     );
 
-  Select.Option = ({ children, ...props }: { children?: any }) =>
-    React.createElement("option", props, children);
+  Select.Option = ({ children, ...props }: { children?: any }) => React.createElement("option", props, children);
 
   const Input = (props: any) => React.createElement("input", props);
   Input.Password = (props: any) => React.createElement("input", { ...props, type: "password" });
@@ -156,8 +191,7 @@ vi.mock("antd", () => {
   const Modal = ({ children, open }: { children?: any; open?: boolean }) =>
     open ? React.createElement("div", null, children) : null;
 
-  const Radio = ({ children, ...props }: { children?: any }) =>
-    React.createElement("div", props, children);
+  const Radio = ({ children, ...props }: { children?: any }) => React.createElement("div", props, children);
 
   Radio.Group = ({ children, value }: { children?: any; value?: string }) => {
     radioGroupValueRef.current = value ?? null;
@@ -167,20 +201,19 @@ vi.mock("antd", () => {
   const Switch = (props: any) => React.createElement("input", { ...props, type: "checkbox" });
   const Tag = ({ children }: { children?: any }) => React.createElement("span", null, children);
   const Tooltip = ({ children }: { children?: any }) => React.createElement(React.Fragment, null, children);
+  const Alert = ({ message, description }: { message?: any; description?: any }) =>
+    React.createElement("div", { role: "alert" }, message, description);
 
-  const Button = ({ children, htmlType, ...props }: { children?: any; htmlType?: string }) =>
+  const Button = ({ children, htmlType, ...props }: { children?: any; htmlType?: string; type?: string }) =>
     React.createElement("button", { ...props, type: htmlType ?? props.type }, children);
 
-  const Typography = ({ children, ...props }: { children?: any }) =>
-    React.createElement("div", props, children);
-  Typography.Text = ({ children, ...props }: { children?: any }) =>
-    React.createElement("span", props, children);
-  Typography.Paragraph = ({ children, ...props }: { children?: any }) =>
-    React.createElement("p", props, children);
-  Typography.Title = ({ children, ...props }: { children?: any }) =>
-    React.createElement("h1", props, children);
+  const Typography = ({ children, ...props }: { children?: any }) => React.createElement("div", props, children);
+  Typography.Text = ({ children, ...props }: { children?: any }) => React.createElement("span", props, children);
+  Typography.Paragraph = ({ children, ...props }: { children?: any }) => React.createElement("p", props, children);
+  Typography.Title = ({ children, ...props }: { children?: any }) => React.createElement("h1", props, children);
 
   return {
+    Alert,
     Button,
     Form,
     Input,
@@ -202,7 +235,7 @@ vi.mock("antd", () => {
 
 vi.mock("../networking", () => ({
   keyCreateCall: mockKeyCreateCall,
-  modelAvailableCall: vi.fn().mockResolvedValue({ data: [{ id: "gpt-4" }] }),
+  modelAvailableCall: mockModelAvailableCall,
   getGuardrailsList: vi.fn().mockResolvedValue({ guardrails: [] }),
   getPoliciesList: vi.fn().mockResolvedValue({ policies: [] }),
   getPromptsList: vi.fn().mockResolvedValue({ prompts: [] }),
@@ -221,14 +254,7 @@ vi.mock("../networking", () => ({
 }));
 
 vi.mock("../molecules/notifications_manager", () => ({
-  default: {
-    success: vi.fn(),
-    fromBackend: vi.fn(),
-    error: vi.fn(),
-    warning: vi.fn(),
-    info: vi.fn(),
-    clear: vi.fn(),
-  },
+  default: mockNotificationsManager,
 }));
 
 vi.mock("../agent_management/AgentSelector", () => ({ default: () => null }));
@@ -243,10 +269,18 @@ vi.mock("../common_components/RouterSettingsAccordion", () => ({ default: () => 
 vi.mock("@/app/(dashboard)/hooks/teams/useTeams", () => ({
   useInfiniteTeams: () => ({
     data: {
-      pages: [{ teams: [
-        { team_id: "team-1", team_alias: "Team One" },
-        { team_id: "team-2", team_alias: "Team Two" },
-      ], total: 2, page: 1, page_size: 50, total_pages: 1 }],
+      pages: [
+        {
+          teams: [
+            { team_id: "team-1", team_alias: "Team One" },
+            { team_id: "team-2", team_alias: "Team Two" },
+          ],
+          total: 2,
+          page: 1,
+          page_size: 50,
+          total_pages: 1,
+        },
+      ],
     },
     fetchNextPage: vi.fn(),
     hasNextPage: false,
@@ -256,11 +290,7 @@ vi.mock("@/app/(dashboard)/hooks/teams/useTeams", () => ({
 }));
 vi.mock("../common_components/team_dropdown", () => ({
   default: ({ onChange, disabled }: { onChange?: (v: string) => void; disabled?: boolean }) => (
-    <select
-      data-testid="team-dropdown"
-      disabled={disabled}
-      onChange={(e) => onChange?.(e.target.value)}
-    >
+    <select data-testid="team-dropdown" disabled={disabled} onChange={(e) => onChange?.(e.target.value)}>
       <option value="">Select team</option>
       <option value="team-1">Team One</option>
       <option value="team-2">Team Two</option>
@@ -288,6 +318,26 @@ vi.mock("@/app/(dashboard)/hooks/tags/useTags", () => ({
 
 vi.mock("../cavadalabs/keyContext", () => ({
   useCavadaLabsKeyContextOptions: () => cavadalabsKeyContextOptions,
+  filterManageableCavadaLabsCompanies: (companies: any[]) =>
+    companies.some((company) => typeof company.cavadalabs_can_manage === "boolean")
+      ? companies.filter((company) => company.cavadalabs_can_manage === true)
+      : companies,
+  filterManageableCavadaLabsProjects: (projects: any[]) =>
+    projects.some((project) => typeof project.cavadalabs_can_manage === "boolean")
+      ? projects.filter((project) => project.cavadalabs_can_manage === true)
+      : projects,
+  resolveCavadaLabsProjectCompatibilityTeamId: (projectId: string) =>
+    cavadalabsKeyContextOptions.projects.find((project) => project.project_id === projectId)?.litellm_team_id ?? null,
+  stripLiteLLMCompatibilityFieldsForCavadaLabsKey: (values: Record<string, any>) => {
+    if (!values.cavadalabs_company_id && !values.cavadalabs_project_id) {
+      return values;
+    }
+
+    delete values.organization_id;
+    delete values.team_id;
+    delete values.project_id;
+    return values;
+  },
 }));
 
 vi.mock("../common_components/AccessGroupSelector", () => ({
@@ -314,12 +364,25 @@ describe("CreateKey", () => {
       window.localStorage.clear();
     }
     authorizedState = { ...defaultAuthorizedState };
+    cavadalabsKeyContextOptions.companies = [{ company_id: "company-1", legal_name: "Acme Srl", status: "active" }];
+    cavadalabsKeyContextOptions.projects = [
+      {
+        project_id: "project-1",
+        company_id: "company-1",
+        litellm_team_id: "team-1",
+        name: "Support",
+        status: "production",
+        allowed_models: ["gpt-4"],
+      },
+    ];
+    cavadalabsKeyContextOptions.errorDetail = null;
     radioGroupValueRef.current = null;
     formStateRef.current = {};
     mockKeyCreateCall.mockResolvedValue({
       key: "test-api-key",
       soft_budget: null,
     });
+    mockModelAvailableCall.mockResolvedValue({ data: [{ id: "gpt-4" }] });
   });
 
   it("should render the CreateKey component", () => {
@@ -436,11 +499,7 @@ describe("CreateKey", () => {
 
   it("should apply owned_by another_user for admin", async () => {
     renderWithProviders(
-      <CreateKey
-        {...defaultProps}
-        autoOpenCreate={true}
-        prefillData={{ owned_by: "another_user" }}
-      />,
+      <CreateKey {...defaultProps} autoOpenCreate={true} prefillData={{ owned_by: "another_user" }} />,
     );
 
     await waitFor(() => {
@@ -449,13 +508,7 @@ describe("CreateKey", () => {
   });
 
   it("should prefill key_type when provided", async () => {
-    renderWithProviders(
-      <CreateKey
-        {...defaultProps}
-        autoOpenCreate={true}
-        prefillData={{ key_type: "management" }}
-      />,
-    );
+    renderWithProviders(<CreateKey {...defaultProps} autoOpenCreate={true} prefillData={{ key_type: "management" }} />);
 
     await waitFor(() => {
       expect(setFieldsValueMock).toHaveBeenCalledWith({ key_type: "management" });
@@ -476,7 +529,7 @@ describe("CreateKey", () => {
       });
     });
 
-    it("should render team dropdown alongside company and project selectors", async () => {
+    it("should keep LiteLLM team mapping hidden behind company and project selectors", async () => {
       renderWithProviders(<CreateKey {...defaultProps} />);
 
       act(() => {
@@ -486,7 +539,86 @@ describe("CreateKey", () => {
       await waitFor(() => {
         expect(screen.getByText("Acme Srl (company-1)")).toBeInTheDocument();
         expect(screen.getByText("Support (project-1)")).toBeInTheDocument();
-        expect(screen.getByTestId("team-dropdown")).toBeInTheDocument();
+      });
+
+      expect(screen.queryByTestId("team-dropdown")).not.toBeInTheDocument();
+    });
+
+    it("should only offer manageable Company and Project scopes for CavadaLabs key creation", async () => {
+      cavadalabsKeyContextOptions.companies = [
+        {
+          company_id: "company-1",
+          legal_name: "Acme Srl",
+          status: "active",
+          cavadalabs_can_manage: true,
+        },
+        {
+          company_id: "company-viewer",
+          legal_name: "Viewer Srl",
+          status: "active",
+          cavadalabs_can_manage: false,
+        },
+      ];
+      cavadalabsKeyContextOptions.projects = [
+        {
+          project_id: "project-1",
+          company_id: "company-1",
+          litellm_team_id: "team-1",
+          name: "Support",
+          status: "production",
+          allowed_models: ["gpt-4"],
+          cavadalabs_can_manage: true,
+        },
+        {
+          project_id: "project-viewer",
+          company_id: "company-viewer",
+          litellm_team_id: "team-viewer",
+          name: "Read Only",
+          status: "production",
+          allowed_models: ["gpt-4"],
+          cavadalabs_can_manage: false,
+        },
+      ];
+
+      renderWithProviders(<CreateKey {...defaultProps} />);
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Acme Srl (company-1)")).toBeInTheDocument();
+        expect(screen.getByText("Support (project-1)")).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText("Viewer Srl (company-viewer)")).not.toBeInTheDocument();
+      expect(screen.queryByText("Read Only (project-viewer)")).not.toBeInTheDocument();
+
+      act(() => {
+        formMock.setFieldValue("cavadalabs_company_id", "company-viewer");
+        formMock.setFieldValue("cavadalabs_project_id", "project-viewer");
+        formMock.setFieldValue("key_alias", "Viewer key");
+      });
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create key/i }));
+      });
+
+      await waitFor(() => {
+        expect(mockNotificationsManager.fromBackend).toHaveBeenCalledWith("Project project-viewer is not available");
+      });
+      expect(mockKeyCreateCall).not.toHaveBeenCalled();
+    });
+
+    it("should keep project selection disabled until a company is selected", async () => {
+      renderWithProviders(<CreateKey {...defaultProps} />);
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole("combobox", { name: "CavadaLabs Project" })).toBeDisabled();
       });
     });
 
@@ -504,6 +636,9 @@ describe("CreateKey", () => {
       act(() => {
         formMock.setFieldValue("cavadalabs_company_id", "company-1");
         formMock.setFieldValue("cavadalabs_project_id", "project-1");
+        formMock.setFieldValue("organization_id", "org-internal");
+        formMock.setFieldValue("team_id", "team-internal");
+        formMock.setFieldValue("project_id", "litellm-project");
         formMock.setFieldValue("key_alias", "Support key");
       });
 
@@ -517,7 +652,117 @@ describe("CreateKey", () => {
         expect(formValues.cavadalabs_company_id).toBe("company-1");
         expect(formValues.cavadalabs_project_id).toBe("project-1");
         expect(formValues).not.toHaveProperty("organization_id");
+        expect(formValues).not.toHaveProperty("team_id");
+        expect(formValues).not.toHaveProperty("project_id");
       });
+    });
+
+    it("should reject mismatched Company and Project before creating a key", async () => {
+      cavadalabsKeyContextOptions.companies = [
+        { company_id: "company-1", legal_name: "Acme Srl", status: "active" },
+        { company_id: "company-2", legal_name: "Globex Srl", status: "active" },
+      ];
+      cavadalabsKeyContextOptions.projects = [
+        {
+          project_id: "project-2",
+          company_id: "company-2",
+          litellm_team_id: "team-2",
+          name: "External",
+          status: "production",
+          allowed_models: ["gpt-4"],
+        },
+      ];
+
+      renderWithProviders(<CreateKey {...defaultProps} />);
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Globex Srl (company-2)")).toBeInTheDocument();
+      });
+
+      act(() => {
+        formMock.setFieldValue("cavadalabs_company_id", "company-1");
+        formMock.setFieldValue("cavadalabs_project_id", "project-2");
+        formMock.setFieldValue("key_alias", "Mismatched key");
+      });
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create key/i }));
+      });
+
+      await waitFor(() => {
+        expect(mockNotificationsManager.fromBackend).toHaveBeenCalledWith(
+          "Selected Project belongs to a different Company",
+        );
+      });
+      expect(mockKeyCreateCall).not.toHaveBeenCalled();
+    });
+
+    it("should preserve legacy Team ID selection when CavadaLabs context is unavailable", async () => {
+      cavadalabsKeyContextOptions.companies = [];
+      cavadalabsKeyContextOptions.projects = [];
+
+      renderWithProviders(
+        <CreateKey
+          {...defaultProps}
+          teams={[
+            { team_id: "team-1", team_alias: "Team One", models: ["gpt-4"] } as any,
+            { team_id: "team-2", team_alias: "Team Two", models: ["gpt-4"] } as any,
+          ]}
+        />,
+      );
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Team One (team-1)")).toBeInTheDocument();
+      });
+      expect(screen.queryByText("Acme Srl (company-1)")).not.toBeInTheDocument();
+      expect(screen.queryByText("Support (project-1)")).not.toBeInTheDocument();
+    });
+
+    it("should explain Company and Project selection when Cavada key context is required", async () => {
+      mockModelAvailableCall.mockResolvedValue({ data: [{ id: "no-default-models" }] });
+
+      renderWithProviders(<CreateKey {...defaultProps} />);
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText(/Select a Company and Project/i)).toBeInTheDocument();
+      });
+      expect(screen.queryByText(/Please select a team/i)).not.toBeInTheDocument();
+    });
+
+    it("should show an actionable migration message when CavadaLabs key context schema is missing", async () => {
+      cavadalabsKeyContextOptions.companies = [];
+      cavadalabsKeyContextOptions.projects = [];
+      cavadalabsKeyContextOptions.errorDetail = {
+        schema_status: "missing_schema",
+        migration_status: "schema_missing",
+        missing_schema: ["CavadaLabs_CompanyMemberTable delegate"],
+        migration_command: "uv run prisma migrate deploy",
+      };
+
+      renderWithProviders(<CreateKey {...defaultProps} />);
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole("alert")).toHaveTextContent("CavadaLabs key schema migration required");
+        expect(screen.getByRole("alert")).toHaveTextContent("uv run prisma migrate deploy");
+        expect(screen.getByRole("alert")).toHaveTextContent("CavadaLabs_CompanyMemberTable delegate");
+      });
+      expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
     });
   });
 

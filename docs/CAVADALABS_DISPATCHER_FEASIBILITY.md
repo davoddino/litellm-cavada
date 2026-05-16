@@ -107,6 +107,38 @@ Every request ledger row should carry:
 - `node_id`, when applicable
 - `gpu_id`, when applicable
 
+### Membership And Access Control
+
+CavadaLabs membership is a product concern and should not be modeled as
+LiteLLM Organizations or Teams in user-facing flows.
+
+Current implementation status:
+
+- Native membership tables are required:
+  - `CavadaLabs_CompanyMemberTable`
+  - `CavadaLabs_ProjectMemberTable`
+- Supported product roles:
+  - `company_admin`
+  - `project_admin`
+  - `operator`
+  - `viewer`
+- Company and Project authorization must prefer these native CavadaLabs
+  memberships.
+- LiteLLM Organization and Team memberships remain as legacy compatibility
+  fallback only where the proxy still needs internal mappings.
+- If the native membership migration is not applied, CavadaLabs endpoints should
+  return structured migration guidance instead of silently treating missing
+  membership as global access.
+
+Operational migration:
+
+```bash
+uv run prisma migrate deploy
+```
+
+Migration file:
+`litellm-proxy-extras/litellm_proxy_extras/migrations/20260515150000_add_cavadalabs_native_memberships/migration.sql`
+
 ## 3. Chatbots And Web Tokens
 
 Chatbots should be first-class entities, not only prompt presets.
@@ -277,6 +309,11 @@ Every CavadaLabs-hosted request should log:
 - `gpu_id`
 - `loaded_model_id`
 - `model_load_request_id`, if relevant
+
+Operational note: Company/Project usage is reported from
+`CavadaLabs_RequestLedgerTable`. Existing `LiteLLM_SpendLogs` rows require the
+backfill migration described in `docs/CAVADALABS_USAGE_MIGRATION_RUNBOOK.md`
+before they appear in CavadaLabs Company/Project usage views.
 
 ## 7. CavadaLabs Nodes
 

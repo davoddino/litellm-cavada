@@ -34,7 +34,12 @@ import { KeyResponse, Team } from "../key_team_helpers/key_list";
 import FilterComponent, { FilterOption } from "../molecules/filter";
 import DefaultProxyAdminTag from "../common_components/DefaultProxyAdminTag";
 import KeyInfoView from "../templates/key_info_view";
-import { getKeyCavadaLabsCompanyId, getKeyCavadaLabsProjectId } from "../cavadalabs/keyContext";
+import {
+  findCavadaLabsCompanyForCompatibilityOrganization,
+  findCavadaLabsProjectForCompatibilityTeam,
+  getKeyCavadaLabsCompanyId,
+  getKeyCavadaLabsProjectId,
+} from "../cavadalabs/keyContext";
 
 interface VirtualKeysTableProps {
   teams: Team[] | null;
@@ -43,6 +48,7 @@ interface VirtualKeysTableProps {
     sortBy: string;
     sortOrder: "asc" | "desc";
   };
+  showLiteLLMCompatibilityFields?: boolean;
 }
 
 /**
@@ -50,7 +56,12 @@ interface VirtualKeysTableProps {
  * The team selector and filtering have been removed so that all keys are shown.
  */
 
-export function VirtualKeysTable({ teams, onSortChange, currentSort }: VirtualKeysTableProps) {
+export function VirtualKeysTable({
+  teams,
+  onSortChange,
+  currentSort,
+  showLiteLLMCompatibilityFields = false,
+}: VirtualKeysTableProps) {
   const [selectedKey, setSelectedKey] = useState<KeyResponse | null>(null);
   const [sorting, setSorting] = React.useState<SortingState>(() => {
     if (currentSort) {
@@ -97,15 +108,15 @@ export function VirtualKeysTable({ teams, onSortChange, currentSort }: VirtualKe
     filteredKeys,
     filteredTotalCount,
     allTeams,
+    allOrganizations = [],
     allCompanies = [],
     allProjects = [],
     handleFilterChange,
     handleFilterReset,
-  } =
-    useFilterLogic({
-      keys: keys?.keys || [],
-      teams,
-    });
+  } = useFilterLogic({
+    keys: keys?.keys || [],
+    teams,
+  });
 
   // Defer the transition so the button stays in loading state until the table
   // has rendered with the new data (mirrors the spend-logs pattern)
@@ -117,6 +128,20 @@ export function VirtualKeysTable({ teams, onSortChange, currentSort }: VirtualKe
   };
 
   const totalCount = filteredTotalCount ?? keys?.total_count ?? 0;
+  const hasCavadaLabsKeyContext = useMemo(
+    () =>
+      (keys?.keys || []).some(
+        (key) =>
+          Boolean(getKeyCavadaLabsCompanyId(key)) ||
+          Boolean(getKeyCavadaLabsProjectId(key)) ||
+          Boolean(findCavadaLabsCompanyForCompatibilityOrganization(allCompanies, key.organization_id ?? key.org_id)) ||
+          Boolean(findCavadaLabsProjectForCompatibilityTeam(allProjects, key.team_id)),
+      ),
+    [keys?.keys, allCompanies, allProjects],
+  );
+  const hasCavadaLabsProductContext = allCompanies.length > 0 || allProjects.length > 0 || hasCavadaLabsKeyContext;
+  const showCavadaLabsProductFields = hasCavadaLabsProductContext;
+  const showLiteLLMCompatibilityColumns = showLiteLLMCompatibilityFields || !showCavadaLabsProductFields;
 
   // Add a useEffect to call refresh when a key is created
   useEffect(() => {
@@ -134,541 +159,637 @@ export function VirtualKeysTable({ teams, onSortChange, currentSort }: VirtualKe
     }
   }, [refetch]);
 
-  const columns: ColumnDef<KeyResponse>[] = useMemo(() => [
-    {
-      id: "expander",
-      header: () => null,
-      size: 40,
-      enableSorting: false,
-      cell: ({ row }) =>
-        row.getCanExpand() ? (
-          <button onClick={row.getToggleExpandedHandler()} style={{ cursor: "pointer" }}>
-            {row.getIsExpanded() ? "▼" : "▶"}
-          </button>
-        ) : null,
-    },
-    {
-      id: "token",
-      accessorKey: "token",
-      header: "Key ID",
-      size: 100,
-      enableSorting: true,
-      cell: (info) => {
-        const value = info.getValue() as string;
-        const width = info.cell.column.getSize();
-        return (
-          <Tooltip title={value}>
-            <Button
-              size="xs"
-              variant="light"
-              className="font-mono text-blue-500 bg-blue-50 hover:bg-blue-100 text-xs font-normal px-2 py-0.5 text-left overflow-hidden truncate block"
-              style={{ maxWidth: width, overflow: "hidden" }}
-              onClick={() => setSelectedKey(info.row.original)}
-            >
+  const columns: ColumnDef<KeyResponse>[] = useMemo(
+    () => [
+      {
+        id: "expander",
+        header: () => null,
+        size: 40,
+        enableSorting: false,
+        cell: ({ row }) =>
+          row.getCanExpand() ? (
+            <button onClick={row.getToggleExpandedHandler()} style={{ cursor: "pointer" }}>
+              {row.getIsExpanded() ? "▼" : "▶"}
+            </button>
+          ) : null,
+      },
+      {
+        id: "token",
+        accessorKey: "token",
+        header: "Key ID",
+        size: 100,
+        enableSorting: true,
+        cell: (info) => {
+          const value = info.getValue() as string;
+          const width = info.cell.column.getSize();
+          return (
+            <Tooltip title={value}>
+              <Button
+                size="xs"
+                variant="light"
+                className="font-mono text-blue-500 bg-blue-50 hover:bg-blue-100 text-xs font-normal px-2 py-0.5 text-left overflow-hidden truncate block"
+                style={{ maxWidth: width, overflow: "hidden" }}
+                onClick={() => setSelectedKey(info.row.original)}
+              >
+                {value ?? "-"}
+              </Button>
+            </Tooltip>
+          );
+        },
+      },
+      {
+        id: "key_alias",
+        accessorKey: "key_alias",
+        header: "Key Alias",
+        size: 150,
+        enableSorting: true,
+        cell: (info) => {
+          const value = info.getValue() as string;
+          const width = info.cell.column.getSize();
+          return (
+            <span className="font-mono text-xs truncate block" style={{ maxWidth: width, overflow: "hidden" }}>
               {value ?? "-"}
-            </Button>
-          </Tooltip>
-        );
-      },
-    },
-    {
-      id: "key_alias",
-      accessorKey: "key_alias",
-      header: "Key Alias",
-      size: 150,
-      enableSorting: true,
-      cell: (info) => {
-        const value = info.getValue() as string;
-        const width = info.cell.column.getSize();
-        return (
-          <span className="font-mono text-xs truncate block" style={{ maxWidth: width, overflow: "hidden" }}>
-            {value ?? "-"}
-          </span>
-        );
-      },
-    },
-    {
-      id: "status",
-      header: "Status",
-      size: 100,
-      enableSorting: false,
-      cell: ({ row }) => {
-        const key = row.original;
-        if (key.blocked !== true) {
-          return (
-            <Tag color="green" data-testid={`key-status-${key.token_id}`}>
-              Active
-            </Tag>
+            </span>
           );
-        }
-        const isScimBlocked =
-          (key.metadata as Record<string, unknown> | null | undefined)
-            ?.scim_blocked === true;
-        const reason = isScimBlocked
-          ? "Blocked by SCIM (external identity provider deactivated or deleted the owning user)."
-          : "Blocked. Requests using this key will be rejected with 401.";
-        return (
-          <Tooltip title={reason}>
-            <Tag color="red" data-testid={`key-status-${key.token_id}`}>
-              Blocked
-            </Tag>
-          </Tooltip>
-        );
+        },
       },
-    },
-    {
-      id: "key_name",
-      accessorKey: "key_name",
-      header: "Secret Key",
-      size: 120,
-      enableSorting: false,
-      cell: (info) => <span className="font-mono text-xs">{info.getValue() as string}</span>,
-    },
-    {
-      id: "team_alias",
-      accessorKey: "team_id",
-      header: "Team",
-      size: 120,
-      enableSorting: false,
-      cell: (info) => {
-        const teamId = info.getValue() as string | null;
-        if (!teamId) return "-";
-        const team = teams?.find((t) => t.team_id === teamId);
-        const displayValue = team?.team_alias || teamId;
-        const width = info.cell.column.getSize();
-        return (
-          <span className="font-mono text-xs truncate block" style={{ maxWidth: width, overflow: "hidden" }}>
-            {displayValue}
-          </span>
-        );
+      {
+        id: "status",
+        header: "Status",
+        size: 100,
+        enableSorting: false,
+        cell: ({ row }) => {
+          const key = row.original;
+          if (key.blocked !== true) {
+            return (
+              <Tag color="green" data-testid={`key-status-${key.token_id}`}>
+                Active
+              </Tag>
+            );
+          }
+          const isScimBlocked = (key.metadata as Record<string, unknown> | null | undefined)?.scim_blocked === true;
+          const reason = isScimBlocked
+            ? "Blocked by SCIM (external identity provider deactivated or deleted the owning user)."
+            : "Blocked. Requests using this key will be rejected with 401.";
+          return (
+            <Tooltip title={reason}>
+              <Tag color="red" data-testid={`key-status-${key.token_id}`}>
+                Blocked
+              </Tag>
+            </Tooltip>
+          );
+        },
       },
-    },
-    {
-      id: "cavadalabs_company",
-      header: "Company",
-      size: 140,
-      enableSorting: false,
-      cell: (info) => {
-        const companyId = getKeyCavadaLabsCompanyId(info.row.original);
-        if (!companyId) return "-";
-        const company = allCompanies.find((item) => item.company_id === companyId);
-        const displayValue = company?.legal_name || companyId;
-        const width = info.cell.column.getSize();
-        return (
-          <span className="font-mono text-xs truncate block" style={{ maxWidth: width, overflow: "hidden" }}>
-            {displayValue}
-          </span>
-        );
+      {
+        id: "key_name",
+        accessorKey: "key_name",
+        header: "Secret Key",
+        size: 120,
+        enableSorting: false,
+        cell: (info) => <span className="font-mono text-xs">{info.getValue() as string}</span>,
       },
-    },
-    {
-      id: "cavadalabs_project",
-      header: "Project",
-      size: 140,
-      enableSorting: false,
-      cell: (info) => {
-        const projectId = getKeyCavadaLabsProjectId(info.row.original);
-        if (!projectId) return "-";
-        const project = allProjects.find((item) => item.project_id === projectId);
-        const displayValue = project?.name || projectId;
-        const width = info.cell.column.getSize();
-        return (
-          <span className="font-mono text-xs truncate block" style={{ maxWidth: width, overflow: "hidden" }}>
-            {displayValue}
-          </span>
-        );
-      },
-    },
-    {
-      id: "user",
-      accessorKey: "user",
-      header: () => (
-        <span className="flex items-center gap-1">
-          User
-          <Popover
-            content="Displays the first available value: User Alias, User Email, or User ID."
-            trigger="hover"
-          >
-            <InfoCircleOutlined className="text-gray-400 text-xs cursor-help" />
-          </Popover>
-        </span>
-      ),
-      size: 160,
-      enableSorting: false,
-      cell: ({ row }) => {
-        const key = row.original;
-        const userAlias = key.user?.user_alias ?? null;
-        const userEmail = key.user?.user_email ?? key.user_email ?? null;
-        const userId = key.user_id ?? null;
-        const isDefaultAdmin = userId === "default_user_id";
-        const displayValue = userAlias || userEmail || userId;
-        const width = 160;
-
-        const popoverContent = (
-          <div className="flex flex-col gap-2 text-xs min-w-[200px] max-w-[300px]">
-            {[
-              { label: "User Alias", value: userAlias },
-              { label: "User Email", value: userEmail },
-              { label: "User ID", value: userId },
-            ].map(({ label, value }) => (
-              <div key={label} className="flex flex-col min-w-0">
-                <span className="text-gray-400">{label}</span>
-                {value ? (
-                  <Typography.Text
-                    className="font-mono text-xs"
-                    ellipsis={{ tooltip: value }}
-                    copyable
+      ...(showLiteLLMCompatibilityColumns
+        ? [
+            {
+              id: "organization_id",
+              accessorKey: "organization_id",
+              header: "Organization",
+              size: 150,
+              enableSorting: false,
+              cell: (info) => {
+                const key = info.row.original as KeyResponse & { org_id?: string | null };
+                const organizationId = key.organization_id ?? key.org_id ?? null;
+                if (!organizationId) return "-";
+                const organization = allOrganizations.find((item) => item.organization_id === organizationId);
+                const displayValue = organization?.organization_alias || organizationId;
+                const width = info.cell.column.getSize();
+                return (
+                  <span className="font-mono text-xs truncate block" style={{ maxWidth: width, overflow: "hidden" }}>
+                    {displayValue}
+                  </span>
+                );
+              },
+            } satisfies ColumnDef<KeyResponse>,
+          ]
+        : []),
+      ...(showLiteLLMCompatibilityColumns
+        ? [
+            {
+              id: "team_alias",
+              accessorKey: "team_id",
+              header: "Team",
+              size: 120,
+              enableSorting: false,
+              cell: (info) => {
+                const teamId = info.getValue() as string | null;
+                if (!teamId) return "-";
+                const team = teams?.find((t) => t.team_id === teamId);
+                const displayValue = team?.team_alias || teamId;
+                const width = info.cell.column.getSize();
+                return (
+                  <span className="font-mono text-xs truncate block" style={{ maxWidth: width, overflow: "hidden" }}>
+                    {displayValue}
+                  </span>
+                );
+              },
+            } satisfies ColumnDef<KeyResponse>,
+          ]
+        : []),
+      ...(showCavadaLabsProductFields
+        ? [
+            {
+              id: "cavadalabs_company",
+              header: "Company",
+              size: 140,
+              enableSorting: false,
+              cell: (info) => {
+                const key = info.row.original as KeyResponse & { org_id?: string | null };
+                const companyId = getKeyCavadaLabsCompanyId(key);
+                const company = companyId
+                  ? allCompanies.find((item) => item.company_id === companyId)
+                  : findCavadaLabsCompanyForCompatibilityOrganization(
+                      allCompanies,
+                      key.organization_id ?? key.org_id ?? null,
+                    );
+                const hasCompatibilityOrganization = Boolean(key.organization_id ?? key.org_id);
+                const displayValue = company?.legal_name || company?.company_id || companyId;
+                const width = info.cell.column.getSize();
+                if (!displayValue && !hasCompatibilityOrganization) return "-";
+                const isMissingExplicitCompany = Boolean(companyId && !company);
+                return (
+                  <span
+                    className={`font-mono text-xs truncate block ${isMissingExplicitCompany ? "text-red-600" : ""}`}
+                    style={{ maxWidth: width, overflow: "hidden" }}
+                    title={isMissingExplicitCompany ? `Missing Company mapping for ${companyId}` : undefined}
                   >
-                    {value}
-                  </Typography.Text>
-                ) : (
-                  <span className="font-mono">-</span>
-                )}
-              </div>
-            ))}
-          </div>
-        );
+                    {displayValue || "Missing Company mapping"}
+                  </span>
+                );
+              },
+            } satisfies ColumnDef<KeyResponse>,
+            {
+              id: "cavadalabs_project",
+              header: "Project",
+              size: 140,
+              enableSorting: false,
+              cell: (info) => {
+                const key = info.row.original;
+                const companyId = getKeyCavadaLabsCompanyId(key);
+                const projectId = getKeyCavadaLabsProjectId(key);
+                const project = projectId
+                  ? allProjects.find((item) => item.project_id === projectId)
+                  : findCavadaLabsProjectForCompatibilityTeam(allProjects, key.team_id);
+                const width = info.cell.column.getSize();
+                if (!projectId && !project && !key.team_id) return "-";
+                const isMissingExplicitProject = Boolean(projectId && !project);
+                const isProjectCompanyMismatch = Boolean(companyId && project && project.company_id !== companyId);
+                const displayValue = isProjectCompanyMismatch
+                  ? "Project belongs to another Company"
+                  : project?.name || project?.project_id || projectId || "Missing Project mapping";
+                return (
+                  <span
+                    className={`font-mono text-xs truncate block ${
+                      isMissingExplicitProject || isProjectCompanyMismatch ? "text-red-600" : ""
+                    }`}
+                    style={{ maxWidth: width, overflow: "hidden" }}
+                    title={
+                      isMissingExplicitProject
+                        ? `Missing Project mapping for ${projectId}`
+                        : isProjectCompanyMismatch
+                          ? `Project ${project?.project_id} belongs to Company ${project?.company_id}, not ${companyId}`
+                          : undefined
+                    }
+                  >
+                    {displayValue}
+                  </span>
+                );
+              },
+            } satisfies ColumnDef<KeyResponse>,
+          ]
+        : []),
+      {
+        id: "user",
+        accessorKey: "user",
+        header: () => (
+          <span className="flex items-center gap-1">
+            User
+            <Popover content="Displays the first available value: User Alias, User Email, or User ID." trigger="hover">
+              <InfoCircleOutlined className="text-gray-400 text-xs cursor-help" />
+            </Popover>
+          </span>
+        ),
+        size: 160,
+        enableSorting: false,
+        cell: ({ row }) => {
+          const key = row.original;
+          const userAlias = key.user?.user_alias ?? null;
+          const userEmail = key.user?.user_email ?? key.user_email ?? null;
+          const userId = key.user_id ?? null;
+          const isDefaultAdmin = userId === "default_user_id";
+          const displayValue = userAlias || userEmail || userId;
+          const width = 160;
 
-        if (isDefaultAdmin && !userAlias && !userEmail) {
+          const popoverContent = (
+            <div className="flex flex-col gap-2 text-xs min-w-[200px] max-w-[300px]">
+              {[
+                { label: "User Alias", value: userAlias },
+                { label: "User Email", value: userEmail },
+                { label: "User ID", value: userId },
+              ].map(({ label, value }) => (
+                <div key={label} className="flex flex-col min-w-0">
+                  <span className="text-gray-400">{label}</span>
+                  {value ? (
+                    <Typography.Text className="font-mono text-xs" ellipsis={{ tooltip: value }} copyable>
+                      {value}
+                    </Typography.Text>
+                  ) : (
+                    <span className="font-mono">-</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          );
+
+          if (isDefaultAdmin && !userAlias && !userEmail) {
+            return (
+              <Popover content={popoverContent} trigger="hover" placement="bottomLeft">
+                <span className="cursor-default">
+                  <DefaultProxyAdminTag userId={userId} />
+                </span>
+              </Popover>
+            );
+          }
+
           return (
             <Popover content={popoverContent} trigger="hover" placement="bottomLeft">
-              <span className="cursor-default">
-                <DefaultProxyAdminTag userId={userId} />
+              <span
+                className="font-mono text-xs truncate block cursor-default"
+                style={{ maxWidth: width, overflow: "hidden" }}
+              >
+                {displayValue || "-"}
               </span>
             </Popover>
           );
-        }
-
-        return (
-          <Popover content={popoverContent} trigger="hover" placement="bottomLeft">
-            <span
-              className="font-mono text-xs truncate block cursor-default"
-              style={{ maxWidth: width, overflow: "hidden" }}
-            >
-              {displayValue || "-"}
-            </span>
-          </Popover>
-        );
+        },
       },
-    },
-    {
-      id: "created_at",
-      accessorKey: "created_at",
-      header: "Created At",
-      size: 120,
-      enableSorting: true,
-      cell: (info) => {
-        const value = info.getValue();
-        return value ? new Date(value as string).toLocaleDateString() : "-";
+      {
+        id: "created_at",
+        accessorKey: "created_at",
+        header: "Created At",
+        size: 120,
+        enableSorting: true,
+        cell: (info) => {
+          const value = info.getValue();
+          return value ? new Date(value as string).toLocaleDateString() : "-";
+        },
       },
-    },
-    {
-      id: "created_by",
-      accessorKey: "created_by",
-      header: "Created By",
-      size: 160,
-      enableSorting: false,
-      cell: (info) => {
-        const userId = info.getValue() as string | null;
-        if (!userId) return "-";
-        const key = info.row.original;
-        const createdByUser = key.created_by_user;
-        const userAlias = createdByUser?.user_alias ?? null;
-        const userEmail = createdByUser?.user_email ?? null;
-        const isDefaultAdmin = userId === "default_user_id";
-        const displayValue = userAlias || userEmail || userId;
-        const width = 160;
+      {
+        id: "created_by",
+        accessorKey: "created_by",
+        header: "Created By",
+        size: 160,
+        enableSorting: false,
+        cell: (info) => {
+          const userId = info.getValue() as string | null;
+          if (!userId) return "-";
+          const key = info.row.original;
+          const createdByUser = key.created_by_user;
+          const userAlias = createdByUser?.user_alias ?? null;
+          const userEmail = createdByUser?.user_email ?? null;
+          const isDefaultAdmin = userId === "default_user_id";
+          const displayValue = userAlias || userEmail || userId;
+          const width = 160;
 
-        const popoverContent = (
-          <div className="flex flex-col gap-2 text-xs min-w-[200px] max-w-[300px]">
-            {[
-              { label: "User Alias", value: userAlias },
-              { label: "User Email", value: userEmail },
-              { label: "User ID", value: userId },
-            ].map(({ label, value }) => (
-              <div key={label} className="flex flex-col min-w-0">
-                <span className="text-gray-400">{label}</span>
-                {value ? (
-                  <Typography.Text
-                    className="font-mono text-xs"
-                    ellipsis={{ tooltip: value }}
-                    copyable
-                  >
-                    {value}
-                  </Typography.Text>
-                ) : (
-                  <span className="font-mono">-</span>
-                )}
-              </div>
-            ))}
-          </div>
-        );
+          const popoverContent = (
+            <div className="flex flex-col gap-2 text-xs min-w-[200px] max-w-[300px]">
+              {[
+                { label: "User Alias", value: userAlias },
+                { label: "User Email", value: userEmail },
+                { label: "User ID", value: userId },
+              ].map(({ label, value }) => (
+                <div key={label} className="flex flex-col min-w-0">
+                  <span className="text-gray-400">{label}</span>
+                  {value ? (
+                    <Typography.Text className="font-mono text-xs" ellipsis={{ tooltip: value }} copyable>
+                      {value}
+                    </Typography.Text>
+                  ) : (
+                    <span className="font-mono">-</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          );
 
-        if (isDefaultAdmin && !userAlias && !userEmail) {
+          if (isDefaultAdmin && !userAlias && !userEmail) {
+            return (
+              <Popover content={popoverContent} trigger="hover" placement="bottomLeft">
+                <span className="cursor-default">
+                  <DefaultProxyAdminTag userId={userId} />
+                </span>
+              </Popover>
+            );
+          }
+
           return (
             <Popover content={popoverContent} trigger="hover" placement="bottomLeft">
-              <span className="cursor-default">
-                <DefaultProxyAdminTag userId={userId} />
+              <span
+                className="font-mono text-xs truncate block cursor-default"
+                style={{ maxWidth: width, overflow: "hidden" }}
+              >
+                {displayValue}
               </span>
             </Popover>
           );
-        }
-
-        return (
-          <Popover content={popoverContent} trigger="hover" placement="bottomLeft">
-            <span
-              className="font-mono text-xs truncate block cursor-default"
-              style={{ maxWidth: width, overflow: "hidden" }}
+        },
+      },
+      {
+        id: "updated_at",
+        accessorKey: "updated_at",
+        header: "Updated At",
+        size: 120,
+        enableSorting: true,
+        cell: (info) => {
+          const value = info.getValue();
+          return value ? new Date(value as string).toLocaleDateString() : "Never";
+        },
+      },
+      {
+        id: "last_active",
+        accessorKey: "last_active",
+        header: () => (
+          <span className="flex items-center gap-1">
+            Last Active
+            <Popover
+              content="This is a new field and is not backfilled. Only new key usage will update this value."
+              trigger="hover"
             >
-              {displayValue}
-            </span>
-          </Popover>
-        );
+              <InfoCircleOutlined className="text-gray-400 text-xs cursor-help" />
+            </Popover>
+          </span>
+        ),
+        size: 130,
+        enableSorting: false,
+        cell: (info) => {
+          const value = info.getValue();
+          if (!value) return "Unknown";
+          const date = new Date(value as string);
+          return (
+            <Tooltip title={date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "long" })}>
+              <span>{date.toLocaleDateString()}</span>
+            </Tooltip>
+          );
+        },
       },
-    },
-    {
-      id: "updated_at",
-      accessorKey: "updated_at",
-      header: "Updated At",
-      size: 120,
-      enableSorting: true,
-      cell: (info) => {
-        const value = info.getValue();
-        return value ? new Date(value as string).toLocaleDateString() : "Never";
+      {
+        id: "expires",
+        accessorKey: "expires",
+        header: "Expires",
+        size: 120,
+        enableSorting: false,
+        cell: (info) => {
+          const value = info.getValue();
+          return value ? new Date(value as string).toLocaleDateString() : "Never";
+        },
       },
-    },
-    {
-      id: "last_active",
-      accessorKey: "last_active",
-      header: () => (
-        <span className="flex items-center gap-1">
-          Last Active
-          <Popover
-            content="This is a new field and is not backfilled. Only new key usage will update this value."
-            trigger="hover"
-          >
-            <InfoCircleOutlined className="text-gray-400 text-xs cursor-help" />
-          </Popover>
-        </span>
-      ),
-      size: 130,
-      enableSorting: false,
-      cell: (info) => {
-        const value = info.getValue();
-        if (!value) return "Unknown";
-        const date = new Date(value as string);
-        return (
-          <Tooltip title={date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "long" })}>
-            <span>{date.toLocaleDateString()}</span>
-          </Tooltip>
-        );
+      {
+        id: "spend",
+        accessorKey: "spend",
+        header: "Spend (USD)",
+        size: 100,
+        enableSorting: true,
+        cell: (info) => formatNumberWithCommas(info.getValue() as number, 4),
       },
-    },
-    {
-      id: "expires",
-      accessorKey: "expires",
-      header: "Expires",
-      size: 120,
-      enableSorting: false,
-      cell: (info) => {
-        const value = info.getValue();
-        return value ? new Date(value as string).toLocaleDateString() : "Never";
+      {
+        id: "max_budget",
+        accessorKey: "max_budget",
+        header: "Budget (USD)",
+        size: 110,
+        enableSorting: true,
+        cell: (info) => {
+          const maxBudget = info.getValue() as number | null;
+          if (maxBudget === null) {
+            return "Unlimited";
+          }
+          return `$${formatNumberWithCommas(maxBudget)}`;
+        },
       },
-    },
-    {
-      id: "spend",
-      accessorKey: "spend",
-      header: "Spend (USD)",
-      size: 100,
-      enableSorting: true,
-      cell: (info) => formatNumberWithCommas(info.getValue() as number, 4),
-    },
-    {
-      id: "max_budget",
-      accessorKey: "max_budget",
-      header: "Budget (USD)",
-      size: 110,
-      enableSorting: true,
-      cell: (info) => {
-        const maxBudget = info.getValue() as number | null;
-        if (maxBudget === null) {
-          return "Unlimited";
-        }
-        return `$${formatNumberWithCommas(maxBudget)}`;
+      {
+        id: "budget_reset_at",
+        accessorKey: "budget_reset_at",
+        header: "Budget Reset",
+        size: 130,
+        enableSorting: false,
+        cell: (info) => {
+          const value = info.getValue();
+          return value ? new Date(value as string).toLocaleString() : "Never";
+        },
       },
-    },
-    {
-      id: "budget_reset_at",
-      accessorKey: "budget_reset_at",
-      header: "Budget Reset",
-      size: 130,
-      enableSorting: false,
-      cell: (info) => {
-        const value = info.getValue();
-        return value ? new Date(value as string).toLocaleString() : "Never";
-      },
-    },
-    {
-      id: "models",
-      accessorKey: "models",
-      header: "Models",
-      size: 200,
-      enableSorting: false,
-      cell: (info) => {
-        const models = info.getValue() as string[];
-        return (
-          <div className="flex flex-col py-2">
-            {Array.isArray(models) ? (
-              <div className="flex flex-col">
-                {models.length === 0 ? (
-                  <Badge size={"xs"} className="mb-1" color="red">
-                    <Text>All Proxy Models</Text>
-                  </Badge>
-                ) : (
-                  <>
-                    <div className="flex items-start">
-                      {models.length > 3 && (
-                        <div>
-                          <Icon
-                            icon={expandedAccordions[info.row.id] ? ChevronDownIcon : ChevronRightIcon}
-                            className="cursor-pointer"
-                            size="xs"
-                            onClick={() => {
-                              setExpandedAccordions((prev) => ({
-                                ...prev,
-                                [info.row.id]: !prev[info.row.id],
-                              }));
-                            }}
-                          />
-                        </div>
-                      )}
-                      <div className="flex flex-wrap gap-1">
-                        {models.slice(0, 3).map((model, index) =>
-                          model === "all-proxy-models" ? (
-                            <Badge key={index} size={"xs"} color="red">
-                              <Text>All Proxy Models</Text>
-                            </Badge>
-                          ) : (
-                            <Badge key={index} size={"xs"} color="blue">
-                              <Text>
-                                {model.length > 30
-                                  ? `${getModelDisplayName(model).slice(0, 30)}...`
-                                  : getModelDisplayName(model)}
-                              </Text>
-                            </Badge>
-                          ),
-                        )}
-                        {models.length > 3 && !expandedAccordions[info.row.id] && (
-                          <Badge size={"xs"} color="gray" className="cursor-pointer">
-                            <Text>
-                              +{models.length - 3} {models.length - 3 === 1 ? "more model" : "more models"}
-                            </Text>
-                          </Badge>
-                        )}
-                        {expandedAccordions[info.row.id] && (
-                          <div className="flex flex-wrap gap-1">
-                            {models.slice(3).map((model, index) =>
-                              model === "all-proxy-models" ? (
-                                <Badge key={index + 3} size={"xs"} color="red">
-                                  <Text>All Proxy Models</Text>
-                                </Badge>
-                              ) : (
-                                <Badge key={index + 3} size={"xs"} color="blue">
-                                  <Text>
-                                    {model.length > 30
-                                      ? `${getModelDisplayName(model).slice(0, 30)}...`
-                                      : getModelDisplayName(model)}
-                                  </Text>
-                                </Badge>
-                              ),
-                            )}
+      {
+        id: "models",
+        accessorKey: "models",
+        header: "Models",
+        size: 200,
+        enableSorting: false,
+        cell: (info) => {
+          const models = info.getValue() as string[];
+          return (
+            <div className="flex flex-col py-2">
+              {Array.isArray(models) ? (
+                <div className="flex flex-col">
+                  {models.length === 0 ? (
+                    <Badge size={"xs"} className="mb-1" color="red">
+                      <Text>All Proxy Models</Text>
+                    </Badge>
+                  ) : (
+                    <>
+                      <div className="flex items-start">
+                        {models.length > 3 && (
+                          <div>
+                            <Icon
+                              icon={expandedAccordions[info.row.id] ? ChevronDownIcon : ChevronRightIcon}
+                              className="cursor-pointer"
+                              size="xs"
+                              onClick={() => {
+                                setExpandedAccordions((prev) => ({
+                                  ...prev,
+                                  [info.row.id]: !prev[info.row.id],
+                                }));
+                              }}
+                            />
                           </div>
                         )}
+                        <div className="flex flex-wrap gap-1">
+                          {models.slice(0, 3).map((model, index) =>
+                            model === "all-proxy-models" ? (
+                              <Badge key={index} size={"xs"} color="red">
+                                <Text>All Proxy Models</Text>
+                              </Badge>
+                            ) : (
+                              <Badge key={index} size={"xs"} color="blue">
+                                <Text>
+                                  {model.length > 30
+                                    ? `${getModelDisplayName(model).slice(0, 30)}...`
+                                    : getModelDisplayName(model)}
+                                </Text>
+                              </Badge>
+                            ),
+                          )}
+                          {models.length > 3 && !expandedAccordions[info.row.id] && (
+                            <Badge size={"xs"} color="gray" className="cursor-pointer">
+                              <Text>
+                                +{models.length - 3} {models.length - 3 === 1 ? "more model" : "more models"}
+                              </Text>
+                            </Badge>
+                          )}
+                          {expandedAccordions[info.row.id] && (
+                            <div className="flex flex-wrap gap-1">
+                              {models.slice(3).map((model, index) =>
+                                model === "all-proxy-models" ? (
+                                  <Badge key={index + 3} size={"xs"} color="red">
+                                    <Text>All Proxy Models</Text>
+                                  </Badge>
+                                ) : (
+                                  <Badge key={index + 3} size={"xs"} color="blue">
+                                    <Text>
+                                      {model.length > 30
+                                        ? `${getModelDisplayName(model).slice(0, 30)}...`
+                                        : getModelDisplayName(model)}
+                                    </Text>
+                                  </Badge>
+                                ),
+                              )}
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            ) : null}
-          </div>
-        );
+                    </>
+                  )}
+                </div>
+              ) : null}
+            </div>
+          );
+        },
       },
-    },
-    {
-      id: "rate_limits",
-      header: "Rate Limits",
-      size: 140,
-      enableSorting: false,
-      cell: ({ row }) => {
-        const key = row.original;
-        return (
-          <div>
-            <div>TPM: {key.tpm_limit !== null ? key.tpm_limit : "Unlimited"}</div>
-            <div>RPM: {key.rpm_limit !== null ? key.rpm_limit : "Unlimited"}</div>
-          </div>
-        );
+      {
+        id: "rate_limits",
+        header: "Rate Limits",
+        size: 140,
+        enableSorting: false,
+        cell: ({ row }) => {
+          const key = row.original;
+          return (
+            <div>
+              <div>TPM: {key.tpm_limit !== null ? key.tpm_limit : "Unlimited"}</div>
+              <div>RPM: {key.rpm_limit !== null ? key.rpm_limit : "Unlimited"}</div>
+            </div>
+          );
+        },
       },
-    },
-  ], [teams, allCompanies, allProjects, expandedAccordions]);
+    ],
+    [
+      teams,
+      allOrganizations,
+      allCompanies,
+      allProjects,
+      expandedAccordions,
+      showCavadaLabsProductFields,
+      showLiteLLMCompatibilityColumns,
+    ],
+  );
 
   const filterOptions: FilterOption[] = [
-    {
-      name: "Team ID",
-      label: "Team ID",
-      isSearchable: true,
-      searchFn: async (searchText: string) => {
-        if (!allTeams || allTeams.length === 0) return [];
+    ...(showLiteLLMCompatibilityColumns
+      ? [
+          {
+            name: "Organization ID",
+            label: "Organization",
+            isSearchable: true,
+            searchFn: async (searchText: string) => {
+              if (!allOrganizations || allOrganizations.length === 0) return [];
 
-        const filteredTeams = allTeams.filter(
-          (team) =>
-            team.team_id.toLowerCase().includes(searchText.toLowerCase()) ||
-            (team.team_alias && team.team_alias.toLowerCase().includes(searchText.toLowerCase())),
-        );
+              const filteredOrganizations = allOrganizations.filter(
+                (organization) =>
+                  organization.organization_id.toLowerCase().includes(searchText.toLowerCase()) ||
+                  (organization.organization_alias &&
+                    organization.organization_alias.toLowerCase().includes(searchText.toLowerCase())),
+              );
 
-        return filteredTeams.map((team) => ({
-          label: `${team.team_alias || team.team_id} (${team.team_id})`,
-          value: team.team_id,
-        }));
-      },
-    },
-    {
-      name: "Company ID",
-      label: "Company",
-      isSearchable: true,
-      searchFn: async (searchText: string) => {
-        if (!allCompanies || allCompanies.length === 0) return [];
+              return filteredOrganizations.map((organization) => ({
+                label: `${organization.organization_alias || organization.organization_id} (${
+                  organization.organization_id
+                })`,
+                value: organization.organization_id,
+              }));
+            },
+          },
+        ]
+      : []),
+    ...(showLiteLLMCompatibilityColumns
+      ? [
+          {
+            name: "Team ID",
+            label: "Team ID",
+            isSearchable: true,
+            searchFn: async (searchText: string) => {
+              if (!allTeams || allTeams.length === 0) return [];
 
-        const filteredCompanies = allCompanies.filter(
-          (company) =>
-            company.company_id.toLowerCase().includes(searchText.toLowerCase()) ||
-            (company.legal_name ?? "").toLowerCase().includes(searchText.toLowerCase()),
-        );
+              const filteredTeams = allTeams.filter(
+                (team) =>
+                  team.team_id.toLowerCase().includes(searchText.toLowerCase()) ||
+                  (team.team_alias && team.team_alias.toLowerCase().includes(searchText.toLowerCase())),
+              );
 
-        return filteredCompanies.map((company) => ({
-          label: `${company.legal_name || company.company_id} (${company.company_id})`,
-          value: company.company_id,
-        }));
-      },
-    },
-    {
-      name: "Project ID",
-      label: "Project",
-      isSearchable: true,
-      searchFn: async (searchText: string) => {
-        if (!allProjects || allProjects.length === 0) return [];
+              return filteredTeams.map((team) => ({
+                label: `${team.team_alias || team.team_id} (${team.team_id})`,
+                value: team.team_id,
+              }));
+            },
+          },
+        ]
+      : []),
+    ...(showCavadaLabsProductFields
+      ? [
+          {
+            name: "Company ID",
+            label: "Company",
+            isSearchable: true,
+            searchFn: async (searchText: string) => {
+              if (!allCompanies || allCompanies.length === 0) return [];
 
-        const filteredProjects = allProjects.filter(
-          (project) =>
-            project.project_id.toLowerCase().includes(searchText.toLowerCase()) ||
-            (project.name ?? "").toLowerCase().includes(searchText.toLowerCase()),
-        );
+              const filteredCompanies = allCompanies.filter(
+                (company) =>
+                  company.company_id.toLowerCase().includes(searchText.toLowerCase()) ||
+                  (company.legal_name ?? "").toLowerCase().includes(searchText.toLowerCase()),
+              );
 
-        return filteredProjects.map((project) => ({
-          label: `${project.name || project.project_id} (${project.project_id})`,
-          value: project.project_id,
-        }));
-      },
-    },
+              return filteredCompanies.map((company) => ({
+                label: `${company.legal_name || company.company_id} (${company.company_id})`,
+                value: company.company_id,
+              }));
+            },
+          },
+          {
+            name: "Project ID",
+            label: "Project",
+            isSearchable: true,
+            searchFn: async (searchText: string) => {
+              if (!allProjects || allProjects.length === 0) return [];
+
+              const filteredProjects = allProjects.filter(
+                (project) =>
+                  project.project_id.toLowerCase().includes(searchText.toLowerCase()) ||
+                  (project.name ?? "").toLowerCase().includes(searchText.toLowerCase()),
+              );
+
+              return filteredProjects.map((project) => ({
+                label: `${project.name || project.project_id} (${project.project_id})`,
+                value: project.project_id,
+              }));
+            },
+          },
+        ]
+      : []),
     {
       name: "Key Alias",
       label: "Key Alias",
@@ -750,6 +871,8 @@ export function VirtualKeysTable({ teams, onSortChange, currentSort }: VirtualKe
           keyData={selectedKey}
           teams={allTeams}
           onDelete={refetch}
+          cavadalabsCompanies={allCompanies}
+          cavadalabsProjects={allProjects}
         />
       ) : (
         <div className="border-b py-4 flex-1 overflow-hidden">
@@ -828,10 +951,11 @@ export function VirtualKeysTable({ teams, onSortChange, currentSort }: VirtualKe
                           <TableHeaderCell
                             key={header.id}
                             data-header-id={header.id}
-                            className={`py-1 h-8 relative hover:bg-gray-50 ${header.id === "actions"
-                              ? "sticky right-0 bg-white shadow-[-4px_0_8px_-6px_rgba(0,0,0,0.1)]"
-                              : ""
-                              }`}
+                            className={`py-1 h-8 relative hover:bg-gray-50 ${
+                              header.id === "actions"
+                                ? "sticky right-0 bg-white shadow-[-4px_0_8px_-6px_rgba(0,0,0,0.1)]"
+                                : ""
+                            }`}
                             style={{
                               width: header.getSize(),
                               position: "relative",

@@ -4,6 +4,7 @@ import {
   Alert,
   Button,
   DatePicker,
+  Descriptions,
   Drawer,
   Form,
   Input,
@@ -22,13 +23,17 @@ import type { ColumnsType } from "antd/es/table";
 import { EditOutlined, EyeOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from "@ant-design/icons";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  cavadaLabsErrorDetailFromUnknown,
+  cavadalabsMissingSchemaDetailLines,
   createCavadaLabsResource,
   cavadalabsRequest,
   deleteCavadaLabsResource,
+  isCavadaLabsMissingSchemaDetail,
   listCavadaLabsResource,
   patchCavadaLabsResource,
   postCavadaLabsAction,
 } from "./api";
+import CavadaLabsProjectMembersPanel from "./CavadaLabsProjectMembersPanel";
 import type {
   CavadaLabsColumnConfig,
   CavadaLabsFieldConfig,
@@ -57,6 +62,7 @@ interface CavadaLabsResourcePanelProps {
   config: CavadaLabsResourceConfig;
   context: CavadaLabsRuntimeContext;
   onMutated?: () => void;
+  initialDetailsId?: string | null;
 }
 
 interface OperationResult {
@@ -189,22 +195,27 @@ const buildColumns = (
           <Button aria-label="Details" size="small" icon={<EyeOutlined />} onClick={() => showDetails(row)} />
         </Tooltip>
         {config.updatePath && config.updateFields ? (
-          <Tooltip title="Edit">
-            <Button aria-label="Edit" size="small" icon={<EditOutlined />} onClick={() => openEdit(row)} />
-          </Tooltip>
+          config.canUpdate?.(row) === false ? null : (
+            <Tooltip title="Edit">
+              <Button aria-label="Edit" size="small" icon={<EditOutlined />} onClick={() => openEdit(row)} />
+            </Tooltip>
+          )
         ) : null}
-        {config.rowActions?.map((action) => (
-          <Button
-            key={action.key}
-            aria-label={action.label}
-            size="small"
-            danger={action.danger}
-            icon={action.icon}
-            onClick={() => runRowAction(action, row)}
-          >
-            {action.label}
-          </Button>
-        ))}
+        {config.rowActions
+          ?.filter((action) => !action.hidden?.(row))
+          .map((action) => (
+            <Button
+              key={action.key}
+              aria-label={action.label}
+              size="small"
+              danger={action.danger}
+              icon={action.icon}
+              disabled={action.disabled?.(row)}
+              onClick={() => runRowAction(action, row)}
+            >
+              {action.label}
+            </Button>
+          ))}
       </Space>
     ),
   });
@@ -236,11 +247,99 @@ const ResultModal = ({ result, onClose }: { result: OperationResult | null; onCl
   );
 };
 
+const MissingSchemaDescription = ({ detail }: { detail: CavadaLabsRecord }) => {
+  const lines = cavadalabsMissingSchemaDetailLines(detail);
+
+  return (
+    <Space direction="vertical" size={4}>
+      <span>
+        Apply the CavadaLabs Prisma migration before relying on Company/Project usage, billing, diagnostics, or repair.
+      </span>
+      {lines.map((line) =>
+        line.startsWith("Migration command: ") ? (
+          <Text key={line} code copyable>
+            {line.replace("Migration command: ", "")}
+          </Text>
+        ) : (
+          <Text key={line} type="secondary">
+            {line}
+          </Text>
+        ),
+      )}
+    </Space>
+  );
+};
+
+const formatTagValues = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item));
+  }
+  if (typeof value === "string" && value.trim()) {
+    return [value];
+  }
+  return [];
+};
+
+const ProjectDetailsView = ({ project }: { project: CavadaLabsRecord }) => {
+  const allowedModels = formatTagValues(project.allowed_models);
+  const allowedCollections = formatTagValues(project.allowed_rag_collections);
+
+  return (
+    <Space direction="vertical" size={16} className="w-full">
+      <Descriptions bordered size="small" column={1} title="Project overview">
+        <Descriptions.Item label="Name">{project.name || <Text type="secondary">-</Text>}</Descriptions.Item>
+        <Descriptions.Item label="Project ID">
+          <Text copyable>{String(project.project_id ?? "-")}</Text>
+        </Descriptions.Item>
+        <Descriptions.Item label="Company">
+          <Text copyable>{String(project.company_id ?? "-")}</Text>
+        </Descriptions.Item>
+        <Descriptions.Item label="Status">
+          {project.status ? <Tag color={statusColor(project.status)}>{String(project.status)}</Tag> : "-"}
+        </Descriptions.Item>
+        <Descriptions.Item label="Budget">
+          {formatCurrency(project.budget, project.currency ?? "EUR")}
+        </Descriptions.Item>
+        <Descriptions.Item label="Updated">{formatDateTime(project.updated_at)}</Descriptions.Item>
+      </Descriptions>
+
+      <Descriptions bordered size="small" column={1} title="Project policy">
+        <Descriptions.Item label="Allowed models">
+          {allowedModels.length > 0 ? (
+            <Space size={[0, 4]} wrap>
+              {allowedModels.map((model) => (
+                <Tag key={model}>{model}</Tag>
+              ))}
+            </Space>
+          ) : (
+            <Text type="secondary">No model restriction</Text>
+          )}
+        </Descriptions.Item>
+        <Descriptions.Item label="Allowed RAG collections">
+          {allowedCollections.length > 0 ? (
+            <Space size={[0, 4]} wrap>
+              {allowedCollections.map((collection) => (
+                <Tag key={collection}>{collection}</Tag>
+              ))}
+            </Space>
+          ) : (
+            <Text type="secondary">No RAG collection restriction</Text>
+          )}
+        </Descriptions.Item>
+        <Descriptions.Item label="Default guardrail policy">
+          {project.default_guardrail_policy || <Text type="secondary">-</Text>}
+        </Descriptions.Item>
+      </Descriptions>
+    </Space>
+  );
+};
+
 const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
   accessToken,
   config,
   context,
   onMutated,
+  initialDetailsId,
 }) => {
   const [filterForm] = Form.useForm();
   const [createForm] = Form.useForm();
@@ -256,11 +355,13 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [errorDetail, setErrorDetail] = useState<CavadaLabsRecord | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [updateRow, setUpdateRow] = useState<CavadaLabsRecord | null>(null);
   const [detailsRow, setDetailsRow] = useState<CavadaLabsRecord | null>(null);
   const [operationResult, setOperationResult] = useState<OperationResult | null>(null);
   const mountedRef = useRef(true);
+  const consumedInitialDetailsRef = useRef<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -296,6 +397,7 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
 
     setLoading(true);
     setError(null);
+    setErrorDetail(null);
     try {
       const response = await listCavadaLabsResource<Record<string, any>>(accessToken, config.listPath, filters);
       if (!mountedRef.current) return;
@@ -306,6 +408,7 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
       if (!mountedRef.current) return;
       const messageText = err instanceof Error ? err.message : String(err);
       setError(messageText);
+      setErrorDetail(cavadaLabsErrorDetailFromUnknown(err));
       setRows([]);
       setCount(0);
     } finally {
@@ -321,6 +424,23 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
 
   const visibleRows = useMemo(() => rows.filter((row) => rowMatchesSearch(row, search)), [rows, search]);
 
+  useEffect(() => {
+    const requestedId = initialDetailsId?.trim();
+    if (!requestedId) {
+      consumedInitialDetailsRef.current = null;
+      return;
+    }
+
+    const marker = `${config.key}:${requestedId}`;
+    if (consumedInitialDetailsRef.current === marker || detailsRow) return;
+
+    const matchedRow = rows.find((row) => String(row[config.rowKey]) === requestedId);
+    if (!matchedRow) return;
+
+    consumedInitialDetailsRef.current = marker;
+    setDetailsRow(matchedRow);
+  }, [config.key, config.rowKey, detailsRow, initialDetailsId, rows]);
+
   const executeRequest = useCallback(
     async (spec: { method: "POST" | "PATCH" | "DELETE"; path: string; body?: CavadaLabsRecord }) => {
       if (spec.method === "POST") return postCavadaLabsAction(accessToken, spec.path, spec.body ?? {});
@@ -329,6 +449,16 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
       return cavadalabsRequest(accessToken, spec.path, { method: spec.method, body: spec.body });
     },
     [accessToken],
+  );
+
+  const showOperationError = useCallback(
+    (err: unknown) => {
+      const messageText = err instanceof Error ? err.message : String(err);
+      setError(messageText);
+      setErrorDetail(cavadaLabsErrorDetailFromUnknown(err));
+      messageApi.error(messageText);
+    },
+    [messageApi],
   );
 
   const handleCreate = async () => {
@@ -347,8 +477,7 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
       onMutated?.();
     } catch (err) {
       if (err && typeof err === "object" && "errorFields" in err) return;
-      const messageText = err instanceof Error ? err.message : String(err);
-      messageApi.error(messageText);
+      showOperationError(err);
     } finally {
       setSubmitting(false);
     }
@@ -370,8 +499,7 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
       onMutated?.();
     } catch (err) {
       if (err && typeof err === "object" && "errorFields" in err) return;
-      const messageText = err instanceof Error ? err.message : String(err);
-      messageApi.error(messageText);
+      showOperationError(err);
     } finally {
       setSubmitting(false);
     }
@@ -388,7 +516,7 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
           await loadRows();
           onMutated?.();
         } catch (err) {
-          messageApi.error(err instanceof Error ? err.message : String(err));
+          showOperationError(err);
         } finally {
           setSubmitting(false);
         }
@@ -417,7 +545,7 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
       await loadRows();
       onMutated?.();
     } catch (err) {
-      messageApi.error(err instanceof Error ? err.message : String(err));
+      showOperationError(err);
     } finally {
       setSubmitting(false);
     }
@@ -466,7 +594,7 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
               {action.label}
             </Button>
           ))}
-          {config.createPath && config.createFields ? (
+          {config.createPath && config.createFields && config.canCreate?.(context) !== false ? (
             <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
               {config.createLabel ?? "Create"}
             </Button>
@@ -512,7 +640,17 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
         />
       ) : null}
 
-      {error ? <Alert type="error" showIcon className="mb-4" message={error} /> : null}
+      {error ? (
+        <Alert
+          type="error"
+          showIcon
+          className="mb-4"
+          message={isCavadaLabsMissingSchemaDetail(errorDetail) ? "CavadaLabs schema is not ready" : error}
+          description={
+            isCavadaLabsMissingSchemaDetail(errorDetail) ? <MissingSchemaDescription detail={errorDetail} /> : undefined
+          }
+        />
+      ) : null}
 
       <Table
         rowKey={(row) => String(row[config.rowKey])}
@@ -590,9 +728,21 @@ const CavadaLabsResourcePanel: React.FC<CavadaLabsResourcePanelProps> = ({
         width={720}
         onClose={() => setDetailsRow(null)}
       >
-        <pre className="rounded border border-gray-200 bg-gray-50 p-3 text-xs">
-          {JSON.stringify(detailsRow ?? {}, null, 2)}
-        </pre>
+        {config.key === "projects" && detailsRow ? (
+          <ProjectDetailsView project={detailsRow} />
+        ) : (
+          <pre className="rounded border border-gray-200 bg-gray-50 p-3 text-xs">
+            {JSON.stringify(detailsRow ?? {}, null, 2)}
+          </pre>
+        )}
+        {config.key === "projects" && detailsRow ? (
+          <CavadaLabsProjectMembersPanel
+            accessToken={accessToken}
+            project={detailsRow}
+            canManage={detailsRow.cavadalabs_can_manage === true}
+            onMutated={onMutated}
+          />
+        ) : null}
       </Drawer>
 
       <ResultModal result={operationResult} onClose={() => setOperationResult(null)} />

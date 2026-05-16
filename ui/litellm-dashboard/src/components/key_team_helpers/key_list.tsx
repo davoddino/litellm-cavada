@@ -19,6 +19,10 @@ export interface Team {
   access_group_models?: string[];
   access_group_mcp_server_ids?: string[];
   access_group_agent_ids?: string[];
+  cavadalabs_company_id?: string | null;
+  cavadalabs_project_id?: string | null;
+  cavadalabs_project_name?: string | null;
+  cavadalabs_project_status?: string | null;
 }
 
 export interface KeyResponse {

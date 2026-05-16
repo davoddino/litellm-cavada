@@ -410,10 +410,7 @@ describe("useKeys", () => {
       }),
     });
 
-    const { result } = renderHook(
-      () => useKeys(1, 10, { projectID: "project-1" }),
-      { wrapper },
-    );
+    const { result } = renderHook(() => useKeys(1, 10, { projectID: "project-1" }), { wrapper });
 
     await waitFor(() => {
       expect(result.current.isLoading).toBe(false);
@@ -436,10 +433,7 @@ describe("useKeys", () => {
       }),
     });
 
-    const { result } = renderHook(
-      () => useKeys(1, 10, { projectID: "project-1", teamID: "team-1" }),
-      { wrapper },
-    );
+    const { result } = renderHook(() => useKeys(1, 10, { projectID: "project-1", teamID: "team-1" }), { wrapper });
 
     await waitFor(() => {
       expect(result.current.isLoading).toBe(false);
@@ -456,8 +450,28 @@ describe("useKeys", () => {
       json: async () => mockKeysResponse,
     });
 
+    const { result } = renderHook(() => useKeys(1, 10, { projectID: null }), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    const callUrl = mockFetch.mock.calls[0][0];
+    expect(callUrl).not.toContain("project_id");
+  });
+
+  it("should pass CavadaLabs Company and Project filters without legacy tenant filters", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockKeysResponse,
+    });
+
     const { result } = renderHook(
-      () => useKeys(1, 10, { projectID: null }),
+      () =>
+        useKeys(1, 10, {
+          cavadalabsCompanyID: "company-1",
+          cavadalabsProjectID: "project-1",
+        }),
       { wrapper },
     );
 
@@ -466,7 +480,10 @@ describe("useKeys", () => {
     });
 
     const callUrl = mockFetch.mock.calls[0][0];
-    expect(callUrl).not.toContain("project_id");
+    expect(callUrl).toContain("cavadalabs_company_id=company-1");
+    expect(callUrl).toContain("cavadalabs_project_id=project-1");
+    expect(callUrl).not.toContain("organization_id=");
+    expect(callUrl).not.toContain("team_id=");
   });
 });
 

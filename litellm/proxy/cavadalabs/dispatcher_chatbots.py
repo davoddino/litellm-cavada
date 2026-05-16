@@ -6,6 +6,12 @@ from typing import Any, Dict, List, Optional
 from fastapi import HTTPException, status
 
 from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy.cavadalabs.chatbot_references import (
+    validate_chatbot_project_references,
+)
+from litellm.proxy.cavadalabs.chatbot_token_metadata import (
+    build_chatbot_token_metadata,
+)
 from litellm.proxy.cavadalabs.dispatcher_projects import CavadaLabsProjectOperations
 from litellm.proxy.cavadalabs.dispatcher_shared import (
     _MAX_BROWSER_TOKEN_TTL,
@@ -48,6 +54,14 @@ class CavadaLabsChatbotOperations(CavadaLabsProjectOperations):
         company = await self.get_company(data.company_id)
         self._ensure_company_active(company, "create chatbots")
         self._ensure_project_not_archived(project, "create chatbots")
+        await validate_chatbot_project_references(
+            self.db,
+            company_id=data.company_id,
+            project_id=data.project_id,
+            model_policy_id=data.model_policy_id,
+            assigned_rag_collection_ids=data.assigned_rag_collections,
+            assigned_guardrail_policy=data.assigned_guardrail_policy,
+        )
         create_data = serialize_prisma_json_fields(
             {
                 **data.model_dump(mode="python"),
@@ -91,16 +105,29 @@ class CavadaLabsChatbotOperations(CavadaLabsProjectOperations):
     async def list_chatbots(
         self,
         company_id: Optional[str] = None,
+        company_ids: Optional[List[str]] = None,
         project_id: Optional[str] = None,
+        project_ids: Optional[List[str]] = None,
         status_filter: Optional[CavadaLabsChatbotStatus] = None,
         take: int = 100,
         skip: int = 0,
     ) -> List[CavadaLabsChatbotResponse]:
+        if company_ids == [] or project_ids == []:
+            return []
+
         where: Dict[str, Any] = {}
         if company_id is not None:
             where["company_id"] = company_id
+        elif company_ids is not None:
+            if not company_ids:
+                return []
+            where["company_id"] = {"in": sorted(set(company_ids))}
         if project_id is not None:
             where["project_id"] = project_id
+        elif project_ids is not None:
+            if not project_ids:
+                return []
+            where["project_id"] = {"in": sorted(set(project_ids))}
         if status_filter is not None:
             where["status"] = status_filter.value
         rows = await self.db.cavadalabs_chatbottable.find_many(
@@ -128,6 +155,15 @@ class CavadaLabsChatbotOperations(CavadaLabsProjectOperations):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={"error": "published chatbots require a system_prompt"},
             )
+        await validate_chatbot_project_references(
+            self.db,
+            company_id=before.company_id,
+            project_id=before.project_id,
+            chatbot_id=before.chatbot_id,
+            model_policy_id=update_data.get("model_policy_id"),
+            assigned_rag_collection_ids=update_data.get("assigned_rag_collections"),
+            assigned_guardrail_policy=update_data.get("assigned_guardrail_policy"),
+        )
         update_data["updated_by"] = _actor_user_id(user_api_key_dict)
         update_data = serialize_prisma_json_fields(update_data)
         row = await self.db.cavadalabs_chatbottable.update(
@@ -197,12 +233,19 @@ class CavadaLabsChatbotOperations(CavadaLabsProjectOperations):
 
         token, token_prefix, token_hash = _create_browser_token()
         allowed_domains = data.allowed_domains or chatbot.allowed_domains
+        data_metadata = build_chatbot_token_metadata(
+            data.metadata,
+            company_id=data.company_id,
+            project_id=data.project_id,
+            chatbot_id=data.chatbot_id,
+        )
         create_data = serialize_prisma_json_fields(
             {
                 **data.model_dump(
                     mode="python", exclude={"expires_in_seconds", "expires_at"}
                 ),
                 "allowed_domains": allowed_domains,
+                "metadata": data_metadata,
                 "token_prefix": token_prefix,
                 "token_hash": token_hash,
                 "status": CavadaLabsWebTokenStatus.ACTIVE.value,
@@ -228,7 +271,9 @@ class CavadaLabsChatbotOperations(CavadaLabsProjectOperations):
     async def list_web_tokens(
         self,
         company_id: Optional[str] = None,
+        company_ids: Optional[List[str]] = None,
         project_id: Optional[str] = None,
+        project_ids: Optional[List[str]] = None,
         chatbot_id: Optional[str] = None,
         status_filter: Optional[CavadaLabsWebTokenStatus] = None,
         take: int = 100,
@@ -237,8 +282,16 @@ class CavadaLabsChatbotOperations(CavadaLabsProjectOperations):
         where: Dict[str, Any] = {}
         if company_id is not None:
             where["company_id"] = company_id
+        elif company_ids is not None:
+            if not company_ids:
+                return []
+            where["company_id"] = {"in": sorted(set(company_ids))}
         if project_id is not None:
             where["project_id"] = project_id
+        elif project_ids is not None:
+            if not project_ids:
+                return []
+            where["project_id"] = {"in": sorted(set(project_ids))}
         if chatbot_id is not None:
             where["chatbot_id"] = chatbot_id
         if status_filter is not None:

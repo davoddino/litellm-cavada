@@ -12,7 +12,7 @@ import MCPServerSelector from "@/components/mcp_server_management/MCPServerSelec
 import AgentSelector from "@/components/agent_management/AgentSelector";
 import PremiumLoggingSettings from "@/components/common_components/PremiumLoggingSettings";
 import ModelAliasManager from "@/components/common_components/ModelAliasManager";
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import NotificationsManager from "@/components/molecules/notifications_manager";
 import {
@@ -27,6 +27,14 @@ import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import { organizationKeys } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
 import MCPToolPermissions from "@/components/mcp_server_management/MCPToolPermissions";
 import SearchToolSelector from "@/components/SearchTools/SearchToolSelector";
+import {
+  CavadaLabsCompanyOption,
+  findCavadaLabsCompanyForCompatibilityOrganization,
+  getCavadaLabsCompanyDisplayName,
+  resolveCavadaLabsCompanyCompatibilityOrganizationId,
+} from "@/components/cavadalabs/keyContext";
+
+export { resolveCavadaLabsCompanyCompatibilityOrganizationId } from "@/components/cavadalabs/keyContext";
 
 interface ModelAliases {
   [key: string]: string;
@@ -38,6 +46,7 @@ interface CreateTeamModalProps {
   handleCancel: () => void;
   currentOrg: Organization | null;
   organizations: Organization[] | null;
+  cavadalabsCompanies: CavadaLabsCompanyOption[];
   teams: Team[] | null;
   setTeams: (teams: Team[] | null) => void;
   modelAliases: ModelAliases;
@@ -72,6 +81,7 @@ const CreateTeamModal = ({
   handleCancel,
   currentOrg,
   organizations,
+  cavadalabsCompanies,
   teams,
   setTeams,
   modelAliases,
@@ -90,6 +100,9 @@ const CreateTeamModal = ({
   const [policiesList, setPoliciesList] = useState<string[]>([]);
   const [mcpAccessGroups, setMcpAccessGroups] = useState<string[]>([]);
   const [mcpAccessGroupsLoaded, setMcpAccessGroupsLoaded] = useState(false);
+  const isCavadaLabsProductContext = cavadalabsCompanies.length > 0;
+  const productNoun = isCavadaLabsProductContext ? "Project" : "Team";
+  const productNounLower = productNoun.toLowerCase();
 
   useEffect(() => {
     const fetchUserModels = async () => {
@@ -110,6 +123,12 @@ const CreateTeamModal = ({
   }, [accessToken, userID, userRole, teams]);
 
   useEffect(() => {
+    if (!isCavadaLabsProductContext) {
+      setCurrentOrgForCreateTeam(currentOrg);
+    }
+  }, [currentOrg, isCavadaLabsProductContext]);
+
+  useEffect(() => {
     console.log(`currentOrgForCreateTeam: ${currentOrgForCreateTeam}`);
     const models = getOrganizationModels(currentOrgForCreateTeam, userModels);
     console.log(`models: ${models}`);
@@ -117,7 +136,7 @@ const CreateTeamModal = ({
     form.setFieldValue("models", []);
   }, [currentOrgForCreateTeam, userModels, form]);
 
-  const fetchMcpAccessGroups = async () => {
+  const fetchMcpAccessGroups = useCallback(async () => {
     try {
       if (accessToken == null) {
         return;
@@ -127,7 +146,7 @@ const CreateTeamModal = ({
     } catch (error) {
       console.error("Failed to fetch MCP access groups:", error);
     }
-  };
+  }, [accessToken]);
 
   useEffect(() => {
     fetchMcpAccessGroups();
@@ -172,19 +191,23 @@ const CreateTeamModal = ({
       if (accessToken != null) {
         const newTeamAlias = formValues?.team_alias;
         const existingTeamAliases = teams?.map((t) => t.team_alias) ?? [];
-        let organizationId = formValues?.organization_id || currentOrg?.organization_id;
+        const selectedCompanyOrganizationId = resolveCavadaLabsCompanyCompatibilityOrganizationId(
+          formValues?.cavadalabs_company_id,
+          cavadalabsCompanies,
+        );
+        let organizationId =
+          selectedCompanyOrganizationId || formValues?.organization_id || currentOrg?.organization_id;
         if (organizationId === "" || typeof organizationId !== "string") {
           formValues.organization_id = null;
         } else {
           formValues.organization_id = organizationId.trim();
         }
-
         // Remove guardrails from top level since it's now in metadata
         if (existingTeamAliases.includes(newTeamAlias)) {
-          throw new Error(`Team alias ${newTeamAlias} already exists, please pick another alias`);
+          throw new Error(`${productNoun} alias ${newTeamAlias} already exists, please pick another alias`);
         }
 
-        NotificationsManager.info("Creating Team");
+        NotificationsManager.info(`Creating ${productNoun}`);
 
         // Handle logging settings in metadata
         if (loggingSettings.length > 0) {
@@ -302,21 +325,21 @@ const CreateTeamModal = ({
           setTeams([response]);
         }
         console.log(`response for team create call: ${response}`);
-        NotificationsManager.success("Team created");
+        NotificationsManager.success(`${productNoun} created`);
         form.resetFields();
         setLoggingSettings([]);
         setModelAliases({});
         setIsTeamModalVisible(false);
       }
     } catch (error) {
-      console.error("Error creating the team:", error);
-      NotificationsManager.fromBackend("Error creating the team: " + error);
+      console.error(`Error creating the ${productNounLower}:`, error);
+      NotificationsManager.fromBackend(`Error creating the ${productNounLower}: ` + error);
     }
   };
 
   return (
     <Modal
-      title="Create Team"
+      title={`Create ${productNoun}`}
       open={isTeamModalVisible}
       width={1000}
       footer={null}
@@ -326,83 +349,90 @@ const CreateTeamModal = ({
       <Form form={form} onFinish={handleCreate} labelCol={{ span: 8 }} wrapperCol={{ span: 16 }} labelAlign="left">
         <>
           <Form.Item
-            label="Team Name"
+            label={`${productNoun} Name`}
             name="team_alias"
             rules={[
               {
                 required: true,
-                message: "Please input a team name",
+                message: `Please input a ${productNounLower} name`,
               },
             ]}
           >
             <TextInput placeholder="" data-testid="team-name-input" />
           </Form.Item>
-          <Form.Item
-            label={
-              <span>
-                Organization{" "}
-                <Tooltip
-                  title={
-                    <span>
-                      Organizations can have multiple teams. Learn more about{" "}
-                      <a
-                        href="https://docs.litellm.ai/docs/proxy/user_management_heirarchy"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        style={{
-                          color: "#1890ff",
-                          textDecoration: "underline",
-                        }}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        user management hierarchy
-                      </a>
-                    </span>
-                  }
-                >
-                  <InfoCircleOutlined style={{ marginLeft: "4px" }} />
-                </Tooltip>
-              </span>
-            }
-            name="organization_id"
-            initialValue={currentOrg ? currentOrg.organization_id : null}
-            className="mt-8"
-          >
-            <Select2
-              showSearch
-              allowClear
-              placeholder="Search or select an Organization"
-              onChange={(value) => {
-                form.setFieldValue("organization_id", value);
-                setCurrentOrgForCreateTeam(organizations?.find((org) => org.organization_id === value) || null);
-              }}
-              filterOption={(input, option) => {
-                if (!option) return false;
-                const optionValue = option.children?.toString() || "";
-                return optionValue.toLowerCase().includes(input.toLowerCase());
-              }}
-              optionFilterProp="children"
+          {isCavadaLabsProductContext && (
+            <Form.Item
+              label={
+                <span>
+                  Company{" "}
+                  <Tooltip title="Projects inherit CavadaLabs tenant context from the selected company.">
+                    <InfoCircleOutlined style={{ marginLeft: "4px" }} />
+                  </Tooltip>
+                </span>
+              }
+              name="cavadalabs_company_id"
+              initialValue={
+                findCavadaLabsCompanyForCompatibilityOrganization(cavadalabsCompanies, currentOrg?.organization_id)
+                  ?.company_id ?? null
+              }
+              rules={[
+                {
+                  required: true,
+                  message: "Please select a Company",
+                },
+              ]}
+              className="mt-8"
             >
-              {organizations?.map((org) => (
-                <Select2.Option key={org.organization_id} value={org.organization_id}>
-                  <span className="font-medium">{org.organization_alias}</span>{" "}
-                  <span className="text-gray-500">({org.organization_id})</span>
-                </Select2.Option>
-              ))}
-            </Select2>
-          </Form.Item>
+              <Select2
+                showSearch
+                allowClear
+                placeholder="Search or select a Company"
+                onChange={(value) => {
+                  form.setFieldValue("cavadalabs_company_id", value);
+                  const company = cavadalabsCompanies.find((item) => item.company_id === value);
+                  const organizationId = company?.litellm_organization_id;
+                  setCurrentOrgForCreateTeam(
+                    organizationId
+                      ? organizations?.find((org) => org.organization_id === organizationId) || null
+                      : null,
+                  );
+                }}
+                filterOption={(input, option) => {
+                  if (!option) return false;
+                  const optionValue = option.children?.toString() || "";
+                  return optionValue.toLowerCase().includes(input.toLowerCase());
+                }}
+                optionFilterProp="children"
+              >
+                {cavadalabsCompanies.map((company) => (
+                  <Select2.Option
+                    key={company.company_id}
+                    value={company.company_id}
+                    disabled={!company.litellm_organization_id}
+                  >
+                    <span className="font-medium">{getCavadaLabsCompanyDisplayName(company)}</span>
+                  </Select2.Option>
+                ))}
+              </Select2>
+            </Form.Item>
+          )}
           <Form.Item
             label={
               <span>
                 Models{" "}
-                <Tooltip title="These are the models that your selected team has access to">
+                <Tooltip title={`These are the models that your selected ${productNounLower} has access to`}>
                   <InfoCircleOutlined style={{ marginLeft: "4px" }} />
                 </Tooltip>
               </span>
             }
             name="models"
           >
-            <Select2 mode="multiple" placeholder="Select models" style={{ width: "100%" }} data-testid="team-models-select">
+            <Select2
+              mode="multiple"
+              placeholder="Select models"
+              style={{ width: "100%" }}
+              data-testid="team-models-select"
+            >
               <Select2.Option key="all-proxy-models" value="all-proxy-models">
                 All Proxy Models
               </Select2.Option>
@@ -416,16 +446,14 @@ const CreateTeamModal = ({
 
           <Accordion className="mt-8 mb-8">
             <AccordionHeader>
-              <b>Team Member Settings</b>
+              <b>{isCavadaLabsProductContext ? "Project Member Settings" : "Team Member Settings"}</b>
             </AccordionHeader>
             <AccordionBody>
               <Text className="text-xs text-gray-500 mb-4">
-                Optional defaults applied when members join this team. All fields can be overridden per member.
+                Optional defaults applied when members join this {productNounLower}. All fields can be overridden per
+                member.
               </Text>
-              <Form.Item
-                noStyle
-                shouldUpdate={(prev, cur) => prev.models !== cur.models}
-              >
+              <Form.Item noStyle shouldUpdate={(prev, cur) => prev.models !== cur.models}>
                 {({ getFieldValue }) => {
                   const teamModels: string[] = getFieldValue("models") || [];
                   const opts = teamModels.length > 0 ? teamModels : modelsToPick;
@@ -434,7 +462,9 @@ const CreateTeamModal = ({
                       label={
                         <span>
                           Default Model Access{" "}
-                          <Tooltip title="Optional. If set, new members can only access these models by default. Must be a subset of the team's models. Leave empty to give all members access to all team models.">
+                          <Tooltip
+                            title={`Optional. If set, new members can only access these models by default. Must be a subset of the ${productNounLower}'s models. Leave empty to give all members access to all ${productNounLower} models.`}
+                          >
                             <InfoCircleOutlined style={{ marginLeft: "4px" }} />
                           </Tooltip>
                         </span>
@@ -443,7 +473,7 @@ const CreateTeamModal = ({
                     >
                       <Select2
                         mode="multiple"
-                        placeholder="Leave empty — all team models accessible to every member"
+                        placeholder={`Leave empty — all ${productNounLower} models accessible to every member`}
                         style={{ width: "100%" }}
                       >
                         {opts.map((m) => (
@@ -460,14 +490,14 @@ const CreateTeamModal = ({
                 label="Default Member Budget (USD)"
                 name="team_member_budget"
                 normalize={(value) => (value ? Number(value) : undefined)}
-                tooltip="Default spend budget for each member in this team."
+                tooltip={`Default spend budget for each member in this ${productNounLower}.`}
               >
                 <NumericalInput step={0.01} precision={2} width={200} />
               </Form.Item>
               <Form.Item
                 label="Default Key Duration (eg: 1d, 1mo)"
                 name="team_member_key_duration"
-                tooltip="Set a limit to the duration of a team member's key. Format: 30s (seconds), 30m (minutes), 30h (hours), 30d (days), 1mo (month)"
+                tooltip={`Set a limit to the duration of a ${productNounLower} member's key. Format: 30s (seconds), 30m (minutes), 30h (hours), 30d (days), 1mo (month)`}
               >
                 <TextInput placeholder="e.g., 30d" />
               </Form.Item>
@@ -492,7 +522,7 @@ const CreateTeamModal = ({
             <NumericalInput step={0.01} precision={2} width={200} />
           </Form.Item>
           <Form.Item className="mt-8" label="Reset Budget" name="budget_duration">
-            <Select2 defaultValue={null} placeholder="n/a">
+            <Select2 placeholder="n/a">
               <Select2.Option value="24h">daily</Select2.Option>
               <Select2.Option value="7d">weekly</Select2.Option>
               <Select2.Option value="30d">monthly</Select2.Option>
@@ -519,9 +549,13 @@ const CreateTeamModal = ({
             </AccordionHeader>
             <AccordionBody>
               <Form.Item
-                label="Team ID"
+                label={isCavadaLabsProductContext ? "Compatibility ID" : "Team ID"}
                 name="team_id"
-                help="ID of the team you want to create. If not provided, it will be generated automatically."
+                help={
+                  isCavadaLabsProductContext
+                    ? "Internal LiteLLM compatibility ID. If not provided, it will be generated automatically."
+                    : "ID of the team you want to create. If not provided, it will be generated automatically."
+                }
               >
                 <TextInput
                   onChange={(e) => {
@@ -532,7 +566,7 @@ const CreateTeamModal = ({
               <Form.Item
                 label="Metadata"
                 name="metadata"
-                help="Additional team metadata. Enter metadata as JSON object."
+                help={`Additional ${productNounLower} metadata. Enter metadata as JSON object.`}
               >
                 <Input.TextArea rows={4} />
               </Form.Item>
@@ -600,7 +634,9 @@ const CreateTeamModal = ({
                 label={
                   <span>
                     Disable Global Guardrails{" "}
-                    <Tooltip title="When enabled, this team will bypass any guardrails configured to run on every request (global guardrails)">
+                    <Tooltip
+                      title={`When enabled, this ${productNounLower} will bypass any guardrails configured to run on every request (global guardrails)`}
+                    >
                       <InfoCircleOutlined style={{ marginLeft: "4px" }} />
                     </Tooltip>
                   </span>
@@ -608,18 +644,17 @@ const CreateTeamModal = ({
                 name="disable_global_guardrails"
                 className="mt-4"
                 valuePropName="checked"
-                help="Bypass global guardrails for this team"
+                help={`Bypass global guardrails for this ${productNounLower}`}
               >
-                <Switch
-                  checkedChildren="Yes"
-                  unCheckedChildren="No"
-                />
+                <Switch checkedChildren="Yes" unCheckedChildren="No" />
               </Form.Item>
               <Form.Item
                 label={
                   <span>
                     Policies{" "}
-                    <Tooltip title="Apply policies to this team to control guardrails and other settings">
+                    <Tooltip
+                      title={`Apply policies to this ${productNounLower} to control guardrails and other settings`}
+                    >
                       <a
                         href="https://docs.litellm.ai/docs/proxy/guardrails/guardrail_policies"
                         target="_blank"
@@ -649,14 +684,16 @@ const CreateTeamModal = ({
                 label={
                   <span>
                     Allowed Vector Stores{" "}
-                    <Tooltip title="Select which vector stores this team can access by default. Leave empty for access to all vector stores">
+                    <Tooltip
+                      title={`Select which vector stores this ${productNounLower} can access by default. Leave empty for access to all vector stores`}
+                    >
                       <InfoCircleOutlined style={{ marginLeft: "4px" }} />
                     </Tooltip>
                   </span>
                 }
                 name="allowed_vector_store_ids"
                 className="mt-8"
-                help="Select vector stores this team can access. Leave empty for access to all vector stores"
+                help={`Select vector stores this ${productNounLower} can access. Leave empty for access to all vector stores`}
               >
                 <VectorStoreSelector
                   onChange={(values: string[]) => form.setFieldValue("allowed_vector_store_ids", values)}
@@ -677,14 +714,14 @@ const CreateTeamModal = ({
                 label={
                   <span>
                     Allowed MCP Servers{" "}
-                    <Tooltip title="Select which MCP servers or access groups this team can access">
+                    <Tooltip title={`Select which MCP servers or access groups this ${productNounLower} can access`}>
                       <InfoCircleOutlined style={{ marginLeft: "4px" }} />
                     </Tooltip>
                   </span>
                 }
                 name="allowed_mcp_servers_and_groups"
                 className="mt-4"
-                help="Select MCP servers or access groups this team can access"
+                help={`Select MCP servers or access groups this ${productNounLower} can access`}
               >
                 <MCPServerSelector
                   onChange={(val: any) => form.setFieldValue("allowed_mcp_servers_and_groups", val)}
@@ -729,14 +766,14 @@ const CreateTeamModal = ({
                 label={
                   <span>
                     Allowed Agents{" "}
-                    <Tooltip title="Select which agents or access groups this team can access">
+                    <Tooltip title={`Select which agents or access groups this ${productNounLower} can access`}>
                       <InfoCircleOutlined style={{ marginLeft: "4px" }} />
                     </Tooltip>
                   </span>
                 }
                 name="allowed_agents_and_groups"
                 className="mt-4"
-                help="Select agents or access groups this team can access"
+                help={`Select agents or access groups this ${productNounLower} can access`}
               >
                 <AgentSelector
                   onChange={(val: any) => form.setFieldValue("allowed_agents_and_groups", val)}
@@ -757,14 +794,16 @@ const CreateTeamModal = ({
                 label={
                   <span>
                     Allowed Search Tools{" "}
-                    <Tooltip title="Select which search tools this team can access. Leave empty to allow all search tools.">
+                    <Tooltip
+                      title={`Select which search tools this ${productNounLower} can access. Leave empty to allow all search tools.`}
+                    >
                       <InfoCircleOutlined style={{ marginLeft: "4px" }} />
                     </Tooltip>
                   </span>
                 }
                 name="object_permission_search_tools"
                 className="mt-4"
-                help="Restrict which configured search tools keys on this team may call."
+                help={`Restrict which configured search tools keys on this ${productNounLower} may call.`}
               >
                 <SearchToolSelector
                   onChange={(vals: string[]) => form.setFieldValue("object_permission_search_tools", vals)}
@@ -798,8 +837,8 @@ const CreateTeamModal = ({
             <AccordionBody>
               <div className="mt-4">
                 <Text className="text-sm text-gray-600 mb-4">
-                  Create custom aliases for models that can be used by team members in API calls. This allows you to
-                  create shortcuts for specific models.
+                  Create custom aliases for models that can be used by {productNounLower} members in API calls. This
+                  allows you to create shortcuts for specific models.
                 </Text>
                 <ModelAliasManager
                   accessToken={accessToken || ""}
@@ -812,7 +851,9 @@ const CreateTeamModal = ({
           </Accordion>
         </>
         <div style={{ textAlign: "right", marginTop: "10px" }}>
-          <Button2 htmlType="submit" data-testid="create-team-submit">Create Team</Button2>
+          <Button2 htmlType="submit" data-testid="create-team-submit">
+            Create {productNoun}
+          </Button2>
         </div>
       </Form>
     </Modal>

@@ -28,6 +28,7 @@ export interface UsageViewSelectProps {
   onChange: (value: UsageOption) => void;
   isAdmin: boolean;
   canViewTagUsage?: boolean;
+  canViewCavadaLabsUsage?: boolean;
   title?: string;
   description?: string;
   "data-id"?: string;
@@ -43,6 +44,7 @@ interface OptionConfig {
   descriptionForAdmin?: string;
   descriptionForNonAdmin?: string;
   badgeText?: string;
+  requiresCavadaLabsUsageAccess?: boolean;
 }
 const OPTIONS: OptionConfig[] = [
   {
@@ -73,14 +75,14 @@ const OPTIONS: OptionConfig[] = [
     label: "Company Usage",
     description: "View usage by CavadaLabs company",
     icon: <BankOutlined style={{ fontSize: "16px" }} />,
-    adminOnly: true,
+    requiresCavadaLabsUsageAccess: true,
   },
   {
     value: "project",
     label: "Project Usage",
     description: "View usage by CavadaLabs project",
     icon: <FolderOutlined style={{ fontSize: "16px" }} />,
-    adminOnly: true,
+    requiresCavadaLabsUsageAccess: true,
   },
   {
     value: "customer",
@@ -123,6 +125,7 @@ export const UsageViewSelect: React.FC<UsageViewSelectProps> = ({
   onChange,
   isAdmin,
   canViewTagUsage = false,
+  canViewCavadaLabsUsage = false,
   title = "Usage View",
   description = "Select the usage data you want to view",
   "data-id": dataId,
@@ -131,6 +134,9 @@ export const UsageViewSelect: React.FC<UsageViewSelectProps> = ({
     return OPTIONS.filter((option) => {
       if (option.value === "tag" && canViewTagUsage) {
         return true;
+      }
+      if (option.requiresCavadaLabsUsageAccess) {
+        return isAdmin || canViewCavadaLabsUsage;
       }
       if (option.adminOnly && !isAdmin) {
         return false;

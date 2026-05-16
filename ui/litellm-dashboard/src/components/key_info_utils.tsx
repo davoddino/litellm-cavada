@@ -4,11 +4,8 @@
 
 // Fields that should be filtered out from metadata display due to security concerns
 const SENSITIVE_METADATA_FIELDS = ["logging"] as const;
-const CANONICAL_KEY_CONTEXT_METADATA_FIELDS = [
-  "cavadalabs",
-  "cavadalabs_company_id",
-  "cavadalabs_project_id",
-] as const;
+const CANONICAL_KEY_CONTEXT_METADATA_FIELDS = ["cavadalabs", "cavadalabs_company_id", "cavadalabs_project_id"] as const;
+const CAVADALABS_SPEND_LOG_CONTEXT_FIELDS = ["cavadalabs_company_id", "cavadalabs_project_id"] as const;
 
 /**
  * Filters out sensitive information from metadata for display purposes
@@ -63,9 +60,23 @@ export const stripTagsFromMetadata = (metadata: any) => {
   if (!metadata || typeof metadata !== "object") {
     return metadata;
   }
-  return Object.fromEntries(
+  const strippedMetadata = Object.fromEntries(
     Object.entries(metadata as Record<string, any>).filter(
       ([key]) => key !== "tags" && !CANONICAL_KEY_CONTEXT_METADATA_FIELDS.includes(key as any),
     ),
   );
+  const spendLogsMetadata = (metadata as Record<string, any>).spend_logs_metadata;
+  if (spendLogsMetadata && typeof spendLogsMetadata === "object") {
+    const strippedSpendLogsMetadata = Object.fromEntries(
+      Object.entries(spendLogsMetadata as Record<string, any>).filter(
+        ([key]) => !CAVADALABS_SPEND_LOG_CONTEXT_FIELDS.includes(key as any),
+      ),
+    );
+    if (Object.keys(strippedSpendLogsMetadata).length > 0) {
+      strippedMetadata.spend_logs_metadata = strippedSpendLogsMetadata;
+    } else {
+      delete strippedMetadata.spend_logs_metadata;
+    }
+  }
+  return strippedMetadata;
 };

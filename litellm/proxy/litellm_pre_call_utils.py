@@ -29,6 +29,9 @@ from litellm.proxy.common_utils.callback_utils import (
     get_metadata_variable_name_from_kwargs,
 )
 from litellm.proxy.common_utils.http_parsing_utils import _safe_get_request_headers
+from litellm.proxy.cavadalabs.request_metadata import (
+    merge_cavadalabs_key_metadata_into_request_metadata,
+)
 
 # Cache special headers as a frozenset for O(1) lookup performance
 _SPECIAL_HEADERS_CACHE = frozenset(
@@ -1006,6 +1009,10 @@ class LiteLLMProxyRequestSetup:
         data[_metadata_variable_name][
             "user_api_key"
         ] = user_api_key_dict.api_key  # this is just the hashed token
+        merge_cavadalabs_key_metadata_into_request_metadata(
+            request_metadata=data[_metadata_variable_name],
+            key_metadata=user_api_key_dict.metadata,
+        )
 
         # Key-owned agent_id for spend attribution; keep existing (e.g. from header) if key has none
         _key_agent_id = getattr(user_api_key_dict, "agent_id", None)
