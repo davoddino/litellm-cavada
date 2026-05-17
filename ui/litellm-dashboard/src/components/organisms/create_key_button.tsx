@@ -24,13 +24,17 @@ import RateLimitTypeFormItem from "../common_components/RateLimitTypeFormItem";
 import RouterSettingsAccordion, { RouterSettingsAccordionValue } from "../common_components/RouterSettingsAccordion";
 import { CreateUserButton } from "../CreateUserButton";
 import {
+  deriveSingleCavadaLabsKeyContextSelection,
   filterManageableCavadaLabsCompanies,
   filterManageableCavadaLabsProjects,
   resolveCavadaLabsProjectCompatibilityTeamId,
   stripLiteLLMCompatibilityFieldsForCavadaLabsKey,
   useCavadaLabsKeyContextOptions,
+  validateCavadaLabsKeyContextSelection,
 } from "../cavadalabs/keyContext";
 import { cavadalabsMissingSchemaDetailLines, isCavadaLabsMissingSchemaDetail } from "../cavadalabs/api";
+import { extractModelNamesFromResponse, extractModelNamesFromValue } from "../cavadalabs/modelOptions";
+import { resolveCavadaLabsProductContext } from "../cavadalabs/productContext";
 import { BudgetWindowEntry, BudgetWindowsEditor } from "../key_team_helpers/BudgetWindowsEditor";
 import { getModelDisplayName } from "../key_team_helpers/fetch_available_models_team_key";
 import { Team } from "../key_team_helpers/key_list";
@@ -124,7 +128,7 @@ export const fetchTeamModels = async (
 
     if (accessToken !== null) {
       const model_available = await modelAvailableCall(accessToken, userID, userRole, true, teamID, true);
-      let available_model_names = model_available["data"].map((element: { id: string }) => element.id);
+      const available_model_names = extractModelNamesFromResponse(model_available);
       console.log("available_model_names:", available_model_names);
       return available_model_names;
     }
@@ -148,7 +152,7 @@ export const fetchUserModels = async (
 
     if (accessToken !== null) {
       const model_available = await modelAvailableCall(accessToken, userID, userRole);
-      let available_model_names = model_available["data"].map((element: { id: string }) => element.id);
+      const available_model_names = extractModelNamesFromResponse(model_available);
       console.log("available_model_names:", available_model_names);
       setUserModels(available_model_names);
     }
@@ -172,6 +176,8 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
     projects: cavadalabsProjects,
     isLoading: isCavadalabsContextLoading,
     errorDetail: cavadalabsContextErrorDetail,
+    contextKnown: cavadalabsContextKnown,
+    isCavadaLabsProductContext,
   } = useCavadaLabsKeyContextOptions(accessToken);
   const { data: uiSettingsData } = useUISettings();
   const { data: tagsData } = useTags();
@@ -371,20 +377,32 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
   const isTeamSelectionRequired = modelsToPick.includes("no-default-models");
   const isFormDisabled = isTeamSelectionRequired && !selectedCreateKeyTeam;
   const manageableCavadaLabsCompanies = useMemo(
-    () => filterManageableCavadaLabsCompanies(cavadalabsCompanies),
-    [cavadalabsCompanies],
+    () => filterManageableCavadaLabsCompanies(cavadalabsCompanies, cavadalabsProjects),
+    [cavadalabsCompanies, cavadalabsProjects],
   );
   const manageableCavadaLabsProjects = useMemo(
     () => filterManageableCavadaLabsProjects(cavadalabsProjects),
     [cavadalabsProjects],
   );
-  const hasCavadaLabsTenantOptions = cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
   const hasManageableCavadaLabsTenantOptions =
     manageableCavadaLabsCompanies.length > 0 && manageableCavadaLabsProjects.length > 0;
   const hasCavadaLabsMissingSchema = isCavadaLabsMissingSchemaDetail(cavadalabsContextErrorDetail);
-  const shouldUseCavadaLabsKeyContext = hasCavadaLabsTenantOptions || hasCavadaLabsMissingSchema;
+  const cavadalabsProductContext = resolveCavadaLabsProductContext({
+    companies: cavadalabsCompanies,
+    projects: cavadalabsProjects,
+    isLoading: isCavadalabsContextLoading,
+    errorDetail: cavadalabsContextErrorDetail,
+    contextKnown: cavadalabsContextKnown,
+    isCavadaLabsProductContext,
+  });
+  const shouldUseCavadaLabsKeyContext =
+    hasCavadaLabsMissingSchema || !cavadalabsProductContext.showLiteLLMCompatibilityFields;
   const showCavadaLabsManageScopeWarning =
-    shouldUseCavadaLabsKeyContext && !hasCavadaLabsMissingSchema && !hasManageableCavadaLabsTenantOptions;
+    shouldUseCavadaLabsKeyContext &&
+    cavadalabsProductContext.contextKnown &&
+    !cavadalabsProductContext.isLoading &&
+    !hasCavadaLabsMissingSchema &&
+    !hasManageableCavadaLabsTenantOptions;
   const cavadalabsMissingSchemaLines = hasCavadaLabsMissingSchema
     ? cavadalabsMissingSchemaDetailLines(cavadalabsContextErrorDetail)
     : [];
@@ -534,24 +552,30 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
         formValues.aliases = JSON.stringify(modelAliases);
       }
 
-      const cavadalabsCompanyId = formValues.cavadalabs_company_id || null;
-      const cavadalabsProjectId = formValues.cavadalabs_project_id || null;
-      if (cavadalabsCompanyId || cavadalabsProjectId) {
-        if (!cavadalabsCompanyId || !cavadalabsProjectId) {
-          NotificationsManager.fromBackend("Select both Company and Project before creating a CavadaLabs key");
-          return;
-        }
-        const selectedProject = manageableCavadaLabsProjects.find(
-          (project) => project.project_id === cavadalabsProjectId,
-        );
-        if (!selectedProject) {
-          NotificationsManager.fromBackend(`Project ${cavadalabsProjectId} is not available`);
-          return;
-        }
-        if (selectedProject.company_id !== cavadalabsCompanyId) {
-          NotificationsManager.fromBackend("Selected Project belongs to a different Company");
-          return;
-        }
+      const derivedCavadaLabsContext = deriveSingleCavadaLabsKeyContextSelection({
+        companyId: formValues.cavadalabs_company_id || null,
+        projectId: formValues.cavadalabs_project_id || null,
+        companies: manageableCavadaLabsCompanies,
+        projects: manageableCavadaLabsProjects,
+      });
+      formValues.cavadalabs_company_id = derivedCavadaLabsContext.companyId || undefined;
+      formValues.cavadalabs_project_id = derivedCavadaLabsContext.projectId || undefined;
+      const cavadalabsCompanyId = derivedCavadaLabsContext.companyId;
+      const cavadalabsProjectId = derivedCavadaLabsContext.projectId;
+      if (hasCavadaLabsMissingSchema) {
+        NotificationsManager.fromBackend("CavadaLabs key schema migration required before creating keys");
+        return;
+      }
+      const cavadalabsContextError = validateCavadaLabsKeyContextSelection({
+        companyId: cavadalabsCompanyId,
+        projectId: cavadalabsProjectId,
+        projects: manageableCavadaLabsProjects,
+        required: shouldUseCavadaLabsKeyContext,
+        actionLabel: "creating",
+      });
+      if (cavadalabsContextError) {
+        NotificationsManager.fromBackend(cavadalabsContextError);
+        return;
       }
 
       // Add router_settings if any are defined
@@ -615,10 +639,12 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
   useEffect(() => {
     if (selectedProjectId) {
       const project = manageableCavadaLabsProjects.find((p) => p.project_id === selectedProjectId);
-      const projectModels = project?.allowed_models ?? [];
-      setModelsToPick(projectModels);
-      form.setFieldValue("models", []);
-      return;
+      const projectModels = extractModelNamesFromValue(project?.allowed_models);
+      if (projectModels.length > 0) {
+        setModelsToPick(projectModels);
+        form.setFieldValue("models", []);
+        return;
+      }
     }
     if (userID && userRole && accessToken) {
       fetchTeamModels(userID, userRole, accessToken, selectedCreateKeyTeam?.team_id ?? null).then((models) => {
@@ -967,7 +993,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
           {/* Show message when team selection is required */}
           {isFormDisabled && (
             <div className="mb-8 p-4 bg-blue-50 border border-blue-200 rounded-md">
-              {hasCavadaLabsTenantOptions ? (
+              {shouldUseCavadaLabsKeyContext ? (
                 <Text className="text-blue-800 text-sm">
                   Select a Company and Project to continue configuring this Virtual Key. If no Projects are available,
                   ask a CavadaLabs admin to grant access or complete the Project compatibility mapping.

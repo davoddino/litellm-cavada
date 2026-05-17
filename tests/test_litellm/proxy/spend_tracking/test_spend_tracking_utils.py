@@ -35,6 +35,7 @@ from litellm.proxy.spend_tracking.spend_tracking_utils import (
 )
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.cavadalabs.usage_tracking import (
+    inspect_cavadalabs_ledger_attribution_inputs,
     process_spend_logs_cavadalabs_ledger,
 )
 from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
@@ -107,6 +108,39 @@ def test_get_logging_payload_keeps_cavadalabs_context_for_spend_logs():
     metadata = json.loads(payload["metadata"])
     assert metadata["cavadalabs_company_id"] == "company-1"
     assert metadata["cavadalabs_project_id"] == "project-1"
+
+
+def test_cavadalabs_no_db_attribution_check_explains_missing_runtime_context():
+    check = inspect_cavadalabs_ledger_attribution_inputs(
+        {
+            "request_id": "chatcmpl-no-cavadalabs-context",
+            "metadata": "{}",
+            "model": "openai/gpt-4.1",
+            "custom_llm_provider": "openai",
+        }
+    )
+
+    assert check.can_attempt_attribution is False
+    assert any("Company context" in item for item in check.missing_inputs)
+    assert any("Project context" in item for item in check.missing_inputs)
+    assert "CavadaLabs usage cannot be attributed" in check.message
+
+
+def test_cavadalabs_no_db_attribution_check_identifies_required_key_lookup():
+    check = inspect_cavadalabs_ledger_attribution_inputs(
+        {
+            "request_id": "chatcmpl-key-context-required",
+            "api_key": "hashed-key",
+            "metadata": json.dumps({"user_api_key_hash": "hashed-key"}),
+            "model": "openai/gpt-4.1",
+            "custom_llm_provider": "openai",
+        }
+    )
+
+    assert check.can_attempt_attribution is True
+    assert check.missing_inputs == ()
+    assert check.required_lookups == ("virtual-key CavadaLabs metadata lookup",)
+    assert "DB lookup must resolve virtual-key CavadaLabs metadata lookup" in check.message
 
 
 @pytest.mark.asyncio
@@ -258,6 +292,187 @@ async def test_update_spend_logs_job_mirrors_live_cavadalabs_key_context_to_ledg
     assert ledger_row["api_key_hash"] == "hashed-key"
     assert ledger_row["total_tokens"] == 20
     assert ledger_row["spend"] == 0.25
+
+
+@pytest.mark.asyncio
+async def test_update_spend_logs_job_mirrors_legacy_team_org_mapping_to_cavadalabs_ledger():
+    db = SimpleNamespace(
+        litellm_verificationtoken=SimpleNamespace(
+            find_many=AsyncMock(return_value=[])
+        ),
+        litellm_deletedverificationtoken=SimpleNamespace(
+            find_many=AsyncMock(return_value=[])
+        ),
+        cavadalabs_projecttable=SimpleNamespace(
+            find_many=AsyncMock(
+                return_value=[
+                    SimpleNamespace(
+                        project_id="project-compat",
+                        company_id="company-compat",
+                        litellm_team_id="team-compat",
+                    )
+                ]
+            )
+        ),
+        cavadalabs_companytable=SimpleNamespace(
+            find_many=AsyncMock(
+                return_value=[
+                    SimpleNamespace(
+                        company_id="company-compat",
+                        litellm_organization_id="org-compat",
+                    )
+                ]
+            )
+        ),
+        cavadalabs_requestledgertable=SimpleNamespace(
+            create_many=AsyncMock(return_value=SimpleNamespace(count=1))
+        ),
+    )
+    prisma_client = SimpleNamespace(
+        db=db,
+        _spend_log_transactions_lock=asyncio.Lock(),
+        spend_log_transactions=[],
+    )
+    request_data = {"metadata": {}}
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="hashed-key",
+        team_id="team-compat",
+        org_id="org-compat",
+    )
+    LiteLLMProxyRequestSetup.add_user_api_key_auth_to_request_metadata(
+        data=request_data,
+        user_api_key_dict=user_api_key_dict,
+        _metadata_variable_name="metadata",
+    )
+    start_time = datetime.datetime.now(timezone.utc)
+    payload = get_logging_payload(
+        kwargs={
+            "litellm_params": {"metadata": request_data["metadata"]},
+            "call_type": "acompletion",
+            "model": "openai/gpt-4.1",
+            "custom_llm_provider": "openai",
+            "response_cost": 0.33,
+        },
+        response_obj={
+            "id": "chatcmpl-legacy-compat",
+            "usage": {
+                "prompt_tokens": 20,
+                "completion_tokens": 10,
+                "total_tokens": 30,
+            },
+        },
+        start_time=start_time,
+        end_time=start_time + datetime.timedelta(milliseconds=150),
+    )
+    prisma_client.spend_log_transactions.append(payload)
+
+    with (
+        patch(
+            "litellm.proxy.utils.ProxyUpdateSpend.update_spend_logs",
+            new=AsyncMock(),
+        ),
+        patch(
+            "litellm.proxy.guardrails.usage_tracking.process_spend_logs_guardrail_usage",
+            new=AsyncMock(),
+        ),
+        patch(
+            "litellm.proxy.db.spend_log_tool_index.process_spend_logs_tool_usage",
+            new=AsyncMock(),
+        ),
+    ):
+        await update_spend_logs_job(
+            prisma_client=prisma_client,
+            db_writer_client=None,
+            proxy_logging_obj=MagicMock(),
+        )
+
+    db.cavadalabs_requestledgertable.create_many.assert_awaited_once()
+    ledger_row = db.cavadalabs_requestledgertable.create_many.call_args.kwargs["data"][
+        0
+    ]
+    assert ledger_row["request_id"] == "chatcmpl-legacy-compat"
+    assert ledger_row["company_id"] == "company-compat"
+    assert ledger_row["project_id"] == "project-compat"
+    assert ledger_row["api_key_hash"] == "hashed-key"
+    assert ledger_row["spend"] == 0.33
+
+
+@pytest.mark.asyncio
+async def test_update_spend_logs_job_skips_key_without_resolvable_cavadalabs_context():
+    db = SimpleNamespace(
+        litellm_verificationtoken=SimpleNamespace(
+            find_many=AsyncMock(return_value=[])
+        ),
+        litellm_deletedverificationtoken=SimpleNamespace(
+            find_many=AsyncMock(return_value=[])
+        ),
+        cavadalabs_projecttable=SimpleNamespace(find_many=AsyncMock(return_value=[])),
+        cavadalabs_companytable=SimpleNamespace(find_many=AsyncMock(return_value=[])),
+        cavadalabs_requestledgertable=SimpleNamespace(create_many=AsyncMock()),
+    )
+    prisma_client = SimpleNamespace(
+        db=db,
+        _spend_log_transactions_lock=asyncio.Lock(),
+        spend_log_transactions=[],
+    )
+    request_data = {"metadata": {}}
+    user_api_key_dict = UserAPIKeyAuth(api_key="hashed-key")
+    LiteLLMProxyRequestSetup.add_user_api_key_auth_to_request_metadata(
+        data=request_data,
+        user_api_key_dict=user_api_key_dict,
+        _metadata_variable_name="metadata",
+    )
+    start_time = datetime.datetime.now(timezone.utc)
+    payload = get_logging_payload(
+        kwargs={
+            "litellm_params": {"metadata": request_data["metadata"]},
+            "call_type": "acompletion",
+            "model": "openai/gpt-4.1",
+            "custom_llm_provider": "openai",
+            "response_cost": 0.09,
+        },
+        response_obj={
+            "id": "chatcmpl-no-cavadalabs-key-context",
+            "usage": {
+                "prompt_tokens": 3,
+                "completion_tokens": 2,
+                "total_tokens": 5,
+            },
+        },
+        start_time=start_time,
+        end_time=start_time + datetime.timedelta(milliseconds=75),
+    )
+    attribution_check = inspect_cavadalabs_ledger_attribution_inputs(payload)
+    prisma_client.spend_log_transactions.append(payload)
+
+    with (
+        patch(
+            "litellm.proxy.utils.ProxyUpdateSpend.update_spend_logs",
+            new=AsyncMock(),
+        ),
+        patch(
+            "litellm.proxy.guardrails.usage_tracking.process_spend_logs_guardrail_usage",
+            new=AsyncMock(),
+        ),
+        patch(
+            "litellm.proxy.db.spend_log_tool_index.process_spend_logs_tool_usage",
+            new=AsyncMock(),
+        ),
+    ):
+        await update_spend_logs_job(
+            prisma_client=prisma_client,
+            db_writer_client=None,
+            proxy_logging_obj=MagicMock(),
+        )
+
+    assert attribution_check.can_attempt_attribution is True
+    assert attribution_check.required_lookups == (
+        "virtual-key CavadaLabs metadata lookup",
+    )
+    db.litellm_verificationtoken.find_many.assert_awaited_once_with(
+        where={"token": {"in": ["hashed-key"]}}
+    )
+    db.cavadalabs_requestledgertable.create_many.assert_not_awaited()
 
 
 @pytest.mark.asyncio

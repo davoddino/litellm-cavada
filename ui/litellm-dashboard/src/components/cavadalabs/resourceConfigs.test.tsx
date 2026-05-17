@@ -8,6 +8,7 @@ const context: CavadaLabsRuntimeContext = {
   chatbots: [{ chatbot_id: "chatbot-1", name: "Support Bot" }],
   ragCollections: [{ collection_id: "collection-1", name: "Knowledge Base" }],
   nodes: [{ node_id: "node-1", display_name: "GPU Node 1" }],
+  availableModels: ["Qwen3.6-35B-A3B", "whisper-small"],
 };
 
 const field = (fields: CavadaLabsFieldConfig[] | undefined, name: string): CavadaLabsFieldConfig => {
@@ -67,6 +68,11 @@ describe("buildCavadaLabsResourceConfigs", () => {
     expect(configs.projects.updatePath?.({ project_id: "project-1" })).toBe("/cavadalabs/projects/project-1");
     expect(configs.projects.canUpdate?.({ project_id: "project-1" })).toBe(true);
     expect(configs.projects.updateFields?.map((item) => item.name)).toContain("allowed_models");
+    expect(field(configs.projects.updateFields, "allowed_models").type).toBe("multiSelect");
+    expect(values(field(configs.projects.updateFields, "allowed_models"))).toEqual([
+      "Qwen3.6-35B-A3B",
+      "whisper-small",
+    ]);
     expect(
       configs.projects.rowActions?.find((action) => action.key === "archive")?.request({ project_id: "project-1" }),
     ).toEqual({
@@ -114,6 +120,66 @@ describe("buildCavadaLabsResourceConfigs", () => {
 
     expect(readOnlyConfigs.projects.canCreate?.(readOnlyContext)).toBe(false);
     expect(readOnlyConfigs.billingReports.canCreate?.(readOnlyContext)).toBe(false);
+  });
+
+  it("should gate Compliance creation to manageable Company and Project scopes", () => {
+    const scopedContext: CavadaLabsRuntimeContext = {
+      ...context,
+      companies: [
+        { company_id: "company-admin", legal_name: "Admin Company", cavadalabs_can_manage: true },
+        { company_id: "company-project", legal_name: "Project Company", cavadalabs_can_manage: false },
+        { company_id: "company-viewer", legal_name: "Viewer Company", cavadalabs_can_manage: false },
+      ],
+      projects: [
+        {
+          project_id: "project-admin",
+          company_id: "company-project",
+          name: "Project Admin Scope",
+          cavadalabs_can_manage: true,
+        },
+        {
+          project_id: "project-viewer",
+          company_id: "company-viewer",
+          name: "Viewer Project",
+          cavadalabs_can_manage: false,
+        },
+      ],
+    };
+    const configs = buildCavadaLabsResourceConfigs(scopedContext);
+
+    expect(configs.complianceDocuments.canCreate?.(scopedContext)).toBe(true);
+    expect(values(field(configs.complianceDocuments.createFields, "company_id"))).toEqual([
+      "company-admin",
+      "company-project",
+    ]);
+    expect(values(field(configs.complianceDocuments.createFields, "project_id"))).toEqual(["project-admin"]);
+  });
+
+  it("should hide Compliance creation when CavadaLabs membership is read only", () => {
+    const readOnlyContext: CavadaLabsRuntimeContext = {
+      ...context,
+      companies: [{ company_id: "company-viewer", legal_name: "Viewer Company", cavadalabs_can_manage: false }],
+      projects: [
+        {
+          project_id: "project-viewer",
+          company_id: "company-viewer",
+          name: "Viewer Project",
+          cavadalabs_can_manage: false,
+        },
+      ],
+    };
+    const configs = buildCavadaLabsResourceConfigs(readOnlyContext);
+
+    expect(configs.complianceDocuments.canCreate?.(readOnlyContext)).toBe(false);
+    expect(configs.complianceEvidence.canCreate?.(readOnlyContext)).toBe(false);
+    expect(configs.processingActivities.canCreate?.(readOnlyContext)).toBe(false);
+    expect(configs.dataSubjectRequests.canCreate?.(readOnlyContext)).toBe(false);
+    expect(configs.aiSystemAssessments.canCreate?.(readOnlyContext)).toBe(false);
+
+    const emptyConfigs = buildCavadaLabsResourceConfigs({ ...readOnlyContext, companies: [], projects: [] });
+    expect(emptyConfigs.complianceDocuments.canCreate?.({ ...readOnlyContext, companies: [], projects: [] })).toBe(
+      false,
+    );
   });
 
   it("should configure CavadaLabs usage views without legacy organizations", () => {

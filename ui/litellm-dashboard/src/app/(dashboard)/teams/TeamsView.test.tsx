@@ -6,13 +6,22 @@ import TeamsView from "./TeamsView";
 import { v2TeamListCall } from "@/components/networking";
 
 const routerPush = vi.hoisted(() => vi.fn());
+interface MockCavadaLabsContext {
+  companies: any[];
+  projects: any[];
+  isLoading: boolean;
+  errorDetail: null;
+  contextKnown?: boolean;
+  isCavadaLabsProductContext?: boolean;
+}
+
 const cavadaLabsContext = vi.hoisted(() => ({
   value: {
     companies: [] as any[],
     projects: [] as any[],
     isLoading: false,
     errorDetail: null,
-  },
+  } as MockCavadaLabsContext,
 }));
 
 vi.mock("next/navigation", () => ({
@@ -174,6 +183,25 @@ describe("TeamsView", () => {
     expect(screen.getByText("Project runtime and membership")).toBeInTheDocument();
     expect(screen.getByTestId("teams-filters")).toHaveAttribute("data-cavadalabs", "true");
     expect(screen.getByTestId("teams-table")).toHaveAttribute("data-cavadalabs", "true");
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+  });
+
+  it("should render CavadaLabs Project surface with empty product options", () => {
+    cavadaLabsContext.value = {
+      companies: [],
+      projects: [],
+      isLoading: false,
+      errorDetail: null,
+      contextKnown: true,
+      isCavadaLabsProductContext: true,
+    };
+
+    renderTeamsView({ userRole: "internal_user_viewer" });
+
+    expect(screen.getByText("Project runtime and membership")).toBeInTheDocument();
+    expect(screen.getByTestId("teams-filters")).toHaveAttribute("data-cavadalabs", "true");
+    expect(screen.getByTestId("teams-table")).toHaveAttribute("data-cavadalabs", "true");
+    expect(screen.queryByRole("button", { name: "+ Create New Team" })).not.toBeInTheDocument();
     expect(screen.queryByText("Organization")).not.toBeInTheDocument();
   });
 

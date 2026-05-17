@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useFilterLogic } from "./filter_logic";
+import { normalizeVirtualKeyFilterState, useFilterLogic } from "./filter_logic";
 import { keyListCall } from "../networking";
 
 vi.mock("../networking", () => ({
@@ -65,6 +65,14 @@ const defaultProps = {
   keys: [mockKey] as any[],
   teams: [],
   organizations: [],
+  cavadalabsContextOptions: {
+    companies: cavadalabsContextFixture.companies,
+    projects: cavadalabsContextFixture.projects,
+    isLoading: false,
+    errorDetail: null,
+    contextKnown: true,
+    isCavadaLabsProductContext: true,
+  },
 };
 
 const makeApiResponse = (overrides: { keys?: any[]; total_count?: number; total_pages?: number } = {}) => ({
@@ -233,6 +241,8 @@ describe("useFilterLogic – filteredTotalCount", () => {
 
     act(() => {
       result.current.handleFilterChange({
+        "Organization ID": "org-company-1",
+        "Team ID": "team-project-1",
         "Company ID": "company-1",
         "Project ID": "project-1",
       });
@@ -256,9 +266,29 @@ describe("useFilterLogic – filteredTotalCount", () => {
           "company-1",
           "project-1",
         );
+        expect(result.current.filters["Organization ID"]).toBe("");
+        expect(result.current.filters["Team ID"]).toBe("");
       },
       { timeout: 500 },
     );
+  });
+
+  it("should normalize Cavada product filters ahead of stale LiteLLM compatibility filters", () => {
+    expect(
+      normalizeVirtualKeyFilterState({
+        "Organization ID": "org-company-1",
+        "Team ID": "team-project-1",
+        "Company ID": "company-1",
+        "Project ID": "project-1",
+        "Key Alias": "alias-1",
+      }),
+    ).toMatchObject({
+      "Organization ID": "",
+      "Team ID": "",
+      "Company ID": "company-1",
+      "Project ID": "project-1",
+      "Key Alias": "alias-1",
+    });
   });
 
   it("should locally filter Cavada keys by explicit Company and Project metadata", async () => {

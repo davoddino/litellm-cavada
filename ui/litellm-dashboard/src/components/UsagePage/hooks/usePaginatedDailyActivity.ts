@@ -32,6 +32,8 @@ interface DailyActivityResponse {
 
 type FetchPageFn = (...args: any[]) => Promise<DailyActivityResponse>;
 
+export type DailyActivityMetadataAggregation = "sum_pages" | "full_range";
+
 interface UsePaginatedDailyActivityParams {
   /** The API call function (e.g., userDailyActivityCall). */
   fetchFn: FetchPageFn;
@@ -39,6 +41,8 @@ interface UsePaginatedDailyActivityParams {
   args: any[];
   /** Whether the hook should fetch. Set to false to disable. */
   enabled: boolean;
+  /** Use "full_range" when the backend repeats full-range totals on each page. */
+  metadataAggregation?: DailyActivityMetadataAggregation;
 }
 
 interface UsePaginatedDailyActivityReturn {
@@ -79,6 +83,22 @@ function sumMetadata(
   return result;
 }
 
+export function mergeDailyActivityMetadata(
+  accumulatedMetadata: Record<string, any>,
+  pageMetadata: Record<string, any>,
+  mode: DailyActivityMetadataAggregation,
+): Record<string, any> {
+  if (mode === "full_range") {
+    return {
+      ...accumulatedMetadata,
+      page: pageMetadata.page ?? accumulatedMetadata.page,
+      total_pages: pageMetadata.total_pages ?? accumulatedMetadata.total_pages,
+      has_more: pageMetadata.has_more ?? accumulatedMetadata.has_more,
+    };
+  }
+  return sumMetadata(accumulatedMetadata, pageMetadata);
+}
+
 /**
  * Hook that auto-paginates daily activity endpoints, updating state in batches
  * so charts render progressively. Cancels on unmount, param changes, or
@@ -93,6 +113,7 @@ export function usePaginatedDailyActivity({
   fetchFn,
   args,
   enabled,
+  metadataAggregation = "sum_pages",
 }: UsePaginatedDailyActivityParams): UsePaginatedDailyActivityReturn {
   const [data, setData] = useState<DailyActivityResponse>(EMPTY_DATA);
   const [loading, setLoading] = useState(false);
@@ -196,9 +217,10 @@ export function usePaginatedDailyActivity({
           if (isStale()) return;
 
           accumulatedResults = [...accumulatedResults, ...pageData.results];
-          accumulatedMetadata = sumMetadata(
+          accumulatedMetadata = mergeDailyActivityMetadata(
             accumulatedMetadata,
             pageData.metadata,
+            metadataAggregation,
           );
           accumulatedMetadata.total_pages = totalPages;
           accumulatedMetadata.has_more = page < totalPages;
@@ -240,7 +262,7 @@ export function usePaginatedDailyActivity({
     };
     // argsKey is a stable JSON string so the effect only re-fires when arg values change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, fetchFn, argsKey]);
+  }, [enabled, fetchFn, argsKey, metadataAggregation]);
 
   return { data, loading, isFetchingMore, progress, cancelled, cancel };
 }

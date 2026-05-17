@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, Dict, List, Optional, Sequence, Type, TypeVar
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel
@@ -80,6 +80,46 @@ def _parse_response(row: Any, response_model: Type[ModelT]) -> ModelT:
     return response_model.model_validate(_row_to_dict(row, response_model))
 
 
+def _clean_scope_ids(values: Optional[Sequence[str]]) -> Optional[List[str]]:
+    if values is None:
+        return None
+    return [value for value in dict.fromkeys(values) if value]
+
+
+def _apply_company_project_scope_filters(
+    where: Dict[str, Any],
+    *,
+    company_id: Optional[str],
+    company_ids: Optional[Sequence[str]],
+    project_id: Optional[str],
+    project_ids: Optional[Sequence[str]],
+) -> bool:
+    if company_id is not None:
+        where["company_id"] = company_id
+    elif company_ids is not None:
+        cleaned_company_ids = _clean_scope_ids(company_ids) or []
+        if project_id is None and project_ids is None and not cleaned_company_ids:
+            return False
+        if cleaned_company_ids:
+            where["company_id"] = {"in": cleaned_company_ids}
+
+    if project_id is not None:
+        where["project_id"] = project_id
+    elif project_ids is not None:
+        cleaned_project_ids = _clean_scope_ids(project_ids) or []
+        if company_id is None and company_ids is None and not cleaned_project_ids:
+            return False
+        if cleaned_project_ids:
+            project_filter: Dict[str, Any] = {"project_id": {"in": cleaned_project_ids}}
+            if "company_id" in where:
+                company_filter = {"company_id": where.pop("company_id")}
+                where["OR"] = [company_filter, project_filter]
+            else:
+                where.update(project_filter)
+
+    return True
+
+
 class CavadaLabsRAGService:
     def __init__(self, prisma_client: Any):
         self.prisma_client = prisma_client
@@ -143,17 +183,23 @@ class CavadaLabsRAGService:
     async def list_collections(
         self,
         company_id: Optional[str] = None,
+        company_ids: Optional[Sequence[str]] = None,
         project_id: Optional[str] = None,
+        project_ids: Optional[Sequence[str]] = None,
         status_filter: Optional[CavadaLabsRAGCollectionStatus] = None,
         scope_filter: Optional[CavadaLabsRAGCollectionScope] = None,
         take: int = 100,
         skip: int = 0,
     ) -> List[CavadaLabsRAGCollectionResponse]:
         where: Dict[str, Any] = {}
-        if company_id is not None:
-            where["company_id"] = company_id
-        if project_id is not None:
-            where["project_id"] = project_id
+        if not _apply_company_project_scope_filters(
+            where,
+            company_id=company_id,
+            company_ids=company_ids,
+            project_id=project_id,
+            project_ids=project_ids,
+        ):
+            return []
         if status_filter is not None:
             where["status"] = status_filter.value
         if scope_filter is not None:
@@ -296,7 +342,9 @@ class CavadaLabsRAGService:
         self,
         collection_id: Optional[str] = None,
         company_id: Optional[str] = None,
+        company_ids: Optional[Sequence[str]] = None,
         project_id: Optional[str] = None,
+        project_ids: Optional[Sequence[str]] = None,
         status_filter: Optional[CavadaLabsRAGDocumentStatus] = None,
         take: int = 100,
         skip: int = 0,
@@ -304,10 +352,14 @@ class CavadaLabsRAGService:
         where: Dict[str, Any] = {}
         if collection_id is not None:
             where["collection_id"] = collection_id
-        if company_id is not None:
-            where["company_id"] = company_id
-        if project_id is not None:
-            where["project_id"] = project_id
+        if not _apply_company_project_scope_filters(
+            where,
+            company_id=company_id,
+            company_ids=company_ids,
+            project_id=project_id,
+            project_ids=project_ids,
+        ):
+            return []
         if status_filter is not None:
             where["status"] = status_filter.value
         rows = await self.db.cavadalabs_ragdocumenttable.find_many(
@@ -425,7 +477,9 @@ class CavadaLabsRAGService:
     async def list_assignments(
         self,
         company_id: Optional[str] = None,
+        company_ids: Optional[Sequence[str]] = None,
         project_id: Optional[str] = None,
+        project_ids: Optional[Sequence[str]] = None,
         chatbot_id: Optional[str] = None,
         collection_id: Optional[str] = None,
         status_filter: Optional[CavadaLabsRAGAssignmentStatus] = None,
@@ -433,10 +487,14 @@ class CavadaLabsRAGService:
         skip: int = 0,
     ) -> List[CavadaLabsChatbotRAGAssignmentResponse]:
         where: Dict[str, Any] = {}
-        if company_id is not None:
-            where["company_id"] = company_id
-        if project_id is not None:
-            where["project_id"] = project_id
+        if not _apply_company_project_scope_filters(
+            where,
+            company_id=company_id,
+            company_ids=company_ids,
+            project_id=project_id,
+            project_ids=project_ids,
+        ):
+            return []
         if chatbot_id is not None:
             where["chatbot_id"] = chatbot_id
         if collection_id is not None:
@@ -666,15 +724,15 @@ class CavadaLabsRAGService:
             await self.db.cavadalabs_auditlogtable.create(
                 data=serialize_prisma_json_fields(
                     {
-                    "actor_user_id": _actor_user_id(user_api_key_dict),
-                    "actor_api_key_hash": _actor_key_hash(user_api_key_dict),
-                    "action": action,
-                    "resource_type": resource_type,
-                    "resource_id": resource_id,
-                    "company_id": company_id,
-                    "project_id": project_id,
-                    "before_value": before_value,
-                    "after_value": after_value,
+                        "actor_user_id": _actor_user_id(user_api_key_dict),
+                        "actor_api_key_hash": _actor_key_hash(user_api_key_dict),
+                        "action": action,
+                        "resource_type": resource_type,
+                        "resource_id": resource_id,
+                        "company_id": company_id,
+                        "project_id": project_id,
+                        "before_value": before_value,
+                        "after_value": after_value,
                     }
                 )
             )

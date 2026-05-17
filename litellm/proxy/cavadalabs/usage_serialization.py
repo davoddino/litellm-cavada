@@ -92,9 +92,9 @@ def _metadata_dict(value: Any) -> Dict[str, Any]:
 def _metadata_sources(metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
     sources = [metadata]
     for key in ("cavadalabs", "spend_logs_metadata"):
-        value = metadata.get(key)
-        if isinstance(value, dict):
-            sources.append(value)
+        nested_metadata = _metadata_dict(metadata.get(key))
+        if nested_metadata:
+            sources.append(nested_metadata)
     return sources
 
 

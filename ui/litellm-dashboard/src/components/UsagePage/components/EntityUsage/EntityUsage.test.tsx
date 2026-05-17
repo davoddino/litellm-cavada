@@ -492,6 +492,8 @@ describe("EntityUsage", () => {
           metadata_spend_logs: 1,
           compatibility_spend_logs: 1,
           key_metadata_spend_logs: 1,
+          legacy_keys_missing_metadata: 1,
+          legacy_key_spend_logs: 2,
           ledger_gap: 3,
           recommended_action: "run_scoped_backfill",
           scoped_backfill_available: true,
@@ -536,6 +538,71 @@ describe("EntityUsage", () => {
     expect(screen.getByText(/Attributable SpendLogs: 3/)).toBeInTheDocument();
     expect(screen.getByText(/Ledger gap: 3/)).toBeInTheDocument();
     expect(screen.getByText(/Key metadata rows: 1/)).toBeInTheDocument();
+    expect(screen.getByText(/Legacy keys missing metadata: 1/)).toBeInTheDocument();
+    expect(screen.getByText(/Legacy key spend rows: 2/)).toBeInTheDocument();
+  });
+
+  it("should diagnose implicit Company scope when usage is empty before a filter is selected", async () => {
+    const emptyData = {
+      results: [],
+      metadata: {
+        total_spend: 0,
+        total_api_requests: 0,
+        total_successful_requests: 0,
+        total_failed_requests: 0,
+        total_tokens: 0,
+      },
+    };
+    mockCavadalabsCompanyDailyActivityCall.mockResolvedValue(emptyData);
+    mockCavadalabsCompanyUsageDiagnosticsCall.mockResolvedValue({
+      diagnostics: [
+        {
+          entity_type: "company",
+          entity_id: "company-1",
+          status: "scoped_backfill_available",
+          ledger_rows: 0,
+          attributable_spend_logs: 2,
+          ledger_gap: 2,
+          recommended_action: "run_scoped_backfill",
+          scoped_backfill_available: true,
+          missing_mappings: [],
+          message: "Company usage exists in LiteLLM SpendLogs but not in the CavadaLabs ledger.",
+        },
+      ],
+      migration_name: "20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash",
+      migration_command:
+        "uv run prisma migrate deploy --schema litellm-proxy-extras/litellm_proxy_extras/schema.prisma",
+    });
+
+    render(
+      <EntityUsage
+        {...defaultProps}
+        entityType="company"
+        entityList={[
+          { label: "Company One", value: "company-1" },
+          { label: "Company Two", value: "company-2" },
+        ]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(mockCavadalabsCompanyDailyActivityCall).toHaveBeenCalledWith(
+        "test-token",
+        expect.any(Date),
+        expect.any(Date),
+        1,
+        null,
+      );
+    });
+    await waitFor(() => {
+      expect(mockCavadalabsCompanyUsageDiagnosticsCall).toHaveBeenCalledWith(
+        "test-token",
+        expect.any(Date),
+        expect.any(Date),
+        ["company-1", "company-2"],
+      );
+    });
+    expect(screen.getByText("Company usage can be repaired")).toBeInTheDocument();
   });
 
   it("should show a Project empty-state diagnostic without falling back to global usage", async () => {

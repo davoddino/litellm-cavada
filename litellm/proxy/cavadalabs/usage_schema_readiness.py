@@ -57,6 +57,13 @@ USAGE_BACKFILL_MIGRATION_STEPS = (
             "Company/Project metadata."
         ),
     ),
+    CavadaLabsUsageMigrationStep(
+        name="20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash",
+        purpose=(
+            "Backfills historical SpendLogs whose LiteLLM key hash is stored "
+            "only in SpendLogs metadata."
+        ),
+    ),
 )
 USAGE_BACKFILL_MIGRATION_NAME = USAGE_BACKFILL_MIGRATION_STEPS[-1].name
 USAGE_BACKFILL_MIGRATION_COMMAND = (

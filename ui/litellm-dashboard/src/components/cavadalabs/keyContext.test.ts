@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  deriveSingleCavadaLabsKeyContextSelection,
   findCavadaLabsCompanyForCompatibilityOrganization,
   findCavadaLabsProjectForCompatibilityTeam,
   getCavadaLabsCompanyDisplayName,
@@ -8,11 +9,13 @@ import {
   getCavadaLabsProjectLabelForCompatibilityTeam,
   getKeyCavadaLabsCompanyId,
   getKeyCavadaLabsProjectId,
+  canManageCavadaLabsKeyContext,
   filterManageableCavadaLabsCompanies,
   filterManageableCavadaLabsProjects,
   resolveCavadaLabsCompanyCompatibilityOrganizationId,
   resolveCavadaLabsProjectCompatibilityTeamId,
   stripLiteLLMCompatibilityFieldsForCavadaLabsKey,
+  validateCavadaLabsKeyContextSelection,
 } from "./keyContext";
 
 describe("CavadaLabs key context helpers", () => {
@@ -42,6 +45,29 @@ describe("CavadaLabs key context helpers", () => {
 
     expect(getKeyCavadaLabsCompanyId(key)).toBe("company-legacy");
     expect(getKeyCavadaLabsProjectId(key)).toBe("project-legacy");
+  });
+
+  it("should read CavadaLabs Company and Project aliases from key metadata", () => {
+    expect(
+      getKeyCavadaLabsCompanyId({
+        metadata: { cavadalabs: { cavadalabs_company_id: "company-nested" } },
+      }),
+    ).toBe("company-nested");
+    expect(
+      getKeyCavadaLabsProjectId({
+        metadata: { cavadalabs: { cavadalabs_project_id: "project-nested" } },
+      }),
+    ).toBe("project-nested");
+    expect(
+      getKeyCavadaLabsCompanyId({
+        metadata: { spend_logs_metadata: { company_id: "company-spend" } },
+      }),
+    ).toBe("company-spend");
+    expect(
+      getKeyCavadaLabsProjectId({
+        metadata: { spend_logs_metadata: { project_id: "project-spend" } },
+      }),
+    ).toBe("project-spend");
   });
 
   it("should format company options with legal name when available", () => {
@@ -168,5 +194,106 @@ describe("CavadaLabs key context helpers", () => {
         { project_id: "project-viewer", company_id: "company-viewer", cavadalabs_can_manage: false },
       ]).map((project) => project.project_id),
     ).toEqual(["project-admin"]);
+  });
+
+  it("should include parent Company options for manageable Project scopes", () => {
+    expect(
+      filterManageableCavadaLabsCompanies(
+        [
+          { company_id: "company-admin", cavadalabs_can_manage: true },
+          { company_id: "company-project", cavadalabs_can_manage: false },
+          { company_id: "company-viewer", cavadalabs_can_manage: false },
+        ],
+        [
+          { project_id: "project-admin", company_id: "company-project", cavadalabs_can_manage: true },
+          { project_id: "project-viewer", company_id: "company-viewer", cavadalabs_can_manage: false },
+        ],
+      ).map((company) => company.company_id),
+    ).toEqual(["company-admin", "company-project"]);
+  });
+
+  it("should identify editable CavadaLabs key context from Company or Project manage access", () => {
+    const companies = [
+      { company_id: "company-admin", cavadalabs_can_manage: true },
+      { company_id: "company-viewer", cavadalabs_can_manage: false },
+    ];
+    const projects = [
+      { project_id: "project-admin", company_id: "company-viewer", cavadalabs_can_manage: true },
+      { project_id: "project-viewer", company_id: "company-viewer", cavadalabs_can_manage: false },
+    ];
+
+    expect(
+      canManageCavadaLabsKeyContext({
+        companies,
+        projects,
+        companyId: "company-admin",
+        projectId: "project-viewer",
+      }),
+    ).toBe(true);
+    expect(
+      canManageCavadaLabsKeyContext({
+        companies,
+        projects,
+        companyId: "company-viewer",
+        projectId: "project-admin",
+      }),
+    ).toBe(true);
+    expect(
+      canManageCavadaLabsKeyContext({
+        companies,
+        projects,
+        companyId: "company-viewer",
+        projectId: "project-viewer",
+      }),
+    ).toBe(false);
+  });
+
+  it("should derive the sole available Company and Project key context", () => {
+    expect(
+      deriveSingleCavadaLabsKeyContextSelection({
+        companyId: null,
+        projectId: null,
+        companies: [{ company_id: "company-1" }],
+        projects: [{ project_id: "project-1", company_id: "company-1" }],
+      }),
+    ).toEqual({ companyId: "company-1", projectId: "project-1" });
+  });
+
+  it("should not derive Company and Project key context when scope is ambiguous", () => {
+    expect(
+      deriveSingleCavadaLabsKeyContextSelection({
+        companyId: null,
+        projectId: null,
+        companies: [{ company_id: "company-1" }],
+        projects: [
+          { project_id: "project-1", company_id: "company-1" },
+          { project_id: "project-2", company_id: "company-1" },
+        ],
+      }),
+    ).toEqual({ companyId: null, projectId: null });
+  });
+
+  it("should validate required Company and Project key context", () => {
+    expect(
+      validateCavadaLabsKeyContextSelection({
+        companyId: null,
+        projectId: null,
+        projects: [{ project_id: "project-1", company_id: "company-1" }],
+        required: true,
+        actionLabel: "creating",
+      }),
+    ).toBe("Select both Company and Project before creating a CavadaLabs key");
+  });
+
+  it("should reject mismatched Company and Project key context", () => {
+    expect(
+      validateCavadaLabsKeyContextSelection({
+        companyId: "company-1",
+        projectId: "project-2",
+        projects: [{ project_id: "project-2", company_id: "company-2" }],
+        required: true,
+        actionLabel: "saving",
+      }),
+    ).toBe("Selected Project belongs to a different Company");
   });
 });

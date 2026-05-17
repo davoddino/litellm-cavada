@@ -21,38 +21,68 @@ const jsonResponse = (payload: any, ok = true) =>
     text: vi.fn(),
   }) as any;
 
-const activityResponse = (overrides: Record<string, any> = {}) => ({
-  results: [
-    {
-      date: "2026-05-15",
-      metrics: {
-        spend: 0.42,
-        prompt_tokens: 30,
-        completion_tokens: 20,
-        total_tokens: 50,
-        api_requests: 2,
-        successful_requests: 1,
-        failed_requests: 1,
-        cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0,
-      },
-      breakdown: {},
-    },
-  ],
-  metadata: {
-    total_spend: 0.42,
-    total_prompt_tokens: 30,
-    total_completion_tokens: 20,
-    total_tokens: 50,
-    total_api_requests: 2,
-    total_successful_requests: 1,
-    total_failed_requests: 1,
-    page: 1,
-    total_pages: 1,
-    has_more: false,
-  },
+const usageMetrics = (overrides: Record<string, any> = {}) => ({
+  spend: 0.42,
+  prompt_tokens: 30,
+  completion_tokens: 20,
+  total_tokens: 50,
+  api_requests: 2,
+  successful_requests: 1,
+  failed_requests: 1,
+  cache_read_input_tokens: 0,
+  cache_creation_input_tokens: 0,
   ...overrides,
 });
+
+const usageBreakdown = {
+  entities: {
+    "company-1": {
+      metrics: usageMetrics({ spend: 0.42, api_requests: 2, total_tokens: 50 }),
+    },
+  },
+  models: {
+    "cavadalabs/qwen3-32b": {
+      metrics: usageMetrics({ spend: 0.42, api_requests: 2, total_tokens: 50 }),
+    },
+  },
+  providers: {
+    cavadalabs: {
+      metrics: usageMetrics({ spend: 0.42, api_requests: 2, total_tokens: 50 }),
+    },
+  },
+  api_keys: {
+    "hashed-key": {
+      metrics: usageMetrics({ spend: 0.42, api_requests: 2, total_tokens: 50 }),
+    },
+  },
+};
+
+const activityResponse = (overrides: Record<string, any> = {}) => {
+  const { metadata, results, ...rest } = overrides;
+  return {
+    results: results ?? [
+      {
+        date: "2026-05-15",
+        metrics: usageMetrics(),
+        breakdown: usageBreakdown,
+      },
+    ],
+    metadata: {
+      total_spend: 0.42,
+      total_prompt_tokens: 30,
+      total_completion_tokens: 20,
+      total_tokens: 50,
+      total_api_requests: 2,
+      total_successful_requests: 1,
+      total_failed_requests: 1,
+      page: 1,
+      total_pages: 1,
+      has_more: false,
+      ...(metadata ?? {}),
+    },
+    ...rest,
+  };
+};
 
 const emptyActivityResponse = {
   results: [],
@@ -126,6 +156,29 @@ const projectOnlyContext: CavadaLabsRuntimeContext = {
   nodes: [],
 };
 
+const projectMemberContext: CavadaLabsRuntimeContext = {
+  companies: [
+    {
+      company_id: "company-1",
+      legal_name: "Acme Srl",
+      cavadalabs_can_manage: false,
+      cavadalabs_can_view_usage: false,
+    },
+  ],
+  projects: [
+    {
+      project_id: "project-1",
+      company_id: "company-1",
+      name: "Support",
+      cavadalabs_can_manage: true,
+      cavadalabs_can_view_usage: true,
+    },
+  ],
+  chatbots: [],
+  ragCollections: [],
+  nodes: [],
+};
+
 const companyViewerContext: CavadaLabsRuntimeContext = {
   companies: [{ company_id: "company-1", legal_name: "Acme Srl", cavadalabs_can_manage: false }],
   projects: [{ project_id: "project-1", name: "Support", cavadalabs_can_manage: false }],
@@ -174,6 +227,108 @@ describe("CavadaLabsUsageActivityPanel", () => {
             url.searchParams.get("company_ids") === "company-1" &&
             url.searchParams.get("project_ids") === null &&
             url.searchParams.get("page") === "1" &&
+            url.searchParams.get("page_size") === "100"
+          );
+        }),
+      ).toBe(true);
+    });
+  });
+
+  it("should expose daily usage breakdown without Organization or Team labels", async () => {
+    const mockFetch = vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://proxy.test");
+      if (url.pathname === "/cavadalabs/companies/daily/activity") {
+        return Promise.resolve(jsonResponse(activityResponse()));
+      }
+      if (url.pathname === "/cavadalabs/companies/usage/diagnostics") {
+        return Promise.resolve(jsonResponse(diagnosticsResponse()));
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    global.fetch = mockFetch as any;
+
+    renderWithProviders(<CavadaLabsUsageActivityPanel accessToken="token-1" context={companyContext} />);
+
+    expect(await screen.findByText("2026-05-15")).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /expand row/i }));
+    });
+
+    expect(await screen.findByText("cavadalabs/qwen3-32b")).toBeInTheDocument();
+    expect(screen.getAllByText("Provider").length).toBeGreaterThan(0);
+    expect(screen.getByText("API key")).toBeInTheDocument();
+    expect(screen.getAllByText("Company").length).toBeGreaterThan(0);
+    expect(screen.queryByText(/organization/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^team$/i)).not.toBeInTheDocument();
+  });
+
+  it("should paginate aggregated daily usage pages through CavadaLabs endpoints", async () => {
+    const mockFetch = vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://proxy.test");
+      if (url.pathname === "/cavadalabs/companies/daily/activity") {
+        const page = url.searchParams.get("page");
+        if (page === "2") {
+          return Promise.resolve(
+            jsonResponse(
+              activityResponse({
+                results: [
+                  {
+                    date: "2026-05-14",
+                    metrics: usageMetrics({ spend: 0.25, total_tokens: 25, api_requests: 1 }),
+                    breakdown: usageBreakdown,
+                  },
+                ],
+                metadata: {
+                  total_spend: 0.67,
+                  total_tokens: 75,
+                  total_api_requests: 3,
+                  page: 2,
+                  total_pages: 2,
+                  has_more: false,
+                },
+              }),
+            ),
+          );
+        }
+        return Promise.resolve(
+          jsonResponse(
+            activityResponse({
+              metadata: {
+                page: 1,
+                total_pages: 2,
+                has_more: true,
+              },
+            }),
+          ),
+        );
+      }
+      if (url.pathname === "/cavadalabs/companies/usage/diagnostics") {
+        return Promise.resolve(jsonResponse(diagnosticsResponse()));
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    global.fetch = mockFetch as any;
+
+    renderWithProviders(<CavadaLabsUsageActivityPanel accessToken="token-1" context={companyContext} />);
+
+    expect(await screen.findByText("2026-05-15")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTitle("2")).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("2"));
+    });
+
+    expect(await screen.findByText("2026-05-14")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        mockFetch.mock.calls.some(([requestUrl]) => {
+          const url = new URL(String(requestUrl), "http://proxy.test");
+          return (
+            url.pathname === "/cavadalabs/companies/daily/activity" &&
+            url.searchParams.get("company_ids") === "company-1" &&
+            url.searchParams.get("page") === "2" &&
             url.searchParams.get("page_size") === "100"
           );
         }),
@@ -231,13 +386,51 @@ describe("CavadaLabsUsageActivityPanel", () => {
             url.searchParams.get("project_ids") === "project-1" &&
             url.searchParams.get("provider") === "openai" &&
             url.searchParams.get("model") === "openai/gpt-4.1" &&
-            url.searchParams.get("api_key") === "hashed-key"
+            url.searchParams.get("api_key") === "hashed-key" &&
+            url.searchParams.get("min_spend") === "0.1" &&
+            url.searchParams.get("max_spend") === "1"
           );
         }),
       ).toBe(true);
     });
 
     expect(screen.queryByText(/organization/i)).not.toBeInTheDocument();
+  });
+
+  it("should default project-only members to Project usage when the parent Company record is visible", async () => {
+    const mockFetch = vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://proxy.test");
+      if (url.pathname === "/cavadalabs/projects/daily/activity") {
+        return Promise.resolve(jsonResponse(activityResponse()));
+      }
+      if (url.pathname === "/cavadalabs/projects/usage/diagnostics") {
+        return Promise.resolve(jsonResponse(diagnosticsResponse("none", "project")));
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    global.fetch = mockFetch as any;
+
+    renderWithProviders(<CavadaLabsUsageActivityPanel accessToken="token-1" context={projectMemberContext} />);
+
+    expect(await screen.findByText("2026-05-15")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        mockFetch.mock.calls.some(([requestUrl]) => {
+          const url = new URL(String(requestUrl), "http://proxy.test");
+          return (
+            url.pathname === "/cavadalabs/projects/daily/activity" &&
+            url.searchParams.get("project_ids") === "project-1" &&
+            url.searchParams.get("company_ids") === null
+          );
+        }),
+      ).toBe(true);
+      expect(
+        mockFetch.mock.calls.some(([requestUrl]) => {
+          const url = new URL(String(requestUrl), "http://proxy.test");
+          return url.pathname === "/cavadalabs/companies/daily/activity";
+        }),
+      ).toBe(false);
+    });
   });
 
   it("should render Project ledger-native usage without running repair", async () => {
@@ -297,7 +490,13 @@ describe("CavadaLabsUsageActivityPanel", () => {
           jsonResponse(
             diagnosticsCalls === 1
               ? diagnosticsResponse("run_scoped_backfill", "company", "company-1", {
-                  diagnostics: [{ key_metadata_spend_logs: 2 }],
+                  diagnostics: [
+                    {
+                      key_metadata_spend_logs: 2,
+                      legacy_keys_missing_metadata: 1,
+                      legacy_key_spend_logs: 2,
+                    },
+                  ],
                 })
               : diagnosticsResponse(),
           ),
@@ -332,6 +531,8 @@ describe("CavadaLabsUsageActivityPanel", () => {
     expect(await screen.findByText("Company usage can be repaired")).toBeInTheDocument();
     expect(screen.getByText(/Spend exists for this Company\/Project/)).toBeInTheDocument();
     expect(screen.getByText("Key metadata rows: 2")).toBeInTheDocument();
+    expect(screen.getByText("Legacy keys missing metadata: 1")).toBeInTheDocument();
+    expect(screen.getByText("Legacy key spend rows: 2")).toBeInTheDocument();
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /run scoped backfill/i }));
     });
@@ -500,6 +701,51 @@ describe("CavadaLabsUsageActivityPanel", () => {
       ).toBe(true);
     });
     expect(await screen.findByText("2026-05-15")).toBeInTheDocument();
+  });
+
+  it("should use readiness checks when daily usage is empty and scoped repair is available", async () => {
+    const mockFetch = vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://proxy.test");
+      if (url.pathname === "/cavadalabs/companies/daily/activity") {
+        return Promise.resolve(jsonResponse(emptyActivityResponse));
+      }
+      if (url.pathname === "/cavadalabs/companies/usage/diagnostics") {
+        return Promise.resolve(
+          jsonResponse(
+            diagnosticsResponse("run_scoped_backfill", "company", "company-1", {
+              readiness_checks: [
+                {
+                  code: "usage_schema",
+                  status: "ready",
+                  message: "Schema ready.",
+                },
+                {
+                  code: "repair_status",
+                  status: "action_required",
+                  message: "Scoped repair can copy attributable SpendLogs.",
+                  entity_type: "company",
+                  entity_id: "company-1",
+                  recommended_action: "run_scoped_backfill",
+                  details: {
+                    scoped_spend_logs: 2,
+                    missing_ledger_rows: 2,
+                  },
+                },
+              ],
+            }),
+          ),
+        );
+      }
+      throw new Error(`Unexpected request: ${url.pathname}`);
+    });
+    global.fetch = mockFetch as any;
+
+    renderWithProviders(<CavadaLabsUsageActivityPanel accessToken="token-1" context={companyContext} />);
+
+    expect(await screen.findByText("Company usage can be repaired")).toBeInTheDocument();
+    expect(screen.getByText("Missing ledger rows: 2")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /preview scoped backfill/i })).toBeInTheDocument();
+    expect(screen.queryByText(/organization/i)).not.toBeInTheDocument();
   });
 
   it("should not offer repair when diagnostics report no attributable spend", async () => {

@@ -18,26 +18,27 @@ from litellm.proxy.cavadalabs.key_context_schema import (
 def _cavadalabs_key_metadata_filter(
     field: Literal["company_id", "project_id"], value: str
 ) -> Dict[str, Any]:
-    top_level_key = (
+    canonical_key = (
         CAVADALABS_COMPANY_METADATA_KEY
         if field == "company_id"
         else CAVADALABS_PROJECT_METADATA_KEY
     )
+    aliases = (canonical_key, field)
+    metadata_prefixes: Tuple[Tuple[str, ...], ...] = (
+        (),
+        (CAVADALABS_METADATA_ENVELOPE_KEY,),
+        (CAVADALABS_SPEND_LOGS_METADATA_KEY,),
+    )
     return {
         "OR": [
-            {"metadata": {"path": [top_level_key], "equals": value}},
             {
                 "metadata": {
-                    "path": [CAVADALABS_METADATA_ENVELOPE_KEY, field],
+                    "path": [*prefix, alias],
                     "equals": value,
                 }
-            },
-            {
-                "metadata": {
-                    "path": [CAVADALABS_SPEND_LOGS_METADATA_KEY, top_level_key],
-                    "equals": value,
-                }
-            },
+            }
+            for prefix in metadata_prefixes
+            for alias in aliases
         ]
     }
 

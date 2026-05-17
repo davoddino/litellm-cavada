@@ -49,17 +49,78 @@ authoritative source:
 
 The daily activity endpoints filter the Cavada ledger by Company/Project,
 `created_at`, `model`, `provider`, `status`, `api_key_hash`, and optional spend
-range. They do not expose LiteLLM Organization or Team as product filters. If the
-selected ledger slice is empty or appears partial, the endpoint may trigger a
-scoped repair from `LiteLLM_SpendLogs`, but that repair is a recovery path for
-historical or previously unattributed data. New requests should be visible from
-the ledger-native read path as soon as the standard LiteLLM spend-log queue has
-processed the batch.
+range. They aggregate all matching request-ledger rows by day before paginating
+the daily result rows, so high-volume Company/Project scopes are not truncated by
+the request-row `page_size`. They do not expose LiteLLM Organization or Team as
+product filters. If the selected ledger slice is empty or appears partial, the
+endpoint may trigger a scoped repair from `LiteLLM_SpendLogs`, but that repair is
+a recovery path for historical or previously unattributed data. New requests
+should be visible from the ledger-native read path as soon as the standard
+LiteLLM spend-log queue has processed the batch.
 
 Reading ledger rows only requires the CavadaLabs request-ledger schema. The
 active/deleted virtual-key delegates are required for diagnostics and scoped
 repair from legacy SpendLogs, but missing key-backfill schema must not hide usage
 that is already present in `CavadaLabs_RequestLedgerTable`.
+
+## Offline Schema Contract
+
+The CavadaLabs usage path depends on these schema and migration contracts. They
+can be checked without a live database by comparing the three Prisma schemas
+(`schema.prisma`, `litellm/proxy/schema.prisma`,
+`litellm-proxy-extras/litellm_proxy_extras/schema.prisma`) and the SQL
+migrations under `litellm-proxy-extras/litellm_proxy_extras/migrations`.
+
+`CavadaLabs_RequestLedgerTable` is the product usage table. The runtime writer
+uses these columns: `request_id`, `company_id`, `project_id`, `chatbot_id`,
+`web_token_id`, `session_id`, `api_key_hash`, `provider`, `model`, `node_id`,
+`gpu_id`, `loaded_model_id`, `model_load_request_id`, token counts, `spend`,
+`status`, `metadata`, and `created_at`. The schema requires `company_id` and
+`project_id`, makes `request_id` unique, and indexes:
+
+- `company_id, created_at`
+- `project_id, created_at`
+- `chatbot_id, created_at`
+- `web_token_id, created_at`
+- `provider, model`
+- `node_id, gpu_id`
+
+The current RequestLedger schema does not define Prisma relation fields or SQL
+foreign keys to Company/Project. Runtime and backfill code validate that the
+resolved Project belongs to the resolved Company before writing; conflicting
+Company/Project mappings are skipped rather than attached to the wrong tenant.
+Do not add ledger FKs casually: evaluate historical ledger retention and hard
+delete semantics first.
+
+`CavadaLabs_CompanyTable` and `CavadaLabs_ProjectTable` are the product tenant
+tables. Their compatibility fields are internal only:
+
+- Company: `litellm_organization_id String? @unique`
+- Project: `litellm_team_id String? @unique`
+
+The compatibility migration adds those columns, unique indexes, and FKs to
+LiteLLM Organization/Team with `ON DELETE SET NULL`. Product usage reads still
+filter by CavadaLabs `company_id` and `project_id`.
+
+Native membership is stored in:
+
+- `CavadaLabs_CompanyMemberTable`: unique `(company_id, user_id)`, indexes
+  `(company_id, role)` and `(user_id, role)`, FK cascade to Company and user.
+- `CavadaLabs_ProjectMemberTable`: unique `(project_id, user_id)`, indexes
+  `(project_id, role)` and `(user_id, role)`, FK cascade to Project and user.
+
+The scoped repair and diagnostics path also depends on SpendLogs indexes:
+
+- `LiteLLM_SpendLogs_api_key_startTime_idx`
+- `LiteLLM_SpendLogs_team_id_startTime_idx`
+- `LiteLLM_SpendLogs_organization_id_startTime_idx`
+- `LiteLLM_SpendLogs_model_startTime_idx`
+- `LiteLLM_SpendLogs_model_group_startTime_idx`
+- `LiteLLM_SpendLogs_metadata_gin_idx`
+
+No CavadaLabs usage endpoint should expose Organization or Team as product
+filters. They are only compatibility inputs used to resolve old LiteLLM spend
+rows or keys into Company/Project.
 
 Monthly billing generation uses the same usage-schema preflight. If the
 `CavadaLabs_RequestLedgerTable` delegate or required Company/Project usage
@@ -118,6 +179,12 @@ The key-metadata backfill migration is:
 litellm-proxy-extras/litellm_proxy_extras/migrations/20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata/migration.sql
 ```
 
+The metadata key-hash backfill migration is:
+
+```text
+litellm-proxy-extras/litellm_proxy_extras/migrations/20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash/migration.sql
+```
+
 The spend-log index migration used by scoped repair and diagnostics is:
 
 ```text
@@ -132,6 +199,9 @@ from the internal LiteLLM compatibility mapping:
   CavadaLabs metadata on the key
 - `LiteLLM_SpendLogs.api_key` -> `LiteLLM_DeletedVerificationToken.token`, then
   CavadaLabs metadata preserved in the deleted-key audit row
+- `LiteLLM_SpendLogs.metadata.user_api_key_hash`,
+  `metadata.api_key_hash`, or the same keys under `spend_logs_metadata` /
+  `cavadalabs` -> active/deleted key metadata
 - `LiteLLM_SpendLogs.api_key` -> active/deleted key `team_id`, then
   `CavadaLabs_ProjectTable.litellm_team_id`
 - `LiteLLM_SpendLogs.team_id` -> `CavadaLabs_ProjectTable.litellm_team_id`
@@ -155,6 +225,11 @@ Run from the repository root with the production `DATABASE_URL`:
 ```bash
 DATABASE_URL='postgresql://USER:PASSWORD@HOST:PORT/DB' uv run prisma migrate deploy --schema litellm-proxy-extras/litellm_proxy_extras/schema.prisma
 ```
+
+Use a project-compatible `uv` version for the command. If `uv run` exits before
+Prisma with a version mismatch, update `uv` to the version required by the
+repository or run the command from the deployment image that already has the
+matching toolchain.
 
 The LiteLLM proxy startup also runs Prisma migrations in normal deployments, but
 the command above is the explicit operational path when usage needs to be
@@ -274,13 +349,19 @@ Diagnostic items also include:
 
 The diagnostics and repair responses also include:
 
+- `readiness_checks`: structured admin checks for the schema, ledger rows,
+  SpendLogs attribution, scoped repair state, and restrictive filters/date
+  ranges. Each check includes a stable `code`, `status`, `message`,
+  `recommended_action`, and scoped details.
 - `migration_names`: the complete CavadaLabs usage migration bundle that should
   be present after `prisma migrate deploy`, including the SpendLogs repair
   indexes, metadata/compat ledger backfill, and key-metadata/deleted-key
-  backfill.
+  backfill, including legacy SpendLogs whose key hash is present only in
+  metadata.
 - `migration_plan`: the same migrations with their operational purpose, so an
   operator can tell whether missing usage is likely caused by missing indexes,
-  missing historical metadata backfill, or missing key-metadata backfill.
+  missing historical metadata backfill, missing key-metadata backfill, or
+  metadata-only key-hash backfill.
 - `migration_name`: the latest migration in that bundle, retained for backward
   compatibility with older clients that expected a single string.
 
@@ -290,13 +371,172 @@ Confirm the migration is present:
 DATABASE_URL='postgresql://USER:PASSWORD@HOST:PORT/DB' uv run prisma migrate status --schema litellm-proxy-extras/litellm_proxy_extras/schema.prisma
 ```
 
+Deploy any missing migrations:
+
+```bash
+DATABASE_URL='postgresql://USER:PASSWORD@HOST:PORT/DB' uv run prisma migrate deploy --schema litellm-proxy-extras/litellm_proxy_extras/schema.prisma
+```
+
+Confirm the CavadaLabs usage migration bundle in Prisma's migration ledger:
+
+```sql
+SELECT migration_name, finished_at, rolled_back_at
+FROM "_prisma_migrations"
+WHERE migration_name IN (
+  '20260514120000_add_cavadalabs_dispatcher_tables',
+  '20260515120000_add_cavadalabs_litellm_membership_mappings',
+  '20260515122000_add_cavadalabs_usage_spend_log_indexes',
+  '20260515123000_backfill_cavadalabs_request_ledger_from_spend_logs',
+  '20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata',
+  '20260515150000_add_cavadalabs_native_memberships',
+  '20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash'
+)
+ORDER BY migration_name;
+```
+
+Confirm the critical runtime tables, columns, indexes, and FKs exist:
+
+```sql
+SELECT table_name
+FROM information_schema.tables
+WHERE table_schema = 'public'
+  AND table_name IN (
+    'CavadaLabs_CompanyTable',
+    'CavadaLabs_ProjectTable',
+    'CavadaLabs_RequestLedgerTable',
+    'CavadaLabs_CompanyMemberTable',
+    'CavadaLabs_ProjectMemberTable',
+    'LiteLLM_SpendLogs',
+    'LiteLLM_VerificationToken',
+    'LiteLLM_DeletedVerificationToken'
+  )
+ORDER BY table_name;
+```
+
+```sql
+SELECT table_name, column_name, data_type, is_nullable
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND (
+    table_name = 'CavadaLabs_RequestLedgerTable'
+    OR (table_name = 'CavadaLabs_CompanyTable' AND column_name = 'litellm_organization_id')
+    OR (table_name = 'CavadaLabs_ProjectTable' AND column_name = 'litellm_team_id')
+    OR table_name IN ('CavadaLabs_CompanyMemberTable', 'CavadaLabs_ProjectMemberTable')
+  )
+ORDER BY table_name, ordinal_position;
+```
+
+```sql
+SELECT tablename, indexname
+FROM pg_indexes
+WHERE schemaname = 'public'
+  AND indexname IN (
+    'CavadaLabs_RequestLedgerTable_request_id_key',
+    'CavadaLabs_RequestLedgerTable_company_id_created_at_idx',
+    'CavadaLabs_RequestLedgerTable_project_id_created_at_idx',
+    'CavadaLabs_RequestLedgerTable_provider_model_idx',
+    'CavadaLabs_CompanyTable_litellm_organization_id_key',
+    'CavadaLabs_ProjectTable_litellm_team_id_key',
+    'CavadaLabs_CompanyMemberTable_company_id_user_id_key',
+    'CavadaLabs_ProjectMemberTable_project_id_user_id_key',
+    'LiteLLM_SpendLogs_api_key_startTime_idx',
+    'LiteLLM_SpendLogs_team_id_startTime_idx',
+    'LiteLLM_SpendLogs_organization_id_startTime_idx',
+    'LiteLLM_SpendLogs_metadata_gin_idx'
+  )
+ORDER BY tablename, indexname;
+```
+
+```sql
+SELECT conrelid::regclass AS table_name, conname, confrelid::regclass AS references_table
+FROM pg_constraint
+WHERE conname IN (
+  'CavadaLabs_ProjectTable_company_id_fkey',
+  'CavadaLabs_CompanyTable_litellm_organization_id_fkey',
+  'CavadaLabs_ProjectTable_litellm_team_id_fkey',
+  'CavadaLabs_CompanyMemberTable_company_id_fkey',
+  'CavadaLabs_CompanyMemberTable_user_id_fkey',
+  'CavadaLabs_ProjectMemberTable_project_id_fkey',
+  'CavadaLabs_ProjectMemberTable_user_id_fkey'
+)
+ORDER BY table_name::text, conname;
+```
+
+## Live Smoke Test
+
+Use this when a specific Company/Project still shows empty usage after a deploy.
+Replace the placeholders with the affected production values; do not reset or
+drop data.
+
+1. Confirm migrations are applied:
+
+```bash
+DATABASE_URL='postgresql://USER:PASSWORD@HOST:PORT/DB' uv run prisma migrate status --schema litellm-proxy-extras/litellm_proxy_extras/schema.prisma
+```
+
+2. Confirm the Cavada key context is present on the virtual key:
+
+```sql
+SELECT token, team_id, organization_id,
+       metadata ->> 'cavadalabs_company_id' AS company_id,
+       metadata ->> 'cavadalabs_project_id' AS project_id,
+       metadata -> 'spend_logs_metadata' AS spend_logs_metadata
+FROM "LiteLLM_VerificationToken"
+WHERE token = '<hashed_api_key>';
+```
+
+3. Generate one real request through LiteLLM using the affected key:
+
+```bash
+curl -sS "$LITELLM_BASE_URL/v1/chat/completions" \
+  -H "Authorization: Bearer $CAVADALABS_SERVER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "<allowed-model-alias>",
+    "messages": [{"role": "user", "content": "CavadaLabs usage smoke test"}],
+    "max_tokens": 8
+  }'
+```
+
+4. Wait for the LiteLLM spend-log queue to flush, then verify the ledger:
+
+```sql
+SELECT request_id, company_id, project_id, api_key_hash, provider, model,
+       spend, total_tokens, status, created_at
+FROM "CavadaLabs_RequestLedgerTable"
+WHERE company_id = '<company_id>'
+  AND project_id = '<project_id>'
+ORDER BY created_at DESC
+LIMIT 10;
+```
+
+5. Verify the product API reads the same Company/Project scope:
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  "$LITELLM_BASE_URL/cavadalabs/companies/daily/activity?company_ids=<company_id>&start_date=2026-05-01&end_date=2026-05-31&page=1&page_size=30"
+```
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  "$LITELLM_BASE_URL/cavadalabs/projects/daily/activity?project_ids=<project_id>&start_date=2026-05-01&end_date=2026-05-31&page=1&page_size=30"
+```
+
 Confirm ledger rows exist for the affected scope:
 
 ```sql
-SELECT COUNT(*)
+SELECT COUNT(*) AS ledger_rows,
+       COALESCE(SUM("spend"), 0) AS ledger_spend,
+       COALESCE(SUM("total_tokens"), 0) AS ledger_tokens,
+       MIN("created_at") AS first_seen,
+       MAX("created_at") AS last_seen
 FROM "CavadaLabs_RequestLedgerTable"
 WHERE "company_id" = '<company_id>'
-  AND "project_id" = '<project_id>';
+  AND "project_id" = '<project_id>'
+  AND "created_at" >= TIMESTAMPTZ '2026-05-01 00:00:00+00'
+  AND "created_at" <  TIMESTAMPTZ '2026-06-01 00:00:00+00';
 ```
 
 If this returns `0`, check whether the source spend rows contain the required
@@ -309,6 +549,101 @@ WHERE "metadata"::text LIKE '%cavadalabs_company_id%'
    OR "metadata"::text LIKE '%cavadalabs_project_id%'
 ORDER BY "startTime" DESC
 LIMIT 20;
+```
+
+Find spend rows that are attributable through CavadaLabs key metadata but have
+not reached the request ledger:
+
+```sql
+WITH raw_key_context AS (
+  SELECT token, metadata, 0 AS source_priority FROM "LiteLLM_VerificationToken"
+  UNION ALL
+  SELECT token, metadata, 1 AS source_priority FROM "LiteLLM_DeletedVerificationToken"
+),
+key_context AS (
+  SELECT DISTINCT ON (token)
+         token,
+         COALESCE(
+           metadata ->> 'cavadalabs_company_id',
+           metadata -> 'cavadalabs' ->> 'company_id',
+           metadata -> 'spend_logs_metadata' ->> 'cavadalabs_company_id'
+         ) AS company_id,
+         COALESCE(
+           metadata ->> 'cavadalabs_project_id',
+           metadata -> 'cavadalabs' ->> 'project_id',
+           metadata -> 'spend_logs_metadata' ->> 'cavadalabs_project_id'
+         ) AS project_id
+  FROM raw_key_context
+  WHERE token IS NOT NULL AND token <> ''
+  ORDER BY token, source_priority
+),
+spend_logs_with_key AS (
+  SELECT s.*,
+         COALESCE(
+           NULLIF(s."api_key", ''),
+           NULLIF(s."metadata" ->> 'user_api_key_hash', ''),
+           NULLIF(s."metadata" ->> 'api_key_hash', ''),
+           NULLIF(s."metadata" -> 'cavadalabs' ->> 'user_api_key_hash', ''),
+           NULLIF(s."metadata" -> 'cavadalabs' ->> 'api_key_hash', ''),
+           NULLIF(s."metadata" -> 'spend_logs_metadata' ->> 'user_api_key_hash', ''),
+           NULLIF(s."metadata" -> 'spend_logs_metadata' ->> 'api_key_hash', '')
+         ) AS spend_api_key_hash
+  FROM "LiteLLM_SpendLogs" s
+)
+SELECT s."request_id", s."startTime", s.spend_api_key_hash,
+       s."api_key", s."team_id", s."organization_id",
+       k.company_id, k.project_id, l."request_id" AS ledger_request_id
+FROM spend_logs_with_key s
+JOIN key_context k ON k.token = s.spend_api_key_hash
+LEFT JOIN "CavadaLabs_RequestLedgerTable" l ON l."request_id" = s."request_id"
+WHERE k.company_id = '<company_id>'
+  AND k.project_id = '<project_id>'
+  AND s."startTime" >= TIMESTAMPTZ '2026-05-01 00:00:00+00'
+  AND s."startTime" <  TIMESTAMPTZ '2026-06-01 00:00:00+00'
+  AND l."request_id" IS NULL
+ORDER BY s."startTime" DESC
+LIMIT 50;
+```
+
+Find spend rows that are attributable only through internal compatibility
+mapping:
+
+```sql
+SELECT s."request_id", s."startTime", s."team_id", s."organization_id",
+       p."project_id", p."company_id", c."litellm_organization_id",
+       l."request_id" AS ledger_request_id
+FROM "LiteLLM_SpendLogs" s
+JOIN "CavadaLabs_ProjectTable" p
+  ON p."litellm_team_id" = NULLIF(s."team_id", '')
+LEFT JOIN "CavadaLabs_CompanyTable" c
+  ON c."company_id" = p."company_id"
+LEFT JOIN "CavadaLabs_RequestLedgerTable" l
+  ON l."request_id" = s."request_id"
+WHERE p."company_id" = '<company_id>'
+  AND p."project_id" = '<project_id>'
+  AND s."startTime" >= TIMESTAMPTZ '2026-05-01 00:00:00+00'
+  AND s."startTime" <  TIMESTAMPTZ '2026-06-01 00:00:00+00'
+ORDER BY s."startTime" DESC
+LIMIT 50;
+```
+
+Find likely unattributable spend rows for the same date window:
+
+```sql
+SELECT s."request_id", s."startTime", s."api_key", s."team_id", s."organization_id",
+       s."metadata"
+FROM "LiteLLM_SpendLogs" s
+LEFT JOIN "CavadaLabs_RequestLedgerTable" l
+  ON l."request_id" = s."request_id"
+LEFT JOIN "CavadaLabs_ProjectTable" p
+  ON p."litellm_team_id" = NULLIF(s."team_id", '')
+WHERE s."startTime" >= TIMESTAMPTZ '2026-05-01 00:00:00+00'
+  AND s."startTime" <  TIMESTAMPTZ '2026-06-01 00:00:00+00'
+  AND l."request_id" IS NULL
+  AND p."project_id" IS NULL
+  AND COALESCE(s."metadata"::text, '') NOT LIKE '%cavadalabs_project_id%'
+ORDER BY s."startTime" DESC
+LIMIT 50;
 ```
 
 Rows without CavadaLabs metadata and without a LiteLLM Team mapped to a

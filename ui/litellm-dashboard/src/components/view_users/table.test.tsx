@@ -127,6 +127,27 @@ describe("UserDataTable", () => {
     expect(screen.queryByText("Select Project")).not.toBeInTheDocument();
   });
 
+  it("should render CavadaLabs filters without Team when product context has empty options", () => {
+    render(
+      <UserDataTable
+        {...getDefaultProps()}
+        cavadalabsCompanies={[]}
+        cavadalabsProjects={[]}
+        teams={[{ team_id: "team-1", team_alias: "Legacy Team" }]}
+        showLiteLLMCompatibilityFields={false}
+      />,
+    );
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /^filters$/i }));
+    });
+
+    expect(screen.getByText("Select Company")).toBeInTheDocument();
+    expect(screen.getByText("Select Project")).toBeInTheDocument();
+    expect(screen.queryByText("Select Team")).not.toBeInTheDocument();
+    expect(screen.queryByText("Select Organization")).not.toBeInTheDocument();
+  });
+
   it("should render all column headers", () => {
     const possibleUIRoles = {
       admin: { ui_label: "Admin" },

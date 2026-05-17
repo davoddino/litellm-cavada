@@ -70,8 +70,10 @@ const renderModal = ({
       litellm_organization_id: "org-1",
     },
   ],
+  isCavadaLabsProductContext = true,
 }: {
   cavadalabsCompanies?: any[];
+  isCavadaLabsProductContext?: boolean;
 } = {}) => {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
@@ -91,6 +93,7 @@ const renderModal = ({
           } as any,
         ]}
         cavadalabsCompanies={cavadalabsCompanies}
+        isCavadaLabsProductContext={isCavadaLabsProductContext}
         teams={[]}
         setTeams={vi.fn()}
         modelAliases={{}}
@@ -147,12 +150,23 @@ describe("CreateTeamModal CavadaLabs tenant UX", () => {
   });
 
   it("should keep legacy Team labels when Cavada company context is unavailable", async () => {
-    renderModal({ cavadalabsCompanies: [] });
+    renderModal({ cavadalabsCompanies: [], isCavadaLabsProductContext: false });
 
     expect(await screen.findByRole("dialog", { name: /create team/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /create team/i })).toBeInTheDocument();
     expect(screen.getByText("Team Member Settings")).toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: /company/i })).not.toBeInTheDocument();
+  });
+
+  it("should keep Organization hidden when Cavada context is explicit with empty Company options", async () => {
+    renderModal({ cavadalabsCompanies: [], isCavadaLabsProductContext: true });
+
+    expect(await screen.findByRole("dialog", { name: /create project/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /create project/i })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /company/i })).toBeInTheDocument();
+    expect(screen.getByText("Project Member Settings")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /organization/i })).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/organization/i)).not.toBeInTheDocument();
   });
 
   it("should reject companies without compatibility mapping", () => {

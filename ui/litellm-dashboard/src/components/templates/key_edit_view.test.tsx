@@ -31,6 +31,8 @@ const { cavadalabsKeyContextOptions, mockNotificationsManager } = vi.hoisted(() 
     ],
     isLoading: false,
     errorDetail: null as any,
+    contextKnown: true,
+    isCavadaLabsProductContext: true,
   },
   mockNotificationsManager: {
     success: vi.fn(),
@@ -101,10 +103,41 @@ vi.mock("@/app/(dashboard)/hooks/mcpServers/useMCPToolsets", () => ({
 }));
 
 vi.mock("../cavadalabs/keyContext", () => ({
-  filterManageableCavadaLabsCompanies: (companies: any[]) =>
-    companies.some((company) => typeof company.cavadalabs_can_manage === "boolean")
-      ? companies.filter((company) => company.cavadalabs_can_manage === true)
-      : companies,
+  deriveSingleCavadaLabsKeyContextSelection: ({
+    companyId,
+    projectId,
+    companies,
+    projects,
+  }: {
+    companyId?: string | null;
+    projectId?: string | null;
+    companies: any[];
+    projects: any[];
+  }) => {
+    if (companyId || projectId || companies.length !== 1 || projects.length !== 1) {
+      return { companyId: companyId || null, projectId: projectId || null };
+    }
+    const company = companies[0];
+    const project = projects[0];
+    return project.company_id === company.company_id
+      ? { companyId: company.company_id, projectId: project.project_id }
+      : { companyId: null, projectId: null };
+  },
+  filterManageableCavadaLabsCompanies: (companies: any[], projects: any[] = []) => {
+    const hasCompanyManageFlag = companies.some((company) => typeof company.cavadalabs_can_manage === "boolean");
+    const hasProjectManageFlag = projects.some((project) => typeof project.cavadalabs_can_manage === "boolean");
+    if (!hasCompanyManageFlag && !hasProjectManageFlag) {
+      return companies;
+    }
+    const manageableProjectCompanyIds = new Set(
+      hasProjectManageFlag
+        ? projects.filter((project) => project.cavadalabs_can_manage === true).map((project) => project.company_id)
+        : [],
+    );
+    return companies.filter(
+      (company) => company.cavadalabs_can_manage === true || manageableProjectCompanyIds.has(company.company_id),
+    );
+  },
   filterManageableCavadaLabsProjects: (projects: any[]) =>
     projects.some((project) => typeof project.cavadalabs_can_manage === "boolean")
       ? projects.filter((project) => project.cavadalabs_can_manage === true)
@@ -128,6 +161,34 @@ vi.mock("../cavadalabs/keyContext", () => ({
     delete values.team_id;
     delete values.project_id;
     return values;
+  },
+  validateCavadaLabsKeyContextSelection: ({
+    companyId,
+    projectId,
+    projects,
+    required,
+    actionLabel,
+  }: {
+    companyId?: string | null;
+    projectId?: string | null;
+    projects: any[];
+    required: boolean;
+    actionLabel: "creating" | "saving";
+  }) => {
+    if (required && (!companyId || !projectId)) {
+      return `Select both Company and Project before ${actionLabel} a CavadaLabs key`;
+    }
+    if (!companyId && !projectId) {
+      return null;
+    }
+    if (!companyId || !projectId) {
+      return `Select both Company and Project before ${actionLabel} a CavadaLabs key`;
+    }
+    const project = projects.find((item) => item.project_id === projectId);
+    if (!project) {
+      return `Project ${projectId} is not available`;
+    }
+    return project.company_id === companyId ? null : "Selected Project belongs to a different Company";
   },
   useCavadaLabsKeyContextOptions: () => cavadalabsKeyContextOptions,
 }));
@@ -313,6 +374,8 @@ describe("KeyEditView", () => {
       },
     ];
     cavadalabsKeyContextOptions.errorDetail = null;
+    cavadalabsKeyContextOptions.contextKnown = true;
+    cavadalabsKeyContextOptions.isCavadaLabsProductContext = true;
   });
 
   it("should call onCancel when cancel button is clicked", async () => {
@@ -894,6 +957,8 @@ describe("KeyEditView", () => {
       cavadalabsKeyContextOptions.companies = [];
       cavadalabsKeyContextOptions.projects = [];
       cavadalabsKeyContextOptions.errorDetail = null;
+      cavadalabsKeyContextOptions.contextKnown = true;
+      cavadalabsKeyContextOptions.isCavadaLabsProductContext = false;
       const legacyKey = {
         ...MOCK_KEY_DATA,
         cavadalabs_company_id: undefined,
@@ -938,9 +1003,61 @@ describe("KeyEditView", () => {
       expect(screen.queryByText("Project")).not.toBeInTheDocument();
     });
 
+    it("should keep legacy Team ID hidden when CavadaLabs product context has empty options", async () => {
+      cavadalabsKeyContextOptions.companies = [];
+      cavadalabsKeyContextOptions.projects = [];
+      cavadalabsKeyContextOptions.errorDetail = null;
+      cavadalabsKeyContextOptions.contextKnown = true;
+      cavadalabsKeyContextOptions.isCavadaLabsProductContext = true;
+      const legacyKey = {
+        ...MOCK_KEY_DATA,
+        cavadalabs_company_id: undefined,
+        cavadalabs_project_id: undefined,
+        metadata: {},
+        team_id: "team-legacy",
+        organization_id: "org-legacy",
+      };
+
+      renderWithProviders(
+        <KeyEditView
+          keyData={legacyKey}
+          onCancel={() => {}}
+          onSubmit={async () => {}}
+          accessToken="test-token"
+          userID="test-user"
+          userRole="Admin"
+          premiumUser={false}
+          teams={[
+            {
+              team_id: "team-legacy",
+              team_alias: "Legacy Team",
+              models: [],
+              max_budget: null,
+              budget_duration: null,
+              tpm_limit: null,
+              rpm_limit: null,
+              organization_id: "org-legacy",
+              created_at: "2024-01-01T00:00:00Z",
+              keys: [],
+              members_with_roles: [],
+            } as any,
+          ]}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole("combobox", { name: "CavadaLabs Company" })).toBeInTheDocument();
+        expect(screen.getByRole("combobox", { name: "CavadaLabs Project" })).toBeInTheDocument();
+      });
+      expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
+      expect(screen.queryByText("Legacy Team (team-legacy)")).not.toBeInTheDocument();
+    });
+
     it("should show an actionable migration message when CavadaLabs key context schema is missing", async () => {
       cavadalabsKeyContextOptions.companies = [];
       cavadalabsKeyContextOptions.projects = [];
+      cavadalabsKeyContextOptions.contextKnown = true;
+      cavadalabsKeyContextOptions.isCavadaLabsProductContext = true;
       cavadalabsKeyContextOptions.errorDetail = {
         schema_status: "missing_schema",
         migration_status: "schema_missing",
@@ -995,6 +1112,58 @@ describe("KeyEditView", () => {
         expect(callArgs.organization_id).toBeUndefined();
         expect(callArgs.team_id).toBeUndefined();
         expect(callArgs.project_id).toBeUndefined();
+      });
+    });
+
+    it("should allow Project admins to save keys for their Project parent Company", async () => {
+      const onSubmitMock = vi.fn().mockResolvedValue(undefined);
+      cavadalabsKeyContextOptions.companies = [
+        {
+          company_id: "company-1",
+          legal_name: "Acme Srl",
+          litellm_organization_id: "org-1",
+          status: "active",
+          cavadalabs_can_manage: false,
+        },
+      ];
+      cavadalabsKeyContextOptions.projects = [
+        {
+          project_id: "project-1",
+          company_id: "company-1",
+          name: "Support",
+          litellm_team_id: "team-1",
+          status: "production",
+          allowed_models: ["gpt-4"],
+          cavadalabs_can_manage: true,
+        },
+      ];
+
+      renderWithProviders(
+        <KeyEditView
+          keyData={MOCK_KEY_DATA}
+          onCancel={() => {}}
+          onSubmit={onSubmitMock}
+          accessToken="test-token"
+          userID="test-user"
+          userRole="Internal User"
+          premiumUser={false}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /save changes/i })).toBeInTheDocument();
+      });
+      expect(screen.queryByText("Company or Project admin access required")).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+      await waitFor(() => {
+        expect(onSubmitMock).toHaveBeenCalled();
+        const callArgs = onSubmitMock.mock.calls[0][0];
+        expect(callArgs.cavadalabs_company_id).toBe("company-1");
+        expect(callArgs.cavadalabs_project_id).toBe("project-1");
+        expect(callArgs.organization_id).toBeUndefined();
+        expect(callArgs.team_id).toBeUndefined();
       });
     });
 
@@ -1126,6 +1295,98 @@ describe("KeyEditView", () => {
       });
       expect(screen.queryByText("Organization")).not.toBeInTheDocument();
       expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
+    });
+
+    it("should autoderive the sole manageable Company and Project before saving a legacy key", async () => {
+      const onSubmitMock = vi.fn().mockResolvedValue(undefined);
+      cavadalabsKeyContextOptions.companies = [
+        { company_id: "company-1", legal_name: "Acme Srl", litellm_organization_id: "org-1", status: "active" },
+      ];
+      cavadalabsKeyContextOptions.projects = [
+        {
+          project_id: "project-1",
+          company_id: "company-1",
+          name: "Support",
+          litellm_team_id: "team-1",
+          status: "production",
+          allowed_models: ["team-model-1"],
+        },
+      ];
+      const legacyKey = {
+        ...MOCK_KEY_DATA,
+        cavadalabs_company_id: undefined,
+        cavadalabs_project_id: undefined,
+        metadata: {},
+        organization_id: null,
+        team_id: null,
+        project_id: null,
+      };
+
+      renderWithProviders(
+        <KeyEditView
+          keyData={legacyKey}
+          onCancel={() => {}}
+          onSubmit={onSubmitMock}
+          accessToken="test-token"
+          userID="test-user"
+          userRole="Admin"
+          premiumUser={false}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /save changes/i })).toBeInTheDocument();
+      });
+
+      await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+      await waitFor(() => {
+        expect(onSubmitMock).toHaveBeenCalled();
+        const callArgs = onSubmitMock.mock.calls[0][0];
+        expect(callArgs.cavadalabs_company_id).toBe("company-1");
+        expect(callArgs.cavadalabs_project_id).toBe("project-1");
+        expect(callArgs.organization_id).toBeUndefined();
+        expect(callArgs.team_id).toBeUndefined();
+        expect(callArgs.project_id).toBeUndefined();
+      });
+    });
+
+    it("should block saving a legacy key when Company and Project are ambiguous", async () => {
+      const onSubmitMock = vi.fn().mockResolvedValue(undefined);
+      const legacyKey = {
+        ...MOCK_KEY_DATA,
+        cavadalabs_company_id: undefined,
+        cavadalabs_project_id: undefined,
+        metadata: {},
+        organization_id: null,
+        team_id: null,
+        project_id: null,
+      };
+
+      renderWithProviders(
+        <KeyEditView
+          keyData={legacyKey}
+          onCancel={() => {}}
+          onSubmit={onSubmitMock}
+          accessToken="test-token"
+          userID="test-user"
+          userRole="Admin"
+          premiumUser={false}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /save changes/i })).toBeInTheDocument();
+      });
+
+      await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+      await waitFor(() => {
+        expect(mockNotificationsManager.fromBackend).toHaveBeenCalledWith(
+          "Select both Company and Project before saving a CavadaLabs key",
+        );
+      });
+      expect(onSubmitMock).not.toHaveBeenCalled();
     });
 
     it("should block saving when compatibility company and project mappings disagree", async () => {

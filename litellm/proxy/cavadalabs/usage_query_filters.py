@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
+_API_KEY_HASH_METADATA_KEYS = ("user_api_key_hash", "api_key_hash", "user_api_key")
+_METADATA_PREFIXES = ((), ("cavadalabs",), ("spend_logs_metadata",))
+
 
 def metadata_scope_filters(logical_field: str, value: str) -> List[Dict[str, Any]]:
     if logical_field == "company_id":
@@ -30,6 +33,47 @@ def metadata_scope_filters(logical_field: str, value: str) -> List[Dict[str, Any
     return filters
 
 
+def _clean_filter_values(values: Union[str, List[str]]) -> List[str]:
+    if isinstance(values, list):
+        raw_values = values
+    else:
+        raw_values = [values]
+
+    cleaned_values: List[str] = []
+    seen_values: set[str] = set()
+    for value in raw_values:
+        if value is None:
+            continue
+        cleaned = value.strip() if isinstance(value, str) else str(value).strip()
+        if not cleaned or cleaned in seen_values:
+            continue
+        cleaned_values.append(cleaned)
+        seen_values.add(cleaned)
+    return cleaned_values
+
+
+def api_key_hash_scope_filters(
+    api_key_hashes: Union[str, List[str]],
+) -> List[Dict[str, Any]]:
+    cleaned_hashes = _clean_filter_values(api_key_hashes)
+    if not cleaned_hashes:
+        return []
+
+    filters: List[Dict[str, Any]] = [{"api_key": {"in": cleaned_hashes}}]
+    for api_key_hash in cleaned_hashes:
+        for prefix in _METADATA_PREFIXES:
+            for metadata_key in _API_KEY_HASH_METADATA_KEYS:
+                filters.append(
+                    {
+                        "metadata": {
+                            "path": [*prefix, metadata_key],
+                            "equals": api_key_hash,
+                        }
+                    }
+                )
+    return filters
+
+
 def metadata_scope_pair_filters(
     *,
     company_id: str,
@@ -52,6 +96,9 @@ def spend_log_repair_where(
     model: Optional[str],
     provider: Optional[str],
     api_key: Optional[Union[str, List[str]]],
+    status_filter: Optional[str] = None,
+    min_spend: Optional[float] = None,
+    max_spend: Optional[float] = None,
 ) -> Dict[str, Any]:
     conditions: List[Dict[str, Any]] = [{"OR": filters}]
     if model:
@@ -74,11 +121,18 @@ def spend_log_repair_where(
             }
         )
     if api_key:
-        if isinstance(api_key, list):
-            cleaned_keys = [item for item in api_key if item]
-            conditions.append({"api_key": {"in": cleaned_keys}})
-        else:
-            conditions.append({"api_key": api_key})
+        api_key_filters = api_key_hash_scope_filters(api_key)
+        if api_key_filters:
+            conditions.append({"OR": api_key_filters})
+    if status_filter:
+        conditions.append({"status": status_filter})
+    spend_filter: Dict[str, float] = {}
+    if min_spend is not None:
+        spend_filter["gte"] = min_spend
+    if max_spend is not None:
+        spend_filter["lte"] = max_spend
+    if spend_filter:
+        conditions.append({"spend": spend_filter})
     where: Dict[str, Any] = {"AND": conditions}
     if date_range is not None:
         where["startTime"] = date_range

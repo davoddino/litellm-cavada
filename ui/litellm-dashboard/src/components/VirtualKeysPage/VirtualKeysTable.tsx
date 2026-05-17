@@ -27,6 +27,7 @@ import {
 import { InfoCircleOutlined, SyncOutlined } from "@ant-design/icons";
 import { Button as AntButton, Popover, Skeleton, Tag, Tooltip, Typography } from "antd";
 import React, { useEffect, useDeferredValue, useMemo, useState } from "react";
+import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import { getModelDisplayName } from "../key_team_helpers/fetch_available_models_team_key";
 import { useFilterLogic } from "../key_team_helpers/filter_logic";
 import { PaginatedKeyAliasSelect } from "../KeyAliasSelect/PaginatedKeyAliasSelect/PaginatedKeyAliasSelect";
@@ -35,11 +36,14 @@ import FilterComponent, { FilterOption } from "../molecules/filter";
 import DefaultProxyAdminTag from "../common_components/DefaultProxyAdminTag";
 import KeyInfoView from "../templates/key_info_view";
 import {
+  deriveSingleCavadaLabsKeyContextSelection,
   findCavadaLabsCompanyForCompatibilityOrganization,
   findCavadaLabsProjectForCompatibilityTeam,
   getKeyCavadaLabsCompanyId,
   getKeyCavadaLabsProjectId,
+  useCavadaLabsKeyContextOptions,
 } from "../cavadalabs/keyContext";
+import { resolveCavadaLabsProductContext } from "../cavadalabs/productContext";
 
 interface VirtualKeysTableProps {
   teams: Team[] | null;
@@ -62,6 +66,35 @@ export function VirtualKeysTable({
   currentSort,
   showLiteLLMCompatibilityFields = false,
 }: VirtualKeysTableProps) {
+  const { accessToken } = useAuthorized();
+  const cavadalabsContextOptions = useCavadaLabsKeyContextOptions(accessToken);
+  const initialCavadaLabsProductContext = useMemo(
+    () => resolveCavadaLabsProductContext(cavadalabsContextOptions),
+    [cavadalabsContextOptions],
+  );
+  const defaultCavadaLabsKeyScope = useMemo(() => {
+    if (
+      !initialCavadaLabsProductContext.contextKnown ||
+      initialCavadaLabsProductContext.isLoading ||
+      !initialCavadaLabsProductContext.isCavadaLabsProductContext
+    ) {
+      return { companyId: null, projectId: null };
+    }
+
+    return deriveSingleCavadaLabsKeyContextSelection({
+      companyId: null,
+      projectId: null,
+      companies: cavadalabsContextOptions.companies,
+      projects: cavadalabsContextOptions.projects,
+    });
+  }, [cavadalabsContextOptions, initialCavadaLabsProductContext]);
+  const hasDefaultCavadaLabsKeyScope = Boolean(
+    defaultCavadaLabsKeyScope.companyId && defaultCavadaLabsKeyScope.projectId,
+  );
+  const keyListEnabled =
+    !accessToken ||
+    (initialCavadaLabsProductContext.contextKnown &&
+      (!initialCavadaLabsProductContext.isCavadaLabsProductContext || hasDefaultCavadaLabsKeyScope));
   const [selectedKey, setSelectedKey] = useState<KeyResponse | null>(null);
   const [sorting, setSorting] = React.useState<SortingState>(() => {
     if (currentSort) {
@@ -98,6 +131,9 @@ export function VirtualKeysTable({
     sortBy: sortBy || undefined,
     sortOrder: sortOrder || undefined,
     expand: "user",
+    cavadalabsCompanyID: defaultCavadaLabsKeyScope.companyId || undefined,
+    cavadalabsProjectID: defaultCavadaLabsKeyScope.projectId || undefined,
+    enabled: keyListEnabled,
   });
   const [expandedAccordions, setExpandedAccordions] = useState<Record<string, boolean>>({});
 
@@ -111,11 +147,13 @@ export function VirtualKeysTable({
     allOrganizations = [],
     allCompanies = [],
     allProjects = [],
+    cavadalabsProductContext,
     handleFilterChange,
     handleFilterReset,
   } = useFilterLogic({
     keys: keys?.keys || [],
     teams,
+    cavadalabsContextOptions,
   });
 
   // Defer the transition so the button stays in loading state until the table
@@ -139,9 +177,18 @@ export function VirtualKeysTable({
       ),
     [keys?.keys, allCompanies, allProjects],
   );
-  const hasCavadaLabsProductContext = allCompanies.length > 0 || allProjects.length > 0 || hasCavadaLabsKeyContext;
+  const resolvedCavadaLabsProductContext = cavadalabsProductContext ?? {
+    contextKnown: false,
+    isLoading: false,
+    isCavadaLabsProductContext: false,
+    showLiteLLMCompatibilityFields: false,
+  };
+  const hasCavadaLabsProductContext =
+    resolvedCavadaLabsProductContext.isCavadaLabsProductContext || hasCavadaLabsKeyContext;
   const showCavadaLabsProductFields = hasCavadaLabsProductContext;
-  const showLiteLLMCompatibilityColumns = showLiteLLMCompatibilityFields || !showCavadaLabsProductFields;
+  const showLiteLLMCompatibilityColumns =
+    !showCavadaLabsProductFields &&
+    (showLiteLLMCompatibilityFields || resolvedCavadaLabsProductContext.showLiteLLMCompatibilityFields);
 
   // Add a useEffect to call refresh when a key is created
   useEffect(() => {
@@ -873,6 +920,8 @@ export function VirtualKeysTable({
           onDelete={refetch}
           cavadalabsCompanies={allCompanies}
           cavadalabsProjects={allProjects}
+          isCavadaLabsProductContext={showCavadaLabsProductFields}
+          showLiteLLMCompatibilityFields={showLiteLLMCompatibilityColumns}
         />
       ) : (
         <div className="border-b py-4 flex-1 overflow-hidden">

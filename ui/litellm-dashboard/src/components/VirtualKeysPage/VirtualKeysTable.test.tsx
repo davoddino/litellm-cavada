@@ -1,5 +1,5 @@
 import { act, screen, waitFor, fireEvent } from "@testing-library/react";
-import { vi, it, expect, beforeEach, MockedFunction } from "vitest";
+import { vi, it, expect, beforeEach, describe, MockedFunction } from "vitest";
 import { renderWithProviders } from "../../../tests/test-utils";
 import { VirtualKeysTable } from "./VirtualKeysTable";
 import { KeyResponse, Team } from "../key_team_helpers/key_list";
@@ -7,6 +7,34 @@ import { Organization } from "../networking";
 import { KeysResponse, useKeys } from "@/app/(dashboard)/hooks/keys/useKeys";
 import { useFilterLogic } from "../key_team_helpers/filter_logic";
 import useTeams from "@/app/(dashboard)/hooks/useTeams";
+
+const { cavadalabsKeyContextOptions } = vi.hoisted(() => ({
+  cavadalabsKeyContextOptions: {
+    companies: [{ company_id: "company-1", legal_name: "Acme Srl", status: "active" }],
+    projects: [{ project_id: "project-1", company_id: "company-1", name: "Support", status: "production" }],
+    isLoading: false,
+    errorDetail: null as any,
+    contextKnown: true,
+    isCavadaLabsProductContext: true,
+  },
+}));
+
+vi.mock("@/app/(dashboard)/hooks/useAuthorized", () => ({
+  default: () => ({
+    accessToken: "test-token",
+    userId: "user-1",
+    userRole: "Internal User",
+    premiumUser: false,
+  }),
+}));
+
+vi.mock("../cavadalabs/keyContext", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../cavadalabs/keyContext")>();
+  return {
+    ...actual,
+    useCavadaLabsKeyContextOptions: () => cavadalabsKeyContextOptions,
+  };
+});
 
 // Mock network calls
 vi.mock("./networking", async (importOriginal) => {
@@ -101,6 +129,7 @@ const mockKey: KeyResponse = {
   config: {},
   user_id: "user-1",
   team_id: "team-1",
+  project_id: null,
   max_parallel_requests: 10,
   metadata: {},
   cavadalabs_company_id: "company-1",
@@ -165,6 +194,7 @@ const mockTeam: Team = {
   created_at: "2024-10-01T10:00:00Z",
   keys: [],
   members_with_roles: [],
+  spend: 0,
 };
 
 const mockOrganization: Organization = {
@@ -193,6 +223,14 @@ const mockUseTeams = useTeams as MockedFunction<typeof useTeams>;
 beforeEach(() => {
   // Reset mocks before each test
   vi.clearAllMocks();
+  cavadalabsKeyContextOptions.companies = [{ company_id: "company-1", legal_name: "Acme Srl", status: "active" }];
+  cavadalabsKeyContextOptions.projects = [
+    { project_id: "project-1", company_id: "company-1", name: "Support", status: "production" },
+  ];
+  cavadalabsKeyContextOptions.isLoading = false;
+  cavadalabsKeyContextOptions.errorDetail = null;
+  cavadalabsKeyContextOptions.contextKnown = true;
+  cavadalabsKeyContextOptions.isCavadaLabsProductContext = true;
 
   // Setup default mock implementations
   mockUseKeys.mockReturnValue({
@@ -211,6 +249,8 @@ beforeEach(() => {
     filters: {
       "Team ID": "team-1",
       "Organization ID": "org-1",
+      "Company ID": "",
+      "Project ID": "",
       "Key Alias": "Test Key Alias",
       "User ID": "user-1",
       "User Email": "user@example.com",
@@ -224,6 +264,12 @@ beforeEach(() => {
     allOrganizations: [mockOrganization],
     allCompanies: [{ company_id: "company-1", legal_name: "Acme Srl", status: "active" }],
     allProjects: [{ project_id: "project-1", company_id: "company-1", name: "Support", status: "production" }],
+    cavadalabsProductContext: {
+      contextKnown: true,
+      isLoading: false,
+      isCavadaLabsProductContext: true,
+      showLiteLLMCompatibilityFields: false,
+    },
     handleFilterChange: vi.fn(),
     handleFilterReset: vi.fn(),
   });
@@ -249,6 +295,71 @@ it("should render VirtualKeysTable component", () => {
   renderWithProviders(<VirtualKeysTable {...mockProps} />);
 
   expect(screen.getByText("Test Key Alias")).toBeInTheDocument();
+});
+
+it("should default key list to the sole CavadaLabs Company and Project scope", () => {
+  renderWithProviders(<VirtualKeysTable {...defaultMockProps} />);
+
+  expect(mockUseKeys).toHaveBeenCalledWith(
+    1,
+    50,
+    expect.objectContaining({
+      cavadalabsCompanyID: "company-1",
+      cavadalabsProjectID: "project-1",
+      enabled: true,
+    }),
+  );
+  const options = mockUseKeys.mock.calls[0][2];
+  expect(options).not.toHaveProperty("organizationID");
+  expect(options).not.toHaveProperty("teamID");
+});
+
+it("should wait for CavadaLabs context before listing keys", () => {
+  cavadalabsKeyContextOptions.companies = [];
+  cavadalabsKeyContextOptions.projects = [];
+  cavadalabsKeyContextOptions.isLoading = true;
+  cavadalabsKeyContextOptions.contextKnown = false;
+  cavadalabsKeyContextOptions.isCavadaLabsProductContext = true;
+
+  renderWithProviders(<VirtualKeysTable {...defaultMockProps} />);
+
+  expect(mockUseKeys).toHaveBeenCalledWith(
+    1,
+    50,
+    expect.objectContaining({
+      cavadalabsCompanyID: undefined,
+      cavadalabsProjectID: undefined,
+      enabled: false,
+    }),
+  );
+  const options = mockUseKeys.mock.calls[0][2];
+  expect(options).not.toHaveProperty("organizationID");
+  expect(options).not.toHaveProperty("teamID");
+});
+
+it("should not issue an unscoped key list when CavadaLabs scope is ambiguous", () => {
+  cavadalabsKeyContextOptions.companies = [{ company_id: "company-1", legal_name: "Acme Srl", status: "active" }];
+  cavadalabsKeyContextOptions.projects = [
+    { project_id: "project-1", company_id: "company-1", name: "Support", status: "production" },
+    { project_id: "project-2", company_id: "company-1", name: "Sales", status: "production" },
+  ];
+  cavadalabsKeyContextOptions.contextKnown = true;
+  cavadalabsKeyContextOptions.isCavadaLabsProductContext = true;
+
+  renderWithProviders(<VirtualKeysTable {...defaultMockProps} />);
+
+  expect(mockUseKeys).toHaveBeenCalledWith(
+    1,
+    50,
+    expect.objectContaining({
+      cavadalabsCompanyID: undefined,
+      cavadalabsProjectID: undefined,
+      enabled: false,
+    }),
+  );
+  const options = mockUseKeys.mock.calls[0][2];
+  expect(options).not.toHaveProperty("organizationID");
+  expect(options).not.toHaveProperty("teamID");
 });
 
 it("should display key information correctly", async () => {
@@ -288,6 +399,8 @@ it("should resolve Company and Project from internal compatibility mappings when
     filters: {
       "Team ID": "",
       "Organization ID": "",
+      "Company ID": "",
+      "Project ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
@@ -321,7 +434,6 @@ it("should resolve Company and Project from internal compatibility mappings when
   renderWithProviders(
     <VirtualKeysTable
       teams={[{ ...mockTeam, team_id: "team-compat", team_alias: "Compatibility Team" }]}
-      organizations={[]}
       onSortChange={vi.fn()}
       currentSort={{ sortBy: "created_at", sortOrder: "desc" }}
     />,
@@ -378,7 +490,7 @@ it("should show legacy Organization and Team readback when Cavada context is una
     handleFilterReset: vi.fn(),
   });
 
-  renderWithProviders(<VirtualKeysTable {...defaultMockProps} />);
+  renderWithProviders(<VirtualKeysTable {...defaultMockProps} showLiteLLMCompatibilityFields />);
 
   await waitFor(() => {
     expect(screen.getByText("Organization")).toBeInTheDocument();
@@ -482,14 +594,19 @@ it("should show 'No keys found' message when filteredKeys is empty", () => {
     filters: {
       "Team ID": "",
       "Organization ID": "",
+      "Company ID": "",
+      "Project ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
       "Sort Order": "desc",
     },
     filteredKeys: [],
+    filteredTotalCount: null,
     allTeams: [mockTeam],
     allOrganizations: [mockOrganization],
+    allCompanies: [],
+    allProjects: [],
     handleFilterChange: vi.fn(),
     handleFilterReset: vi.fn(),
   });
@@ -519,14 +636,19 @@ it("should handle models with more than 3 entries to trigger expansion UI", () =
     filters: {
       "Team ID": "",
       "Organization ID": "",
+      "Company ID": "",
+      "Project ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
       "Sort Order": "desc",
     },
     filteredKeys: [keyWithManyModels],
+    filteredTotalCount: null,
     allTeams: [mockTeam],
     allOrganizations: [mockOrganization],
+    allCompanies: [],
+    allProjects: [],
     handleFilterChange: vi.fn(),
     handleFilterReset: vi.fn(),
   });
@@ -572,7 +694,49 @@ it("should render table headers correctly", () => {
   expect(screen.queryByText("Team")).not.toBeInTheDocument();
 });
 
-it("should preserve Team column only for explicit LiteLLM compatibility mode", () => {
+it("should preserve Organization and Team columns only for explicit LiteLLM compatibility mode outside Cavada", () => {
+  cavadalabsKeyContextOptions.companies = [];
+  cavadalabsKeyContextOptions.projects = [];
+  cavadalabsKeyContextOptions.isCavadaLabsProductContext = false;
+  const legacyKey = {
+    ...mockKey,
+    cavadalabs_company_id: undefined,
+    cavadalabs_project_id: undefined,
+    metadata: {},
+    organization_id: "org-1",
+    team_id: "team-1",
+  };
+  mockUseKeys.mockReturnValue({
+    data: {
+      keys: [legacyKey],
+      total_count: 1,
+      current_page: 1,
+      total_pages: 1,
+    } as KeysResponse,
+    isPending: false,
+    isFetching: false,
+    refetch: vi.fn(),
+  } as any);
+  mockUseFilterLogic.mockReturnValue({
+    filters: {
+      "Team ID": "",
+      "Organization ID": "",
+      "Company ID": "",
+      "Project ID": "",
+      "Key Alias": "",
+      "User ID": "",
+      "Sort By": "created_at",
+      "Sort Order": "desc",
+    },
+    filteredKeys: [legacyKey],
+    filteredTotalCount: null,
+    allTeams: [mockTeam],
+    allOrganizations: [mockOrganization],
+    allCompanies: [],
+    allProjects: [],
+    handleFilterChange: vi.fn(),
+    handleFilterReset: vi.fn(),
+  });
   const mockProps = {
     teams: [mockTeam],
     organizations: [mockOrganization],
@@ -586,8 +750,36 @@ it("should preserve Team column only for explicit LiteLLM compatibility mode", (
 
   renderWithProviders(<VirtualKeysTable {...mockProps} />);
 
+  expect(screen.getByText("Organization")).toBeInTheDocument();
   expect(screen.getByText("Team")).toBeInTheDocument();
+  expect(screen.getByText("Test Organization")).toBeInTheDocument();
   expect(screen.getByText("Test Team")).toBeInTheDocument();
+  expect(screen.queryByText("Company")).not.toBeInTheDocument();
+  expect(screen.queryByText("Project")).not.toBeInTheDocument();
+});
+
+it("should keep Organization and Team hidden when compatibility mode is requested in Cavada context", () => {
+  const mockProps = {
+    teams: [mockTeam],
+    organizations: [mockOrganization],
+    onSortChange: vi.fn(),
+    currentSort: {
+      sortBy: "created_at",
+      sortOrder: "desc" as const,
+    },
+    showLiteLLMCompatibilityFields: true,
+  };
+
+  renderWithProviders(<VirtualKeysTable {...mockProps} />);
+
+  expect(screen.getByText("Company")).toBeInTheDocument();
+  expect(screen.getByText("Project")).toBeInTheDocument();
+  expect(screen.getByText("Acme Srl")).toBeInTheDocument();
+  expect(screen.getByText("Support")).toBeInTheDocument();
+  expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+  expect(screen.queryByText("Test Organization")).not.toBeInTheDocument();
+  expect(screen.queryByText("Team")).not.toBeInTheDocument();
+  expect(screen.queryByText("Test Team")).not.toBeInTheDocument();
 });
 
 it("should expose Company and Project filters without Organization in Virtual Keys", async () => {
@@ -612,6 +804,44 @@ it("should expose Company and Project filters without Organization in Virtual Ke
     expect(screen.getAllByText("Project")).toHaveLength(2);
   });
   expect(screen.queryByText("Organization ID")).not.toBeInTheDocument();
+  expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
+});
+
+it("should keep Organization and Team hidden for empty CavadaLabs product context", () => {
+  mockUseFilterLogic.mockReturnValue({
+    filters: {
+      "Team ID": "",
+      "Organization ID": "",
+      "Company ID": "",
+      "Project ID": "",
+      "Key Alias": "",
+      "User ID": "",
+      "Sort By": "created_at",
+      "Sort Order": "desc",
+    },
+    filteredKeys: [],
+    filteredTotalCount: null,
+    allTeams: [mockTeam],
+    allOrganizations: [mockOrganization],
+    allCompanies: [],
+    allProjects: [],
+    cavadalabsProductContext: {
+      contextKnown: true,
+      isLoading: false,
+      isCavadaLabsProductContext: true,
+      showLiteLLMCompatibilityFields: false,
+    },
+    handleFilterChange: vi.fn(),
+    handleFilterReset: vi.fn(),
+  });
+
+  renderWithProviders(<VirtualKeysTable {...defaultMockProps} />);
+
+  expect(screen.getByText("Company")).toBeInTheDocument();
+  expect(screen.getByText("Project")).toBeInTheDocument();
+  expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+  expect(screen.queryByText("Organization ID")).not.toBeInTheDocument();
+  expect(screen.queryByText("Team")).not.toBeInTheDocument();
   expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
 });
 
@@ -693,6 +923,71 @@ it("should open KeyInfoView when clicking on a key ID button", async () => {
   expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
 });
 
+it("should keep legacy Organization hidden in key detail when Cavada product context is explicit", async () => {
+  const legacyKey = {
+    ...mockKey,
+    cavadalabs_company_id: undefined,
+    cavadalabs_project_id: undefined,
+    metadata: {},
+    organization_id: "org-legacy",
+    team_id: "team-legacy",
+  };
+
+  mockUseKeys.mockReturnValue({
+    data: {
+      keys: [legacyKey],
+      total_count: 1,
+      current_page: 1,
+      total_pages: 1,
+    } as KeysResponse,
+    isPending: false,
+    isFetching: false,
+    refetch: vi.fn(),
+  } as any);
+  mockUseFilterLogic.mockReturnValue({
+    filters: {
+      "Team ID": "",
+      "Organization ID": "",
+      "Company ID": "",
+      "Project ID": "",
+      "Key Alias": "",
+      "User ID": "",
+      "Sort By": "created_at",
+      "Sort Order": "desc",
+    },
+    filteredKeys: [legacyKey],
+    filteredTotalCount: null,
+    allTeams: [{ ...mockTeam, team_id: "team-legacy", team_alias: "Legacy Team" }],
+    allOrganizations: [{ ...mockOrganization, organization_id: "org-legacy", organization_alias: "Legacy Org" }],
+    allCompanies: [],
+    allProjects: [],
+    cavadalabsProductContext: {
+      contextKnown: true,
+      isLoading: false,
+      isCavadaLabsProductContext: true,
+      showLiteLLMCompatibilityFields: false,
+    },
+    handleFilterChange: vi.fn(),
+    handleFilterReset: vi.fn(),
+  });
+
+  renderWithProviders(<VirtualKeysTable {...defaultMockProps} showLiteLLMCompatibilityFields />);
+
+  fireEvent.click(screen.getByText("sk-1234567890abcdef"));
+
+  await waitFor(() => {
+    expect(screen.getByText("Back to Keys")).toBeInTheDocument();
+    expect(screen.getByText("Company")).toBeInTheDocument();
+    expect(screen.getByText("Project")).toBeInTheDocument();
+  });
+  expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+  expect(screen.queryByText("org-legacy")).not.toBeInTheDocument();
+  expect(screen.queryByText("Legacy Org")).not.toBeInTheDocument();
+  expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
+  expect(screen.queryByText("team-legacy")).not.toBeInTheDocument();
+  expect(screen.queryByText("Legacy Team")).not.toBeInTheDocument();
+});
+
 it("should display 'Default Proxy Admin' for user_id when value is 'default_user_id'", async () => {
   const keyWithDefaultUserId = {
     ...mockKey,
@@ -705,14 +1000,19 @@ it("should display 'Default Proxy Admin' for user_id when value is 'default_user
     filters: {
       "Team ID": "",
       "Organization ID": "",
+      "Company ID": "",
+      "Project ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
       "Sort Order": "desc",
     },
     filteredKeys: [keyWithDefaultUserId],
+    filteredTotalCount: null,
     allTeams: [mockTeam],
     allOrganizations: [mockOrganization],
+    allCompanies: [],
+    allProjects: [],
     handleFilterChange: vi.fn(),
     handleFilterReset: vi.fn(),
   });
@@ -744,14 +1044,19 @@ it("should display 'Default Proxy Admin' for created_by when value is 'default_u
     filters: {
       "Team ID": "",
       "Organization ID": "",
+      "Company ID": "",
+      "Project ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
       "Sort Order": "desc",
     },
     filteredKeys: [keyWithDefaultCreatedBy],
+    filteredTotalCount: null,
     allTeams: [mockTeam],
     allOrganizations: [mockOrganization],
+    allCompanies: [],
+    allProjects: [],
     handleFilterChange: vi.fn(),
     handleFilterReset: vi.fn(),
   });
@@ -790,14 +1095,19 @@ it("should display created_by_user email in 'Created By' column when available",
     filters: {
       "Team ID": "",
       "Organization ID": "",
+      "Company ID": "",
+      "Project ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
       "Sort Order": "desc",
     },
     filteredKeys: [keyWithCreatedByUser],
+    filteredTotalCount: null,
     allTeams: [mockTeam],
     allOrganizations: [mockOrganization],
+    allCompanies: [],
+    allProjects: [],
     handleFilterChange: vi.fn(),
     handleFilterReset: vi.fn(),
   });
@@ -834,14 +1144,19 @@ it("should display created_by_user alias over email when both available", async 
     filters: {
       "Team ID": "",
       "Organization ID": "",
+      "Company ID": "",
+      "Project ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
       "Sort Order": "desc",
     },
     filteredKeys: [keyWithCreatedByUser],
+    filteredTotalCount: null,
     allTeams: [mockTeam],
     allOrganizations: [mockOrganization],
+    allCompanies: [],
+    allProjects: [],
     handleFilterChange: vi.fn(),
     handleFilterReset: vi.fn(),
   });
@@ -873,14 +1188,19 @@ it("should render table without crashing when models is null", async () => {
     filters: {
       "Team ID": "",
       "Organization ID": "",
+      "Company ID": "",
+      "Project ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
       "Sort Order": "desc",
     },
     filteredKeys: [keyWithNullModels],
+    filteredTotalCount: null,
     allTeams: [mockTeam],
     allOrganizations: [mockOrganization],
+    allCompanies: [],
+    allProjects: [],
     handleFilterChange: vi.fn(),
     handleFilterReset: vi.fn(),
   });
@@ -913,14 +1233,19 @@ it("should render table without crashing when models is undefined", async () => 
     filters: {
       "Team ID": "",
       "Organization ID": "",
+      "Company ID": "",
+      "Project ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
       "Sort Order": "desc",
     },
     filteredKeys: [keyWithUndefinedModels],
+    filteredTotalCount: null,
     allTeams: [mockTeam],
     allOrganizations: [mockOrganization],
+    allCompanies: [],
+    allProjects: [],
     handleFilterChange: vi.fn(),
     handleFilterReset: vi.fn(),
   });
@@ -988,14 +1313,19 @@ it("should display 'Unknown' for last_active when value is null", async () => {
     filters: {
       "Team ID": "",
       "Organization ID": "",
+      "Company ID": "",
+      "Project ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
       "Sort Order": "desc",
     },
     filteredKeys: [keyWithNullLastActive],
+    filteredTotalCount: null,
     allTeams: [mockTeam],
     allOrganizations: [mockOrganization],
+    allCompanies: [],
+    allProjects: [],
     handleFilterChange: vi.fn(),
     handleFilterReset: vi.fn(),
   });
@@ -1042,6 +1372,8 @@ describe("pagination display – total count and page count", () => {
       filters: {
         "Team ID": "",
         "Organization ID": "",
+        "Company ID": "",
+        "Project ID": "",
         "Key Alias": "",
         "User ID": "",
         "Sort By": "created_at",
@@ -1051,6 +1383,8 @@ describe("pagination display – total count and page count", () => {
       filteredTotalCount: null,
       allTeams: [mockTeam],
       allOrganizations: [mockOrganization],
+      allCompanies: [],
+      allProjects: [],
       handleFilterChange: vi.fn(),
       handleFilterReset: vi.fn(),
     });
@@ -1080,6 +1414,8 @@ describe("pagination display – total count and page count", () => {
       filters: {
         "Team ID": "",
         "Organization ID": "",
+        "Company ID": "",
+        "Project ID": "",
         "Key Alias": "aaaaa",
         "User ID": "",
         "Sort By": "created_at",
@@ -1089,6 +1425,8 @@ describe("pagination display – total count and page count", () => {
       filteredTotalCount: 1,
       allTeams: [mockTeam],
       allOrganizations: [mockOrganization],
+      allCompanies: [],
+      allProjects: [],
       handleFilterChange: vi.fn(),
       handleFilterReset: vi.fn(),
     });
@@ -1118,6 +1456,8 @@ describe("pagination display – total count and page count", () => {
       filters: {
         "Team ID": "",
         "Organization ID": "",
+        "Company ID": "",
+        "Project ID": "",
         "Key Alias": "aaaaa",
         "User ID": "",
         "Sort By": "created_at",
@@ -1127,6 +1467,8 @@ describe("pagination display – total count and page count", () => {
       filteredTotalCount: 1,
       allTeams: [mockTeam],
       allOrganizations: [mockOrganization],
+      allCompanies: [],
+      allProjects: [],
       handleFilterChange: vi.fn(),
       handleFilterReset: vi.fn(),
     });
@@ -1222,6 +1564,8 @@ describe("Status column reflects key.blocked / scim_blocked metadata", () => {
       filters: {
         "Team ID": "",
         "Organization ID": "",
+        "Company ID": "",
+        "Project ID": "",
         "Key Alias": "",
         "User ID": "",
         "Sort By": "created_at",
@@ -1231,6 +1575,8 @@ describe("Status column reflects key.blocked / scim_blocked metadata", () => {
       filteredTotalCount: null,
       allTeams: [mockTeam],
       allOrganizations: [mockOrganization],
+      allCompanies: [],
+      allProjects: [],
       handleFilterChange: vi.fn(),
       handleFilterReset: vi.fn(),
     });
@@ -1247,6 +1593,8 @@ describe("Status column reflects key.blocked / scim_blocked metadata", () => {
       filters: {
         "Team ID": "",
         "Organization ID": "",
+        "Company ID": "",
+        "Project ID": "",
         "Key Alias": "",
         "User ID": "",
         "Sort By": "created_at",
@@ -1256,6 +1604,8 @@ describe("Status column reflects key.blocked / scim_blocked metadata", () => {
       filteredTotalCount: null,
       allTeams: [mockTeam],
       allOrganizations: [mockOrganization],
+      allCompanies: [],
+      allProjects: [],
       handleFilterChange: vi.fn(),
       handleFilterReset: vi.fn(),
     });
@@ -1273,6 +1623,8 @@ describe("Status column reflects key.blocked / scim_blocked metadata", () => {
       filters: {
         "Team ID": "",
         "Organization ID": "",
+        "Company ID": "",
+        "Project ID": "",
         "Key Alias": "",
         "User ID": "",
         "Sort By": "created_at",
@@ -1282,6 +1634,8 @@ describe("Status column reflects key.blocked / scim_blocked metadata", () => {
       filteredTotalCount: null,
       allTeams: [mockTeam],
       allOrganizations: [mockOrganization],
+      allCompanies: [],
+      allProjects: [],
       handleFilterChange: vi.fn(),
       handleFilterReset: vi.fn(),
     });

@@ -25,6 +25,7 @@ import {
   normalizeTeamsFilterUpdate,
 } from "@/app/(dashboard)/teams/components/teamFilterScope";
 import { useCavadaLabsKeyContextOptions } from "@/components/cavadalabs/keyContext";
+import { resolveCavadaLabsProductContext } from "@/components/cavadalabs/productContext";
 import { buildUiPath } from "@/utils/uiRoutes";
 
 interface TeamProps {
@@ -76,7 +77,8 @@ const TeamsView: React.FC<TeamProps> = ({
     sort_by: "created_at",
     sort_order: "desc",
   });
-  const { companies: cavadalabsCompanies, projects: cavadalabsProjects } = useCavadaLabsKeyContextOptions(accessToken);
+  const cavadalabsContext = useCavadaLabsKeyContextOptions(accessToken);
+  const { companies: cavadalabsCompanies, projects: cavadalabsProjects } = cavadalabsContext;
 
   const [form] = Form.useForm();
   const [memberForm] = Form.useForm();
@@ -94,8 +96,15 @@ const TeamsView: React.FC<TeamProps> = ({
 
   const [loggingSettings, setLoggingSettings] = useState<any[]>([]);
   const [modelAliases, setModelAliases] = useState<{ [key: string]: string }>({});
-  const { lastRefreshed, onRefreshClick: handleRefreshClick } = useFetchTeams({ currentOrg, setTeams });
-  const isCavadaLabsProductContext = cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
+  const cavadalabsProductContext = resolveCavadaLabsProductContext(cavadalabsContext);
+  const isCavadaLabsProductContext =
+    cavadalabsProductContext.isCavadaLabsProductContext ||
+    (Boolean(accessToken) && !cavadalabsProductContext.showLiteLLMCompatibilityFields);
+  const { lastRefreshed, onRefreshClick: handleRefreshClick } = useFetchTeams({
+    currentOrg,
+    setTeams,
+    isCavadaLabsProductContext,
+  });
   const canManageCavadaLabsProjects =
     isCavadaLabsProductContext &&
     (cavadalabsCompanies.some((company) => company.cavadalabs_can_manage === true) ||
@@ -427,6 +436,7 @@ const TeamsView: React.FC<TeamProps> = ({
               currentOrg={currentOrg}
               organizations={organizations}
               cavadalabsCompanies={cavadalabsCompanies}
+              isCavadaLabsProductContext={isCavadaLabsProductContext}
               teams={teams}
               setTeams={setTeams}
               modelAliases={modelAliases}

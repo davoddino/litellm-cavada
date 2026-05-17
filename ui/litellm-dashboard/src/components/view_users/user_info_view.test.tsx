@@ -31,6 +31,12 @@ const MOCK_USER_DATA_NO_TEAMS = {
   teams: [],
 };
 
+const MOCK_USER_DATA_CAVADA = {
+  ...MOCK_USER_DATA,
+  cavadalabs_company_memberships: [{ company_id: "company-1", role: "viewer" }],
+  cavadalabs_project_memberships: [{ project_id: "project-1", role: "project_admin" }],
+};
+
 vi.mock("../networking", () => {
   return {
     userGetInfoV2: (...args: any[]) => mockUserGetInfoV2(...args),
@@ -103,6 +109,90 @@ describe("UserInfoView", () => {
       expect(screen.getByText("Alpha Team")).toBeInTheDocument();
       expect(screen.getByText("Beta Team")).toBeInTheDocument();
     });
+  });
+
+  it("should render CavadaLabs Company and Project memberships instead of Teams in product context", async () => {
+    mockUserGetInfoV2.mockResolvedValue(MOCK_USER_DATA_CAVADA);
+
+    render(
+      <UserInfoView
+        {...defaultProps}
+        userRole="proxy_admin"
+        cavadalabsCompanies={[{ company_id: "company-1", legal_name: "ACME Spa" }]}
+        cavadalabsProjects={[{ project_id: "project-1", company_id: "company-1", name: "Support" }]}
+        showLiteLLMCompatibilityFields={false}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Company and Project Access")).toBeInTheDocument();
+    });
+    expect(screen.getByText("ACME Spa (company-1)")).toBeInTheDocument();
+    expect(screen.getByText("Support (project-1)")).toBeInTheDocument();
+    expect(screen.getByText("Viewer")).toBeInTheDocument();
+    expect(screen.getByText("Project Admin")).toBeInTheDocument();
+    expect(screen.queryByText("Teams")).not.toBeInTheDocument();
+    expect(screen.queryByText("Add Team")).not.toBeInTheDocument();
+    expect(screen.queryByText("Alpha Team")).not.toBeInTheDocument();
+    expect(mockTeamInfoCall).not.toHaveBeenCalled();
+  });
+
+  it("should keep Teams hidden for empty CavadaLabs product context", async () => {
+    render(
+      <UserInfoView
+        userId="user-123"
+        onClose={vi.fn()}
+        accessToken="test-token"
+        userRole="proxy_admin"
+        possibleUIRoles={null}
+        cavadalabsCompanies={[]}
+        cavadalabsProjects={[]}
+        showLiteLLMCompatibilityFields={false}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Company and Project Access")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("No Company or Project access")).toBeInTheDocument();
+    expect(screen.queryByText("Teams")).not.toBeInTheDocument();
+    expect(screen.queryByText("Add Team")).not.toBeInTheDocument();
+    expect(mockTeamInfoCall).not.toHaveBeenCalled();
+  });
+
+  it("should close legacy Team modals when switching into CavadaLabs product context", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <UserInfoView {...defaultProps} userRole="proxy_admin" showLiteLLMCompatibilityFields={true} />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Add Team")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText("Add Team"));
+
+    await waitFor(() => {
+      expect(screen.getByText("Add User to Team")).toBeInTheDocument();
+    });
+
+    rerender(
+      <UserInfoView
+        {...defaultProps}
+        userRole="proxy_admin"
+        cavadalabsCompanies={[]}
+        cavadalabsProjects={[]}
+        showLiteLLMCompatibilityFields={false}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Company and Project Access")).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText("Add User to Team")).not.toBeInTheDocument();
+    expect(screen.queryByText("Add Team")).not.toBeInTheDocument();
   });
 
   it("should show 'No teams' when user has no teams", async () => {
@@ -209,11 +299,10 @@ describe("UserInfoView", () => {
     await user.click(deleteConfirmButton);
 
     await waitFor(() => {
-      expect(mockTeamMemberDeleteCall).toHaveBeenCalledWith(
-        "test-token",
-        "team-1",
-        { role: "user", user_id: "user-123" }
-      );
+      expect(mockTeamMemberDeleteCall).toHaveBeenCalledWith("test-token", "team-1", {
+        role: "user",
+        user_id: "user-123",
+      });
     });
   });
 });

@@ -316,6 +316,8 @@ class CavadaLabsRuntimeOperations(
             "cavadalabs_project_id": context.project.project_id,
             "cavadalabs_chatbot_id": context.chatbot.chatbot_id,
             "cavadalabs_web_token_id": context.web_token.web_token_id,
+            "cavadalabs_metadata_authenticated": True,
+            "cavadalabs_metadata_source": "chatbot_runtime",
             "cavadalabs_policy_id": primary_policy.policy_id,
             "cavadalabs_provider": primary_policy.provider,
             "cavadalabs": {

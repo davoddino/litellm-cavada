@@ -4,6 +4,8 @@ import {
   cavadalabsMissingSchemaDiagnosticsFromDetail,
   cavadalabsMissingSchemaDetailLines,
   cavadalabsRequest,
+  getCavadaLabsDailyActivity,
+  getCavadaLabsUsageDiagnostics,
   isCavadaLabsMissingSchemaDetail,
 } from "./api";
 
@@ -87,5 +89,83 @@ describe("cavadalabs api client", () => {
         migration_command: "uv run prisma migrate deploy",
       }),
     );
+  });
+
+  it("should call Project daily activity with canonical Project paging filters", async () => {
+    const mockFetch = vi.fn().mockResolvedValue(
+      jsonResponse({
+        results: [],
+        metadata: {
+          total_spend: 0,
+          total_prompt_tokens: 0,
+          total_completion_tokens: 0,
+          total_tokens: 0,
+          total_api_requests: 0,
+          total_successful_requests: 0,
+          total_failed_requests: 0,
+          page: 2,
+          total_pages: 3,
+          has_more: true,
+        },
+      }),
+    );
+    global.fetch = mockFetch as any;
+
+    await getCavadaLabsDailyActivity("token-1", {
+      entityType: "project",
+      entityIds: ["project-1"],
+      startDate: "2026-05-01",
+      endDate: "2026-05-31",
+      page: 2,
+      pageSize: 30,
+      provider: "cavadalabs",
+    });
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [url] = mockFetch.mock.calls[0];
+    const requestUrl = new URL(String(url));
+    expect(requestUrl.pathname).toBe("/cavadalabs/projects/daily/activity");
+    expect(requestUrl.searchParams.get("project_ids")).toBe("project-1");
+    expect(requestUrl.searchParams.get("company_ids")).toBeNull();
+    expect(requestUrl.searchParams.get("page")).toBe("2");
+    expect(requestUrl.searchParams.get("page_size")).toBe("30");
+    expect(requestUrl.searchParams.get("provider")).toBe("cavadalabs");
+  });
+
+  it("should call Project usage diagnostics with the same filters as daily usage", async () => {
+    const mockFetch = vi.fn().mockResolvedValue(
+      jsonResponse({
+        diagnostics: [],
+        migration_name: "20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash",
+        migration_command: "uv run prisma migrate deploy",
+      }),
+    );
+    global.fetch = mockFetch as any;
+
+    await getCavadaLabsUsageDiagnostics("token-1", {
+      entityType: "project",
+      entityIds: ["project-1"],
+      startDate: "2026-05-01",
+      endDate: "2026-05-31",
+      provider: "cavadalabs",
+      model: "cavadalabs/qwen3-32b",
+      status: "error",
+      apiKey: "hashed-key",
+      minSpend: 10,
+      maxSpend: 25,
+    });
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    const [url] = mockFetch.mock.calls[0];
+    const requestUrl = new URL(String(url));
+    expect(requestUrl.pathname).toBe("/cavadalabs/projects/usage/diagnostics");
+    expect(requestUrl.searchParams.get("project_ids")).toBe("project-1");
+    expect(requestUrl.searchParams.get("company_ids")).toBeNull();
+    expect(requestUrl.searchParams.get("provider")).toBe("cavadalabs");
+    expect(requestUrl.searchParams.get("model")).toBe("cavadalabs/qwen3-32b");
+    expect(requestUrl.searchParams.get("status")).toBe("error");
+    expect(requestUrl.searchParams.get("api_key")).toBe("hashed-key");
+    expect(requestUrl.searchParams.get("min_spend")).toBe("10");
+    expect(requestUrl.searchParams.get("max_spend")).toBe("25");
   });
 });

@@ -429,6 +429,91 @@ async def test_generate_key_request_preserves_chatbot_metadata_for_usage_attribu
 
 
 @pytest.mark.asyncio
+async def test_generate_key_request_autoderives_single_native_project_admin_scope():
+    prisma_client = _prisma_client()
+    prisma_client.db.cavadalabs_projectmembertable.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                project_id="project-1",
+                user_id="user-1",
+                role="project_admin",
+            )
+        ]
+    )
+    prisma_client.db.cavadalabs_projectmembertable.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            project_id="project-1",
+            user_id="user-1",
+            role="project_admin",
+        )
+    )
+    prisma_client.db.cavadalabs_projecttable.find_many = AsyncMock(
+        return_value=[_project()]
+    )
+    data = GenerateKeyRequest(
+        models=["gpt-4"],
+        metadata={"app": "support-api"},
+    )
+
+    context_was_requested = await _normalize_cavadalabs_generate_key_request(
+        data=data,
+        prisma_client=prisma_client,
+        user_api_key_dict=_internal_user(),
+    )
+
+    assert context_was_requested is True
+    assert data.organization_id == "org-company-1"
+    assert data.team_id == "team-project-1"
+    assert data.project_id is None
+    assert data.cavadalabs_company_id == "company-1"
+    assert data.cavadalabs_project_id == "project-1"
+    assert data.metadata["app"] == "support-api"
+    assert data.metadata["cavadalabs_company_id"] == "company-1"
+    assert data.metadata["cavadalabs_project_id"] == "project-1"
+    assert data.metadata["spend_logs_metadata"] == {
+        "cavadalabs_company_id": "company-1",
+        "cavadalabs_project_id": "project-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_generate_key_request_keeps_legacy_path_when_scope_is_ambiguous():
+    prisma_client = _prisma_client()
+    prisma_client.db.cavadalabs_projectmembertable.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                project_id="project-1",
+                user_id="user-1",
+                role="project_admin",
+            ),
+            SimpleNamespace(
+                project_id="project-2",
+                user_id="user-1",
+                role="project_admin",
+            ),
+        ]
+    )
+    prisma_client.db.cavadalabs_projecttable.find_many = AsyncMock(
+        return_value=[
+            _project(project_id="project-1"),
+            _project(project_id="project-2", company_id="company-2"),
+        ]
+    )
+    data = GenerateKeyRequest(models=["gpt-4"])
+
+    context_was_requested = await _normalize_cavadalabs_generate_key_request(
+        data=data,
+        prisma_client=prisma_client,
+        user_api_key_dict=_internal_user(),
+    )
+
+    assert context_was_requested is False
+    assert data.organization_id is None
+    assert data.team_id is None
+    assert data.metadata == {}
+
+
+@pytest.mark.asyncio
 async def test_generate_key_request_rejects_chatbot_without_cavadalabs_context():
     prisma_client = _project_admin_prisma_client()
     data = GenerateKeyRequest(
@@ -1218,6 +1303,53 @@ async def test_prepare_key_update_data_assigns_cavadalabs_context_to_legacy_mapp
         "company_id": "company-1",
         "project_id": "project-1",
     }
+    assert metadata["spend_logs_metadata"] == {
+        "cavadalabs_company_id": "company-1",
+        "cavadalabs_project_id": "project-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_prepare_key_update_data_autoderives_single_native_project_admin_scope_for_legacy_key():
+    prisma_client = _prisma_client()
+    prisma_client.db.cavadalabs_projectmembertable.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                project_id="project-1",
+                user_id="user-1",
+                role="project_admin",
+            )
+        ]
+    )
+    prisma_client.db.cavadalabs_projectmembertable.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            project_id="project-1",
+            user_id="user-1",
+            role="project_admin",
+        )
+    )
+    prisma_client.db.cavadalabs_projecttable.find_many = AsyncMock(
+        return_value=[_project()]
+    )
+
+    update_data = await prepare_key_update_data(
+        data=UpdateKeyRequest(key="hashed-token", metadata={"app": "updated"}),
+        existing_key_row=_cavadalabs_key(
+            user_id="owner-user",
+            metadata={"app": "legacy"},
+            team_id=None,
+            organization_id=None,
+        ),
+        user_api_key_dict=_internal_user(),
+        prisma_client=prisma_client,
+    )
+
+    assert update_data["organization_id"] == "org-company-1"
+    assert update_data["team_id"] == "team-project-1"
+    metadata = update_data["metadata"]
+    assert metadata["app"] == "updated"
+    assert metadata["cavadalabs_company_id"] == "company-1"
+    assert metadata["cavadalabs_project_id"] == "project-1"
     assert metadata["spend_logs_metadata"] == {
         "cavadalabs_company_id": "company-1",
         "cavadalabs_project_id": "project-1",

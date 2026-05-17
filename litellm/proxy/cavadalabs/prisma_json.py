@@ -87,6 +87,9 @@ def parse_prisma_json_fields(
     parsed_data = dict(data)
     for field_name in target_fields:
         value = parsed_data.get(field_name)
+        if isinstance(value, Json):
+            parsed_data[field_name] = value.data
+            continue
         if not isinstance(value, str):
             continue
         try:

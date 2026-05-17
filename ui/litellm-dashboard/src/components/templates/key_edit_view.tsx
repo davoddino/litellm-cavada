@@ -12,6 +12,7 @@ import KeyLifecycleSettings from "../common_components/KeyLifecycleSettings";
 import PassThroughRoutesSelector from "../common_components/PassThroughRoutesSelector";
 import RateLimitTypeFormItem from "../common_components/RateLimitTypeFormItem";
 import {
+  deriveSingleCavadaLabsKeyContextSelection,
   filterManageableCavadaLabsCompanies,
   filterManageableCavadaLabsProjects,
   findCavadaLabsCompanyForCompatibilityOrganization,
@@ -21,8 +22,11 @@ import {
   resolveCavadaLabsProjectCompatibilityTeamId,
   stripLiteLLMCompatibilityFieldsForCavadaLabsKey,
   useCavadaLabsKeyContextOptions,
+  validateCavadaLabsKeyContextSelection,
 } from "../cavadalabs/keyContext";
 import { cavadalabsMissingSchemaDetailLines, isCavadaLabsMissingSchemaDetail } from "../cavadalabs/api";
+import { extractModelNamesFromResponse, extractModelNamesFromValue } from "../cavadalabs/modelOptions";
+import { resolveCavadaLabsProductContext } from "../cavadalabs/productContext";
 import { extractLoggingSettings, formatMetadataForDisplay, stripTagsFromMetadata } from "../key_info_utils";
 import { BudgetWindowEntry, BudgetWindowsEditor } from "../key_team_helpers/BudgetWindowsEditor";
 import { KeyResponse } from "../key_team_helpers/key_list";
@@ -121,10 +125,12 @@ export function KeyEditView({
     projects: cavadalabsProjects,
     isLoading: isCavadalabsContextLoading,
     errorDetail: cavadalabsContextErrorDetail,
+    contextKnown: cavadalabsContextKnown,
+    isCavadaLabsProductContext,
   } = useCavadaLabsKeyContextOptions(accessToken);
   const manageableCavadaLabsCompanies = useMemo(
-    () => filterManageableCavadaLabsCompanies(cavadalabsCompanies),
-    [cavadalabsCompanies],
+    () => filterManageableCavadaLabsCompanies(cavadalabsCompanies, cavadalabsProjects),
+    [cavadalabsCompanies, cavadalabsProjects],
   );
   const manageableCavadaLabsProjects = useMemo(
     () => filterManageableCavadaLabsProjects(cavadalabsProjects),
@@ -151,9 +157,16 @@ export function KeyEditView({
     selectedCompanyId && selectedProject?.company_id && selectedProject.company_id !== selectedCompanyId,
   );
   const hasCavadaLabsMissingSchema = isCavadaLabsMissingSchemaDetail(cavadalabsContextErrorDetail);
-  const hasCavadaLabsTenantOptions = cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
   const hasManageableCavadaLabsTenantOptions =
     manageableCavadaLabsCompanies.length > 0 && manageableCavadaLabsProjects.length > 0;
+  const cavadalabsProductContext = resolveCavadaLabsProductContext({
+    companies: cavadalabsCompanies,
+    projects: cavadalabsProjects,
+    isLoading: isCavadalabsContextLoading,
+    errorDetail: cavadalabsContextErrorDetail,
+    contextKnown: cavadalabsContextKnown,
+    isCavadaLabsProductContext,
+  });
   const cavadalabsMissingSchemaLines = hasCavadaLabsMissingSchema
     ? cavadalabsMissingSchemaDetailLines(cavadalabsContextErrorDetail)
     : [];
@@ -165,13 +178,16 @@ export function KeyEditView({
       try {
         if (selectedProjectId) {
           const project = manageableCavadaLabsProjects.find((item) => item.project_id === selectedProjectId);
-          setAvailableModels(project?.allowed_models ?? []);
-          return;
+          const projectModels = extractModelNamesFromValue(project?.allowed_models);
+          if (projectModels.length > 0) {
+            setAvailableModels(projectModels);
+            return;
+          }
         }
         if (keyData.team_id === null) {
           // Fetch user models if no team
           const model_available = await modelAvailableCall(accessToken, userID, userRole);
-          const available_model_names = model_available["data"].map((element: { id: string }) => element.id);
+          const available_model_names = extractModelNamesFromResponse(model_available);
           setAvailableModels(available_model_names);
         } else if (team?.team_id) {
           // Fetch team models if team exists
@@ -346,24 +362,30 @@ export function KeyEditView({
       );
       values.budget_limits = validWindows.length > 0 ? validWindows : undefined;
 
-      const submittedCompanyId = values.cavadalabs_company_id || null;
-      const submittedProjectId = values.cavadalabs_project_id || null;
-      if (submittedCompanyId || submittedProjectId) {
-        if (!submittedCompanyId || !submittedProjectId) {
-          NotificationsManager.fromBackend("Select both Company and Project before saving a CavadaLabs key");
-          return;
-        }
-        const submittedProject = manageableCavadaLabsProjects.find(
-          (project) => project.project_id === submittedProjectId,
-        );
-        if (!submittedProject) {
-          NotificationsManager.fromBackend(`Project ${submittedProjectId} is not available`);
-          return;
-        }
-        if (submittedProject.company_id !== submittedCompanyId) {
-          NotificationsManager.fromBackend("Selected Project belongs to a different Company");
-          return;
-        }
+      const derivedCavadaLabsContext = deriveSingleCavadaLabsKeyContextSelection({
+        companyId: values.cavadalabs_company_id || null,
+        projectId: values.cavadalabs_project_id || null,
+        companies: manageableCavadaLabsCompanies,
+        projects: manageableCavadaLabsProjects,
+      });
+      values.cavadalabs_company_id = derivedCavadaLabsContext.companyId || undefined;
+      values.cavadalabs_project_id = derivedCavadaLabsContext.projectId || undefined;
+      const submittedCompanyId = derivedCavadaLabsContext.companyId;
+      const submittedProjectId = derivedCavadaLabsContext.projectId;
+      if (hasCavadaLabsMissingSchema) {
+        NotificationsManager.fromBackend("CavadaLabs key schema migration required before saving keys");
+        return;
+      }
+      const cavadalabsContextError = validateCavadaLabsKeyContextSelection({
+        companyId: submittedCompanyId,
+        projectId: submittedProjectId,
+        projects: manageableCavadaLabsProjects,
+        required: shouldUseCavadaLabsKeyContext,
+        actionLabel: "saving",
+      });
+      if (cavadalabsContextError) {
+        NotificationsManager.fromBackend(cavadalabsContextError);
+        return;
       }
 
       if (selectedProjectCompanyMismatch) {
@@ -380,9 +402,13 @@ export function KeyEditView({
   };
   const hasCavadaLabsContext = Boolean(selectedCompanyId || selectedProjectId);
   const shouldUseCavadaLabsKeyContext =
-    hasCavadaLabsContext || hasCavadaLabsTenantOptions || hasCavadaLabsMissingSchema;
+    hasCavadaLabsContext || hasCavadaLabsMissingSchema || !cavadalabsProductContext.showLiteLLMCompatibilityFields;
   const showCavadaLabsManageScopeWarning =
-    shouldUseCavadaLabsKeyContext && !hasCavadaLabsMissingSchema && !hasManageableCavadaLabsTenantOptions;
+    shouldUseCavadaLabsKeyContext &&
+    cavadalabsProductContext.contextKnown &&
+    !cavadalabsProductContext.isLoading &&
+    !hasCavadaLabsMissingSchema &&
+    !hasManageableCavadaLabsTenantOptions;
 
   return (
     <Form form={form} onFinish={handleSubmit} initialValues={initialValues} layout="vertical">

@@ -44,6 +44,8 @@ import NewBadge from "./common_components/NewBadge";
 import UsageIndicator from "./UsageIndicator";
 import { serverRootPath } from "./networking";
 import { buildUiPath } from "@/utils/uiRoutes";
+import { useCavadaLabsKeyContextOptions } from "@/components/cavadalabs/keyContext";
+import { resolveCavadaLabsProductContext } from "@/components/cavadalabs/productContext";
 const { Sider } = Layout;
 
 /**
@@ -427,6 +429,11 @@ const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const { userId, accessToken, userRole } = useAuthorized();
   const { data: teams } = useTeams();
+  const cavadalabsContext = useCavadaLabsKeyContextOptions(accessToken);
+  const cavadalabsProductContext = resolveCavadaLabsProductContext(cavadalabsContext);
+  const hasCavadaLabsProductContext =
+    cavadalabsProductContext.isCavadaLabsProductContext ||
+    (Boolean(accessToken) && !cavadalabsProductContext.showLiteLLMCompatibilityFields);
 
   const isOrgAdmin = false;
 
@@ -492,6 +499,21 @@ const Sidebar: React.FC<SidebarProps> = ({
   const filterItemsByRole = (items: MenuItem[]): MenuItem[] => {
     const isAdmin = isAdminRole(userRole);
 
+    const adaptCavadaLabsCompatibilityItem = (item: MenuItem): MenuItem | null => {
+      if (item.key !== "teams" || !hasCavadaLabsProductContext) {
+        return item;
+      }
+      if (isAdmin) {
+        return null;
+      }
+      return {
+        ...item,
+        page: "cavadalabs-projects",
+        label: "Projects",
+        icon: <FolderOutlined />,
+      };
+    };
+
     // Debug logging
     if (enabledPagesInternalUsers !== null && enabledPagesInternalUsers !== undefined) {
       console.log("[LeftNav] Filtering with enabled pages:", {
@@ -502,6 +524,8 @@ const Sidebar: React.FC<SidebarProps> = ({
     }
 
     return items
+      .map(adaptCavadaLabsCompatibilityItem)
+      .filter((item): item is MenuItem => item !== null)
       .map((item) => ({
         ...item,
         children: item.children ? filterItemsByRole(item.children) : undefined,

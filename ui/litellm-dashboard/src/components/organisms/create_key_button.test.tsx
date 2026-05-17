@@ -65,6 +65,8 @@ const { cavadalabsKeyContextOptions } = vi.hoisted(() => ({
     ],
     isLoading: false,
     errorDetail: null as any,
+    contextKnown: true,
+    isCavadaLabsProductContext: true,
   },
 }));
 
@@ -318,10 +320,41 @@ vi.mock("@/app/(dashboard)/hooks/tags/useTags", () => ({
 
 vi.mock("../cavadalabs/keyContext", () => ({
   useCavadaLabsKeyContextOptions: () => cavadalabsKeyContextOptions,
-  filterManageableCavadaLabsCompanies: (companies: any[]) =>
-    companies.some((company) => typeof company.cavadalabs_can_manage === "boolean")
-      ? companies.filter((company) => company.cavadalabs_can_manage === true)
-      : companies,
+  deriveSingleCavadaLabsKeyContextSelection: ({
+    companyId,
+    projectId,
+    companies,
+    projects,
+  }: {
+    companyId?: string | null;
+    projectId?: string | null;
+    companies: any[];
+    projects: any[];
+  }) => {
+    if (companyId || projectId || companies.length !== 1 || projects.length !== 1) {
+      return { companyId: companyId || null, projectId: projectId || null };
+    }
+    const company = companies[0];
+    const project = projects[0];
+    return project.company_id === company.company_id
+      ? { companyId: company.company_id, projectId: project.project_id }
+      : { companyId: null, projectId: null };
+  },
+  filterManageableCavadaLabsCompanies: (companies: any[], projects: any[] = []) => {
+    const hasCompanyManageFlag = companies.some((company) => typeof company.cavadalabs_can_manage === "boolean");
+    const hasProjectManageFlag = projects.some((project) => typeof project.cavadalabs_can_manage === "boolean");
+    if (!hasCompanyManageFlag && !hasProjectManageFlag) {
+      return companies;
+    }
+    const manageableProjectCompanyIds = new Set(
+      hasProjectManageFlag
+        ? projects.filter((project) => project.cavadalabs_can_manage === true).map((project) => project.company_id)
+        : [],
+    );
+    return companies.filter(
+      (company) => company.cavadalabs_can_manage === true || manageableProjectCompanyIds.has(company.company_id),
+    );
+  },
   filterManageableCavadaLabsProjects: (projects: any[]) =>
     projects.some((project) => typeof project.cavadalabs_can_manage === "boolean")
       ? projects.filter((project) => project.cavadalabs_can_manage === true)
@@ -337,6 +370,34 @@ vi.mock("../cavadalabs/keyContext", () => ({
     delete values.team_id;
     delete values.project_id;
     return values;
+  },
+  validateCavadaLabsKeyContextSelection: ({
+    companyId,
+    projectId,
+    projects,
+    required,
+    actionLabel,
+  }: {
+    companyId?: string | null;
+    projectId?: string | null;
+    projects: any[];
+    required: boolean;
+    actionLabel: "creating" | "saving";
+  }) => {
+    if (required && (!companyId || !projectId)) {
+      return `Select both Company and Project before ${actionLabel} a CavadaLabs key`;
+    }
+    if (!companyId && !projectId) {
+      return null;
+    }
+    if (!companyId || !projectId) {
+      return `Select both Company and Project before ${actionLabel} a CavadaLabs key`;
+    }
+    const project = projects.find((item) => item.project_id === projectId);
+    if (!project) {
+      return `Project ${projectId} is not available`;
+    }
+    return project.company_id === companyId ? null : "Selected Project belongs to a different Company";
   },
 }));
 
@@ -376,6 +437,8 @@ describe("CreateKey", () => {
       },
     ];
     cavadalabsKeyContextOptions.errorDetail = null;
+    cavadalabsKeyContextOptions.contextKnown = true;
+    cavadalabsKeyContextOptions.isCavadaLabsProductContext = true;
     radioGroupValueRef.current = null;
     formStateRef.current = {};
     mockKeyCreateCall.mockResolvedValue({
@@ -610,6 +673,56 @@ describe("CreateKey", () => {
       expect(mockKeyCreateCall).not.toHaveBeenCalled();
     });
 
+    it("should allow Project admins to create keys for their Project parent Company", async () => {
+      cavadalabsKeyContextOptions.companies = [
+        {
+          company_id: "company-project",
+          legal_name: "Project Parent Srl",
+          status: "active",
+          cavadalabs_can_manage: false,
+        },
+      ];
+      cavadalabsKeyContextOptions.projects = [
+        {
+          project_id: "project-admin",
+          company_id: "company-project",
+          litellm_team_id: "team-project-admin",
+          name: "Project Admin Scope",
+          status: "production",
+          allowed_models: ["gpt-4"],
+          cavadalabs_can_manage: true,
+        },
+      ];
+
+      renderWithProviders(<CreateKey {...defaultProps} />);
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Project Parent Srl (company-project)")).toBeInTheDocument();
+        expect(screen.getByText("Project Admin Scope (project-admin)")).toBeInTheDocument();
+      });
+
+      act(() => {
+        formMock.setFieldValue("key_alias", "Project admin key");
+      });
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create key/i }));
+      });
+
+      await waitFor(() => {
+        expect(mockKeyCreateCall).toHaveBeenCalled();
+        const formValues = mockKeyCreateCall.mock.calls[0][2];
+        expect(formValues.cavadalabs_company_id).toBe("company-project");
+        expect(formValues.cavadalabs_project_id).toBe("project-admin");
+        expect(formValues).not.toHaveProperty("organization_id");
+        expect(formValues).not.toHaveProperty("team_id");
+      });
+    });
+
     it("should keep project selection disabled until a company is selected", async () => {
       renderWithProviders(<CreateKey {...defaultProps} />);
 
@@ -655,6 +768,82 @@ describe("CreateKey", () => {
         expect(formValues).not.toHaveProperty("team_id");
         expect(formValues).not.toHaveProperty("project_id");
       });
+    });
+
+    it("should autoderive the sole manageable Company and Project before creating a key", async () => {
+      renderWithProviders(<CreateKey {...defaultProps} />);
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Acme Srl (company-1)")).toBeInTheDocument();
+      });
+
+      act(() => {
+        formMock.setFieldValue("key_alias", "Autoderived support key");
+      });
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create key/i }));
+      });
+
+      await waitFor(() => {
+        expect(mockKeyCreateCall).toHaveBeenCalled();
+        const formValues = mockKeyCreateCall.mock.calls[0][2];
+        expect(formValues.cavadalabs_company_id).toBe("company-1");
+        expect(formValues.cavadalabs_project_id).toBe("project-1");
+      });
+    });
+
+    it("should block creating a CavadaLabs key when Company and Project are ambiguous", async () => {
+      cavadalabsKeyContextOptions.companies = [
+        { company_id: "company-1", legal_name: "Acme Srl", status: "active" },
+        { company_id: "company-2", legal_name: "Globex Srl", status: "active" },
+      ];
+      cavadalabsKeyContextOptions.projects = [
+        {
+          project_id: "project-1",
+          company_id: "company-1",
+          litellm_team_id: "team-1",
+          name: "Support",
+          status: "production",
+          allowed_models: ["gpt-4"],
+        },
+        {
+          project_id: "project-2",
+          company_id: "company-2",
+          litellm_team_id: "team-2",
+          name: "External",
+          status: "production",
+          allowed_models: ["gpt-4"],
+        },
+      ];
+      renderWithProviders(<CreateKey {...defaultProps} />);
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Acme Srl (company-1)")).toBeInTheDocument();
+      });
+
+      act(() => {
+        formMock.setFieldValue("key_alias", "Ambiguous key");
+      });
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create key/i }));
+      });
+
+      await waitFor(() => {
+        expect(mockNotificationsManager.fromBackend).toHaveBeenCalledWith(
+          "Select both Company and Project before creating a CavadaLabs key",
+        );
+      });
+      expect(mockKeyCreateCall).not.toHaveBeenCalled();
     });
 
     it("should reject mismatched Company and Project before creating a key", async () => {
@@ -704,6 +893,8 @@ describe("CreateKey", () => {
     it("should preserve legacy Team ID selection when CavadaLabs context is unavailable", async () => {
       cavadalabsKeyContextOptions.companies = [];
       cavadalabsKeyContextOptions.projects = [];
+      cavadalabsKeyContextOptions.contextKnown = true;
+      cavadalabsKeyContextOptions.isCavadaLabsProductContext = false;
 
       renderWithProviders(
         <CreateKey
@@ -726,6 +917,35 @@ describe("CreateKey", () => {
       expect(screen.queryByText("Support (project-1)")).not.toBeInTheDocument();
     });
 
+    it("should keep Team ID hidden when CavadaLabs product context has no key options", async () => {
+      cavadalabsKeyContextOptions.companies = [];
+      cavadalabsKeyContextOptions.projects = [];
+      cavadalabsKeyContextOptions.contextKnown = true;
+      cavadalabsKeyContextOptions.isCavadaLabsProductContext = true;
+
+      renderWithProviders(
+        <CreateKey
+          {...defaultProps}
+          teams={[
+            { team_id: "team-1", team_alias: "Team One", models: ["gpt-4"] } as any,
+            { team_id: "team-2", team_alias: "Team Two", models: ["gpt-4"] } as any,
+          ]}
+        />,
+      );
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole("combobox", { name: "CavadaLabs Company" })).toBeInTheDocument();
+        expect(screen.getByRole("combobox", { name: "CavadaLabs Project" })).toBeInTheDocument();
+      });
+      expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
+      expect(screen.queryByText("Team One (team-1)")).not.toBeInTheDocument();
+      expect(screen.queryByText("Team Two (team-2)")).not.toBeInTheDocument();
+    });
+
     it("should explain Company and Project selection when Cavada key context is required", async () => {
       mockModelAvailableCall.mockResolvedValue({ data: [{ id: "no-default-models" }] });
 
@@ -744,6 +964,8 @@ describe("CreateKey", () => {
     it("should show an actionable migration message when CavadaLabs key context schema is missing", async () => {
       cavadalabsKeyContextOptions.companies = [];
       cavadalabsKeyContextOptions.projects = [];
+      cavadalabsKeyContextOptions.contextKnown = true;
+      cavadalabsKeyContextOptions.isCavadaLabsProductContext = true;
       cavadalabsKeyContextOptions.errorDetail = {
         schema_status: "missing_schema",
         migration_status: "schema_missing",

@@ -25,6 +25,9 @@ vi.mock("@/components/networking", () => ({
   getGlobalLitellmHeaderName: () => "Authorization",
   deriveErrorMessage: (errorData: any) => errorData?.detail?.error ?? errorData?.detail ?? "error",
   handleError: vi.fn(),
+  modelAvailableCall: vi.fn().mockResolvedValue({
+    data: [{ id: "Qwen3.6-35B-A3B" }, { id: "whisper-small" }],
+  }),
 }));
 
 const jsonResponse = (payload: any) =>
@@ -253,7 +256,9 @@ describe("CavadaLabsPage", () => {
 
     expect(await screen.findByRole("tab", { name: "Tenants" })).toHaveAttribute("aria-selected", "true");
     expect(await screen.findByText("Projects details")).toBeInTheDocument();
-    expect(await screen.findByText(/"project_id": "project-1"/)).toBeInTheDocument();
+    expect(await screen.findByText("Project overview")).toBeInTheDocument();
+    expect(screen.getAllByText("project-1").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("company-1").length).toBeGreaterThan(0);
     expect(await screen.findByText("Project members")).toBeInTheDocument();
     expect(await screen.findByText("user-1")).toBeInTheDocument();
   });

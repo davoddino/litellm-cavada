@@ -47,6 +47,7 @@ interface CreateTeamModalProps {
   currentOrg: Organization | null;
   organizations: Organization[] | null;
   cavadalabsCompanies: CavadaLabsCompanyOption[];
+  isCavadaLabsProductContext: boolean;
   teams: Team[] | null;
   setTeams: (teams: Team[] | null) => void;
   modelAliases: ModelAliases;
@@ -82,6 +83,7 @@ const CreateTeamModal = ({
   currentOrg,
   organizations,
   cavadalabsCompanies,
+  isCavadaLabsProductContext,
   teams,
   setTeams,
   modelAliases,
@@ -100,7 +102,6 @@ const CreateTeamModal = ({
   const [policiesList, setPoliciesList] = useState<string[]>([]);
   const [mcpAccessGroups, setMcpAccessGroups] = useState<string[]>([]);
   const [mcpAccessGroupsLoaded, setMcpAccessGroupsLoaded] = useState(false);
-  const isCavadaLabsProductContext = cavadalabsCompanies.length > 0;
   const productNoun = isCavadaLabsProductContext ? "Project" : "Team";
   const productNounLower = productNoun.toLowerCase();
 

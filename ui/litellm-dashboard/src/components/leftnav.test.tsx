@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders } from "../../tests/test-utils";
 import Sidebar from "./leftnav";
 
@@ -18,7 +18,7 @@ vi.mock("../utils/roles", () => {
   };
 });
 
-const { mockUseAuthorized, mockUseOrganizations } = vi.hoisted(() => {
+const { mockUseAuthorized, mockUseOrganizations, mockCavadaLabsKeyContext } = vi.hoisted(() => {
   const mockUseAuthorized = vi.fn(() => ({
     userId: "test-user-id",
     accessToken: "test-access-token",
@@ -36,7 +36,16 @@ const { mockUseAuthorized, mockUseOrganizations } = vi.hoisted(() => {
     error: null,
   }));
 
-  return { mockUseAuthorized, mockUseOrganizations };
+  const mockCavadaLabsKeyContext = {
+    value: {
+      companies: [] as any[],
+      projects: [] as any[],
+      isLoading: false,
+      errorDetail: null,
+    },
+  };
+
+  return { mockUseAuthorized, mockUseOrganizations, mockCavadaLabsKeyContext };
 });
 
 vi.mock("@/app/(dashboard)/hooks/useAuthorized", () => ({
@@ -49,6 +58,10 @@ vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
 
 vi.mock("@/app/(dashboard)/hooks/teams/useTeams", () => ({
   useTeams: () => ({ data: [], isLoading: false, error: null }),
+}));
+
+vi.mock("@/components/cavadalabs/keyContext", () => ({
+  useCavadaLabsKeyContextOptions: () => mockCavadaLabsKeyContext.value,
 }));
 
 vi.mock("@/app/(dashboard)/hooks/uiConfig/useUIConfig", () => {
@@ -66,6 +79,15 @@ describe("Sidebar (leftnav)", () => {
     defaultSelectedKey: "api-keys",
     collapsed: false,
   };
+
+  beforeEach(() => {
+    mockCavadaLabsKeyContext.value = {
+      companies: [],
+      projects: [],
+      isLoading: false,
+      errorDetail: null,
+    };
+  });
 
   const renderSidebar = async () => {
     let result: ReturnType<typeof renderWithProviders> | undefined;
@@ -127,6 +149,83 @@ describe("Sidebar (leftnav)", () => {
       fireEvent.click(screen.getByText("Projects"));
     });
     expect(setPage).toHaveBeenCalledWith("cavadalabs-projects");
+  });
+
+  it("should route the CavadaLabs internal Projects nav to the canonical Projects page", async () => {
+    mockUseAuthorized.mockReturnValueOnce({
+      userId: "project-admin-user-id",
+      accessToken: "test-access-token",
+      userRole: "internal",
+      token: "test-token",
+      userEmail: "project-admin@example.com",
+      premiumUser: false,
+      disabledPersonalKeyCreation: false,
+      showSSOBanner: false,
+    });
+    mockCavadaLabsKeyContext.value = {
+      companies: [{ company_id: "company-1", legal_name: "Acme" }],
+      projects: [{ project_id: "project-1", company_id: "company-1", name: "Support" }],
+      isLoading: false,
+      errorDetail: null,
+    };
+    const setPage = vi.fn();
+
+    let result: ReturnType<typeof renderWithProviders> | undefined;
+    await act(async () => {
+      result = renderWithProviders(<Sidebar {...defaultProps} setPage={setPage} />);
+    });
+    if (!result) throw new Error("Sidebar render failed");
+
+    expect(screen.queryByText("Teams")).not.toBeInTheDocument();
+    const projectsLink = screen.getByRole("link", { name: "Projects" });
+    expect(projectsLink).toHaveAttribute("href", "/cavadalabs/projects");
+
+    act(() => {
+      fireEvent.click(projectsLink);
+    });
+
+    expect(setPage).toHaveBeenCalledWith("cavadalabs-projects");
+  });
+
+  it("should not expose legacy Teams nav when CavadaLabs context is explicit with empty options", async () => {
+    mockUseAuthorized.mockReturnValueOnce({
+      userId: "project-viewer-user-id",
+      accessToken: "test-access-token",
+      userRole: "internal",
+      token: "test-token",
+      userEmail: "viewer@example.com",
+      premiumUser: false,
+      disabledPersonalKeyCreation: false,
+      showSSOBanner: false,
+    });
+    mockCavadaLabsKeyContext.value = {
+      companies: [],
+      projects: [],
+      isLoading: false,
+      errorDetail: null,
+      contextKnown: true,
+      isCavadaLabsProductContext: true,
+    };
+
+    await renderSidebar();
+
+    expect(screen.queryByText("Teams")).not.toBeInTheDocument();
+    const projectsLink = screen.getByRole("link", { name: "Projects" });
+    expect(projectsLink).toHaveAttribute("href", "/cavadalabs/projects");
+  });
+
+  it("should hide legacy Teams nav for CavadaLabs admins with canonical Projects access", async () => {
+    mockCavadaLabsKeyContext.value = {
+      companies: [{ company_id: "company-1", legal_name: "Acme" }],
+      projects: [{ project_id: "project-1", company_id: "company-1", name: "Support" }],
+      isLoading: false,
+      errorDetail: null,
+    };
+
+    await renderSidebar();
+
+    expect(screen.queryByText("Teams")).not.toBeInTheDocument();
+    expect(screen.getByText("Projects")).toBeInTheDocument();
   });
 
   it("expands a nested tab to reveal its children (Tools > Search Tools)", async () => {

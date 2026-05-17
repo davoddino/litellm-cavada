@@ -1129,11 +1129,17 @@ def _cavadalabs_context_from_metadata(metadata: Any) -> Dict[str, Optional[str]]
     )
     return {
         "company_id": _optional_metadata_str(metadata_dict.get("cavadalabs_company_id"))
+        or _optional_metadata_str(metadata_dict.get("company_id"))
+        or _optional_metadata_str(cavadalabs_metadata.get("cavadalabs_company_id"))
         or _optional_metadata_str(cavadalabs_metadata.get("company_id"))
-        or _optional_metadata_str(spend_logs_metadata.get("cavadalabs_company_id")),
+        or _optional_metadata_str(spend_logs_metadata.get("cavadalabs_company_id"))
+        or _optional_metadata_str(spend_logs_metadata.get("company_id")),
         "project_id": _optional_metadata_str(metadata_dict.get("cavadalabs_project_id"))
+        or _optional_metadata_str(metadata_dict.get("project_id"))
+        or _optional_metadata_str(cavadalabs_metadata.get("cavadalabs_project_id"))
         or _optional_metadata_str(cavadalabs_metadata.get("project_id"))
-        or _optional_metadata_str(spend_logs_metadata.get("cavadalabs_project_id")),
+        or _optional_metadata_str(spend_logs_metadata.get("cavadalabs_project_id"))
+        or _optional_metadata_str(spend_logs_metadata.get("project_id")),
     }
 
 
@@ -2885,6 +2891,8 @@ class UserInfoV2Response(LiteLLMPydanticObjectBase):
     updated_at: Optional[datetime] = None
     sso_user_id: Optional[str] = None
     teams: List[str] = []  # Just team IDs, not full team objects
+    cavadalabs_company_memberships: List[CavadaLabsCompanyMembershipRequest] = []
+    cavadalabs_project_memberships: List[CavadaLabsProjectMembershipRequest] = []
 
 
 class LiteLLM_Config(LiteLLMPydanticObjectBase):

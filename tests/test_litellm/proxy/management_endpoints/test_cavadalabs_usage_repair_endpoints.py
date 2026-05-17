@@ -14,6 +14,7 @@ from litellm.proxy.cavadalabs.usage import (
     get_cavadalabs_usage_diagnostics,
     repair_cavadalabs_usage_scope,
 )
+from litellm.proxy.cavadalabs.usage_query_filters import spend_log_repair_where
 from litellm.proxy.cavadalabs.usage_tracking import (
     process_spend_logs_cavadalabs_ledger,
 )
@@ -164,6 +165,9 @@ def _db():
     db.cavadalabs_projecttable.find_many = AsyncMock(return_value=[])
     db.cavadalabs_requestledgertable.count = AsyncMock(return_value=0)
     db.cavadalabs_requestledgertable.find_many = AsyncMock(return_value=[])
+    db.cavadalabs_requestledgertable.update_many = AsyncMock(
+        return_value=SimpleNamespace(count=0)
+    )
     db.litellm_organizationmembership.find_unique = AsyncMock(return_value=None)
     db.litellm_organizationmembership.find_many = AsyncMock(return_value=[])
     db.litellm_spendlogs.count = AsyncMock(return_value=0)
@@ -194,7 +198,10 @@ def _request(
     project_ids=None,
     model=None,
     provider=None,
+    status=None,
     api_key=None,
+    min_spend=None,
+    max_spend=None,
     dry_run=False,
     batch_limit=None,
 ) -> CavadaLabsUsageRepairRequest:
@@ -205,7 +212,10 @@ def _request(
         end_date="2026-05-31",
         model=model,
         provider=provider,
+        status=status,
         api_key=api_key,
+        min_spend=min_spend,
+        max_spend=max_spend,
         dry_run=dry_run,
         batch_limit=batch_limit,
     )
@@ -221,18 +231,57 @@ def _repair_response(entity_type: str, entity_ids: list[str]):
         processed_spend_logs=1,
         batches=1,
         diagnostics=[],
-        migration_name="20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata",
+        migration_name="20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash",
         migration_command="uv run prisma migrate deploy",
         migration_names=[
             "20260515122000_add_cavadalabs_usage_spend_log_indexes",
             "20260515123000_backfill_cavadalabs_request_ledger_from_spend_logs",
             "20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata",
+            "20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash",
         ],
     )
 
 
 def _patch_prisma(monkeypatch, db):
     monkeypatch.setattr(proxy_server, "prisma_client", SimpleNamespace(db=db))
+
+
+def _set_native_company_membership(
+    db,
+    role: str | None,
+    *,
+    company_id: str = "company-1",
+    user_id: str = "user-1",
+) -> None:
+    membership = (
+        SimpleNamespace(company_id=company_id, user_id=user_id, role=role)
+        if role is not None
+        else None
+    )
+    db.cavadalabs_companymembertable = MagicMock()
+    db.cavadalabs_companymembertable.find_unique = AsyncMock(return_value=membership)
+    db.cavadalabs_companymembertable.find_many = AsyncMock(
+        return_value=[membership] if membership is not None else []
+    )
+
+
+def _set_native_project_membership(
+    db,
+    role: str | None,
+    *,
+    project_id: str = "project-1",
+    user_id: str = "user-1",
+) -> None:
+    membership = (
+        SimpleNamespace(project_id=project_id, user_id=user_id, role=role)
+        if role is not None
+        else None
+    )
+    db.cavadalabs_projectmembertable = MagicMock()
+    db.cavadalabs_projectmembertable.find_unique = AsyncMock(return_value=membership)
+    db.cavadalabs_projectmembertable.find_many = AsyncMock(
+        return_value=[membership] if membership is not None else []
+    )
 
 
 def _assert_missing_usage_schema_detail(detail):
@@ -249,7 +298,7 @@ def _assert_missing_usage_schema_detail(detail):
     assert detail["migration_command"]
     assert "prisma migrate deploy" in detail["migration_command"]
     assert (
-        "20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata"
+        "20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash"
         in detail["migration_names"]
     )
     assert detail["migration_plan"]
@@ -261,6 +310,67 @@ def _find_and_or_condition(where, expected_member):
         if isinstance(or_members, list) and expected_member in or_members:
             return condition
     raise AssertionError(f"Could not find OR condition containing {expected_member}")
+
+
+def _find_spend_logs_find_many_call(db, expected_member, *, take=None):
+    for call in db.litellm_spendlogs.find_many.call_args_list:
+        kwargs = call.kwargs
+        if take is not None and kwargs.get("take") != take:
+            continue
+        try:
+            _find_and_or_condition(kwargs.get("where", {}), expected_member)
+        except AssertionError:
+            continue
+        return kwargs
+    raise AssertionError(
+        f"Could not find SpendLogs find_many call containing {expected_member}"
+    )
+
+
+def _raw_spend_logs_backfill_fetch_calls(db):
+    return [
+        call.kwargs
+        for call in db.litellm_spendlogs.find_many.call_args_list
+        if "select" not in call.kwargs
+    ]
+
+
+def _paginated_ledger_find_many(ledger_rows):
+    async def _find_many(**kwargs):
+        if kwargs.get("take") == 1:
+            return ledger_rows[:1]
+        skip = kwargs.get("skip", 0)
+        take = kwargs.get("take", len(ledger_rows))
+        return ledger_rows[skip : skip + take]
+
+    return AsyncMock(side_effect=_find_many)
+
+
+def test_spend_log_repair_where_matches_api_key_hash_in_metadata_paths():
+    where = spend_log_repair_where(
+        date_range=_date_range(),
+        filters=[{"team_id": "team-project-1"}],
+        model=None,
+        provider=None,
+        api_key="hashed-key",
+    )
+
+    api_key_condition = _find_and_or_condition(
+        where,
+        {"api_key": {"in": ["hashed-key"]}},
+    )
+    assert {
+        "metadata": {
+            "path": ["user_api_key_hash"],
+            "equals": "hashed-key",
+        }
+    } in api_key_condition["OR"]
+    assert {
+        "metadata": {
+            "path": ["spend_logs_metadata", "api_key_hash"],
+            "equals": "hashed-key",
+        }
+    } in api_key_condition["OR"]
 
 
 @pytest.mark.asyncio
@@ -310,6 +420,180 @@ async def test_company_daily_activity_endpoint_reads_authoritative_cavadalabs_le
     assert where["api_key_hash"] == "hashed-key"
     assert where["spend"] == {"gte": 0.1, "lte": 0.2}
     assert response.metadata.total_spend == pytest.approx(0.15)
+
+
+@pytest.mark.asyncio
+async def test_company_daily_activity_aggregates_all_ledger_rows_before_day_pagination(
+    monkeypatch,
+):
+    db = _db()
+    latest_day_rows = [
+        _ledger(
+            request_id=f"request-latest-{idx}",
+            prompt_tokens=2,
+            completion_tokens=3,
+            total_tokens=5,
+            spend=0.01,
+            created_at=datetime(2026, 5, 15, 12, idx % 60, tzinfo=timezone.utc),
+        )
+        for idx in range(120)
+    ]
+    previous_day_rows = [
+        _ledger(
+            request_id=f"request-previous-{idx}",
+            prompt_tokens=1,
+            completion_tokens=2,
+            total_tokens=3,
+            spend=0.02,
+            created_at=datetime(2026, 5, 14, 12, idx % 60, tzinfo=timezone.utc),
+        )
+        for idx in range(30)
+    ]
+    ledger_rows = [*latest_day_rows, *previous_day_rows]
+    db.cavadalabs_requestledgertable.count = AsyncMock(return_value=len(ledger_rows))
+    db.cavadalabs_requestledgertable.find_many = _paginated_ledger_find_many(
+        ledger_rows
+    )
+    db.cavadalabs_companytable.find_many = AsyncMock(return_value=[_company()])
+    db.cavadalabs_projecttable.find_many = AsyncMock(return_value=[_project()])
+    _patch_prisma(monkeypatch, db)
+
+    response = await company_endpoints.get_company_daily_activity(
+        http_request=MagicMock(),
+        start_date="2026-05-14",
+        end_date="2026-05-15",
+        model=None,
+        provider=None,
+        status_filter=None,
+        api_key=None,
+        min_spend=None,
+        max_spend=None,
+        company_ids="company-1",
+        page=1,
+        page_size=1,
+        timezone=0,
+        user_api_key_dict=_admin_auth(),
+    )
+
+    assert response.metadata.total_api_requests == 150
+    assert response.metadata.total_prompt_tokens == 270
+    assert response.metadata.total_completion_tokens == 420
+    assert response.metadata.total_spend == pytest.approx(1.8)
+    assert response.metadata.total_pages == 2
+    assert response.metadata.has_more is True
+    assert len(response.results) == 1
+    assert response.results[0].date.isoformat() == "2026-05-15"
+    assert response.results[0].metrics.api_requests == 120
+    assert response.results[0].metrics.spend == pytest.approx(1.2)
+
+
+@pytest.mark.asyncio
+async def test_company_daily_activity_aggregates_multiple_ledger_pages_into_one_day(
+    monkeypatch,
+):
+    db = _db()
+    ledger_rows = [
+        _ledger(
+            request_id=f"request-page-{idx}",
+            prompt_tokens=1,
+            completion_tokens=2,
+            total_tokens=3,
+            spend=0.01,
+            created_at=datetime(2026, 5, 15, 12, idx % 60, tzinfo=timezone.utc),
+        )
+        for idx in range(1205)
+    ]
+    db.cavadalabs_requestledgertable.count = AsyncMock(return_value=len(ledger_rows))
+    db.cavadalabs_requestledgertable.find_many = _paginated_ledger_find_many(
+        ledger_rows
+    )
+    db.cavadalabs_companytable.find_many = AsyncMock(return_value=[_company()])
+    db.cavadalabs_projecttable.find_many = AsyncMock(return_value=[_project()])
+    _patch_prisma(monkeypatch, db)
+
+    response = await company_endpoints.get_company_daily_activity(
+        http_request=MagicMock(),
+        start_date="2026-05-15",
+        end_date="2026-05-15",
+        model=None,
+        provider=None,
+        status_filter=None,
+        api_key=None,
+        min_spend=None,
+        max_spend=None,
+        company_ids="company-1",
+        page=1,
+        page_size=100,
+        timezone=0,
+        user_api_key_dict=_admin_auth(),
+    )
+
+    ledger_fetch_calls = [
+        call.kwargs
+        for call in db.cavadalabs_requestledgertable.find_many.call_args_list
+        if call.kwargs.get("take") == 1000
+    ]
+    assert [call["skip"] for call in ledger_fetch_calls] == [0, 1000]
+    assert response.metadata.total_api_requests == 1205
+    assert response.metadata.total_prompt_tokens == 1205
+    assert response.metadata.total_completion_tokens == 2410
+    assert response.metadata.total_spend == pytest.approx(12.05)
+    assert response.metadata.total_pages == 1
+    assert response.metadata.has_more is False
+    assert len(response.results) == 1
+    assert response.results[0].date.isoformat() == "2026-05-15"
+    assert response.results[0].metrics.api_requests == 1205
+    assert response.results[0].metrics.spend == pytest.approx(12.05)
+
+
+@pytest.mark.asyncio
+async def test_project_daily_activity_aggregates_project_ledger_without_team_scope():
+    db = _db()
+    ledger_rows = [
+        _ledger(
+            request_id=f"project-request-{idx}",
+            prompt_tokens=4,
+            completion_tokens=6,
+            total_tokens=10,
+            spend=0.05,
+            created_at=datetime(2026, 5, 15, 12, idx, tzinfo=timezone.utc),
+        )
+        for idx in range(10)
+    ]
+    db.cavadalabs_requestledgertable.count = AsyncMock(return_value=len(ledger_rows))
+    db.cavadalabs_requestledgertable.find_many = _paginated_ledger_find_many(
+        ledger_rows
+    )
+    db.cavadalabs_projecttable.find_many = AsyncMock(return_value=[_project()])
+
+    response = await get_cavadalabs_daily_activity(
+        prisma_client=SimpleNamespace(db=db),
+        entity_id_field="project_id",
+        entity_id=["project-1"],
+        start_date="2026-05-15",
+        end_date="2026-05-15",
+        model=None,
+        provider=None,
+        status_filter=None,
+        api_key=None,
+        min_spend=None,
+        max_spend=None,
+        page=1,
+        page_size=100,
+        timezone_offset_minutes=0,
+    )
+
+    where = db.cavadalabs_requestledgertable.count.call_args.kwargs["where"]
+    assert where["project_id"] == {"in": ["project-1"]}
+    assert "team_id" not in where
+    assert "organization_id" not in where
+    assert response.metadata.total_api_requests == 10
+    assert response.metadata.total_prompt_tokens == 40
+    assert response.metadata.total_completion_tokens == 60
+    assert response.metadata.total_spend == pytest.approx(0.5)
+    assert response.results[0].breakdown.entities["project-1"].metrics.spend == (
+        pytest.approx(0.5)
+    )
 
 
 @pytest.mark.asyncio
@@ -1010,6 +1294,50 @@ async def test_usage_diagnostics_distinguishes_restrictive_filters_from_missing_
 
 
 @pytest.mark.asyncio
+async def test_usage_diagnostics_applies_status_and_spend_filters_to_filter_exclusion():
+    db = _db()
+    db.cavadalabs_companytable.find_many = AsyncMock(return_value=[_company()])
+    db.cavadalabs_projecttable.find_many = AsyncMock(return_value=[_project()])
+    db.cavadalabs_requestledgertable.count = AsyncMock(return_value=0)
+
+    async def _count_spend_logs(*, where):
+        if where.get("request_id") == "__cavadalabs_schema_probe__":
+            return 0
+        conditions = where.get("AND", [])
+        if {"status": "error"} in conditions or {"spend": {"gte": 10.0}} in conditions:
+            return 0
+        return 2
+
+    db.litellm_spendlogs.count = AsyncMock(side_effect=_count_spend_logs)
+
+    response = await get_cavadalabs_usage_diagnostics(
+        prisma_client=SimpleNamespace(db=db),
+        entity_type="company",
+        entity_id=["company-1"],
+        start_date="2026-05-01",
+        end_date="2026-05-31",
+        timezone_offset_minutes=0,
+        status_filter="error",
+        min_spend=10.0,
+    )
+
+    item = response.diagnostics[0]
+    assert item.status == CavadaLabsUsageDiagnosticsStatus.FILTERS_EXCLUDE_USAGE
+    assert item.recommended_action == CavadaLabsUsageDiagnosticsAction.NONE
+    assert item.attributable_spend_logs == 0
+    assert item.unfiltered_attributable_spend_logs == 2
+    assert item.filters_exclude_usage is True
+    ledger_where = db.cavadalabs_requestledgertable.count.call_args.kwargs["where"]
+    assert ledger_where["status"] == "error"
+    assert ledger_where["spend"] == {"gte": 10.0}
+    filtered_spend_where = db.litellm_spendlogs.count.call_args_list[1].kwargs[
+        "where"
+    ]
+    assert {"status": "error"} in filtered_spend_where["AND"]
+    assert {"spend": {"gte": 10.0}} in filtered_spend_where["AND"]
+
+
+@pytest.mark.asyncio
 async def test_usage_diagnostics_reports_genuine_zero_when_no_ledger_or_legacy_spend():
     db = _db()
     db.cavadalabs_companytable.find_many = AsyncMock(return_value=[_company()])
@@ -1109,6 +1437,101 @@ async def test_usage_diagnostics_reports_scoped_backfill_from_virtual_key_metada
 
 
 @pytest.mark.asyncio
+async def test_usage_diagnostics_reports_legacy_keys_missing_cavadalabs_metadata():
+    db = _db()
+    db.cavadalabs_companytable.find_many = AsyncMock(return_value=[_company()])
+    db.cavadalabs_projecttable.find_many = AsyncMock(return_value=[_project()])
+    db.cavadalabs_requestledgertable.count = AsyncMock(return_value=0)
+    db.litellm_verificationtoken.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                token="legacy-team-key",
+                team_id="team-project-1",
+                organization_id="org-company-1",
+                metadata={"owner": "support"},
+            )
+        ]
+    )
+
+    async def _count_spend_logs(*, where):
+        if where.get("request_id") == "__cavadalabs_schema_probe__":
+            return 0
+        if "legacy-team-key" in str(where):
+            return 3
+        return 0
+
+    db.litellm_spendlogs.count = AsyncMock(side_effect=_count_spend_logs)
+
+    response = await get_cavadalabs_usage_diagnostics(
+        prisma_client=SimpleNamespace(db=db),
+        entity_type="company",
+        entity_id=["company-1"],
+        start_date="2026-05-01",
+        end_date="2026-05-31",
+        timezone_offset_minutes=0,
+    )
+
+    item = response.diagnostics[0]
+    assert item.status == CavadaLabsUsageDiagnosticsStatus.SCOPED_BACKFILL_AVAILABLE
+    assert item.attributable_spend_logs == 3
+    assert item.key_metadata_spend_logs == 3
+    assert item.legacy_keys_missing_metadata == 1
+    assert item.legacy_key_spend_logs == 3
+    assert item.ledger_gap == 3
+
+
+@pytest.mark.asyncio
+async def test_usage_diagnostics_reports_unattributable_legacy_company_key_without_project_metadata():
+    db = _db()
+    db.cavadalabs_companytable.find_many = AsyncMock(return_value=[_company()])
+    db.cavadalabs_projecttable.find_many = AsyncMock(
+        return_value=[_project(litellm_team_id=None)]
+    )
+    db.cavadalabs_requestledgertable.count = AsyncMock(return_value=0)
+    db.litellm_verificationtoken.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                token="legacy-org-key",
+                team_id=None,
+                organization_id="org-company-1",
+                metadata={"owner": "support"},
+            )
+        ]
+    )
+
+    async def _count_spend_logs(*, where):
+        if where.get("request_id") == "__cavadalabs_schema_probe__":
+            return 0
+        if "legacy-org-key" in str(where):
+            return 4
+        return 0
+
+    db.litellm_spendlogs.count = AsyncMock(side_effect=_count_spend_logs)
+
+    response = await get_cavadalabs_usage_diagnostics(
+        prisma_client=SimpleNamespace(db=db),
+        entity_type="company",
+        entity_id=["company-1"],
+        start_date="2026-05-01",
+        end_date="2026-05-31",
+        timezone_offset_minutes=0,
+    )
+
+    item = response.diagnostics[0]
+    assert item.status == CavadaLabsUsageDiagnosticsStatus.MISSING_COMPATIBILITY_MAPPING
+    assert (
+        item.recommended_action
+        == CavadaLabsUsageDiagnosticsAction.FIX_COMPATIBILITY_MAPPING
+    )
+    assert item.attributable_spend_logs == 0
+    assert item.legacy_keys_missing_metadata == 1
+    assert item.legacy_key_spend_logs == 4
+    assert item.missing_mappings == [
+        "CavadaLabs key metadata or Project compatibility mapping"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_usage_diagnostics_reports_unrepairable_legacy_spend_missing_links():
     db = _db()
     db.cavadalabs_companytable.find_many = AsyncMock(return_value=[_company()])
@@ -1201,7 +1624,7 @@ async def test_usage_repair_dry_run_counts_without_writing_ledger():
     assert response.processed_spend_logs == 0
     assert response.batch_limit == 10
     assert "Dry run completed" in response.message
-    db.litellm_spendlogs.find_many.assert_not_awaited()
+    assert _raw_spend_logs_backfill_fetch_calls(db) == []
     db.cavadalabs_requestledgertable.create_many.assert_not_awaited()
 
 
@@ -1249,8 +1672,11 @@ async def test_usage_repair_apply_backfills_limited_batch_then_daily_activity_re
     assert repair.processed_spend_logs == 1
     assert repair.batch_limit == 1
     assert "batch limit" in repair.message
-    find_kwargs = db.litellm_spendlogs.find_many.call_args.kwargs
-    assert find_kwargs["take"] == 1
+    find_kwargs = _find_spend_logs_find_many_call(
+        db,
+        {"custom_llm_provider": "cavadalabs"},
+        take=1,
+    )
     provider_condition = _find_and_or_condition(
         find_kwargs["where"], {"custom_llm_provider": "cavadalabs"}
     )
@@ -1466,6 +1892,161 @@ async def test_usage_repair_backfills_chatbot_id_from_virtual_key_metadata():
     assert ledger_row["company_id"] == "company-1"
     assert ledger_row["project_id"] == "project-1"
     assert ledger_row["chatbot_id"] == "chatbot-1"
+
+
+@pytest.mark.asyncio
+async def test_usage_repair_backfills_spend_log_matching_key_hash_in_metadata_only():
+    db = _db()
+    db.cavadalabs_companytable.find_many = AsyncMock(return_value=[_company()])
+    db.cavadalabs_projecttable.find_many = AsyncMock(
+        return_value=[_project(litellm_team_id=None)]
+    )
+    db.litellm_verificationtoken.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                token="hashed-key",
+                team_id=None,
+                organization_id=None,
+                metadata={
+                    "cavadalabs_company_id": "company-1",
+                    "cavadalabs_project_id": "project-1",
+                    "cavadalabs_chatbot_id": "chatbot-1",
+                },
+            )
+        ]
+    )
+    db.litellm_spendlogs.count = AsyncMock(return_value=1)
+    db.litellm_spendlogs.find_many = AsyncMock(
+        return_value=[
+            _spend_log(
+                request_id="req-metadata-key-hash-backfill",
+                api_key=None,
+                team_id=None,
+                organization_id=None,
+                metadata={
+                    "spend_logs_metadata": {
+                        "user_api_key_hash": "hashed-key",
+                    }
+                },
+            )
+        ]
+    )
+    db.cavadalabs_requestledgertable.create_many = AsyncMock(
+        return_value=SimpleNamespace(count=1)
+    )
+
+    repair = await repair_cavadalabs_usage_scope(
+        prisma_client=SimpleNamespace(db=db),
+        entity_type="company",
+        entity_id=["company-1"],
+        start_date="2026-05-01",
+        end_date="2026-05-31",
+        timezone_offset_minutes=0,
+        model=None,
+        provider=None,
+        api_key=None,
+        dry_run=False,
+        batch_limit=None,
+    )
+
+    assert repair.repaired is True
+    find_kwargs = _find_spend_logs_find_many_call(
+        db,
+        {"api_key": {"in": ["hashed-key"]}},
+    )
+    spend_where = find_kwargs["where"]
+    key_hash_condition = _find_and_or_condition(
+        spend_where,
+        {"api_key": {"in": ["hashed-key"]}},
+    )
+    assert {
+        "metadata": {
+            "path": ["spend_logs_metadata", "user_api_key_hash"],
+            "equals": "hashed-key",
+        }
+    } in key_hash_condition["OR"]
+    ledger_row = db.cavadalabs_requestledgertable.create_many.call_args.kwargs["data"][
+        0
+    ]
+    assert ledger_row["request_id"] == "req-metadata-key-hash-backfill"
+    assert ledger_row["company_id"] == "company-1"
+    assert ledger_row["project_id"] == "project-1"
+    assert ledger_row["chatbot_id"] == "chatbot-1"
+    assert ledger_row["api_key_hash"] == "hashed-key"
+    metadata = getattr(ledger_row["metadata"], "data", {})
+    assert metadata["cavadalabs"]["attribution_source"] == "key_metadata"
+
+
+@pytest.mark.asyncio
+async def test_usage_repair_updates_existing_ledger_row_for_authoritative_company_project():
+    db = _db()
+    db.cavadalabs_companytable.find_many = AsyncMock(return_value=[_company()])
+    db.cavadalabs_projecttable.find_many = AsyncMock(
+        return_value=[_project(litellm_team_id=None)]
+    )
+    db.litellm_verificationtoken.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                token="hashed-key",
+                team_id=None,
+                organization_id=None,
+                metadata={
+                    "cavadalabs_company_id": "company-1",
+                    "cavadalabs_project_id": "project-1",
+                },
+            )
+        ]
+    )
+    db.litellm_spendlogs.count = AsyncMock(return_value=1)
+    db.litellm_spendlogs.find_many = AsyncMock(
+        return_value=[
+            _spend_log(
+                request_id="req-existing-ledger-wrong-scope",
+                api_key=None,
+                team_id=None,
+                organization_id=None,
+                metadata={
+                    "spend_logs_metadata": {
+                        "api_key_hash": "hashed-key",
+                    }
+                },
+            )
+        ]
+    )
+    db.cavadalabs_requestledgertable.create_many = AsyncMock(
+        return_value=SimpleNamespace(count=0)
+    )
+    db.cavadalabs_requestledgertable.update_many = AsyncMock(
+        return_value=SimpleNamespace(count=1)
+    )
+
+    repair = await repair_cavadalabs_usage_scope(
+        prisma_client=SimpleNamespace(db=db),
+        entity_type="project",
+        entity_id=["project-1"],
+        start_date="2026-05-01",
+        end_date="2026-05-31",
+        timezone_offset_minutes=0,
+        model=None,
+        provider=None,
+        api_key=None,
+        dry_run=False,
+        batch_limit=None,
+    )
+
+    assert repair.repaired is True
+    assert repair.processed_spend_logs == 1
+    update_call = db.cavadalabs_requestledgertable.update_many.call_args.kwargs
+    assert update_call["where"] == {
+        "request_id": "req-existing-ledger-wrong-scope",
+        "OR": [
+            {"company_id": {"not": "company-1"}},
+            {"project_id": {"not": "project-1"}},
+        ],
+    }
+    assert update_call["data"]["company_id"] == "company-1"
+    assert update_call["data"]["project_id"] == "project-1"
+    assert "request_id" not in update_call["data"]
 
 
 @pytest.mark.asyncio
@@ -1712,6 +2293,39 @@ async def test_project_usage_diagnostics_endpoint_reports_valid_scope_missing_ma
 
 
 @pytest.mark.asyncio
+async def test_company_usage_diagnostics_endpoint_allows_native_company_viewer(
+    monkeypatch,
+):
+    db = _db()
+    _set_native_company_membership(db, "viewer")
+    _patch_prisma(monkeypatch, db)
+    diagnostics = AsyncMock(return_value=SimpleNamespace(diagnostics=[]))
+    monkeypatch.setattr(
+        company_endpoints,
+        "get_cavadalabs_usage_diagnostics",
+        diagnostics,
+    )
+
+    response = await company_endpoints.get_company_usage_diagnostics(
+        http_request=MagicMock(),
+        start_date="2026-05-01",
+        end_date="2026-05-31",
+        company_ids="company-1",
+        model=None,
+        provider=None,
+        api_key=None,
+        timezone=0,
+        user_api_key_dict=_auth(),
+    )
+
+    assert response.diagnostics == []
+    diagnostics.assert_awaited_once()
+    assert diagnostics.call_args.kwargs["entity_type"] == "company"
+    assert diagnostics.call_args.kwargs["entity_id"] == ["company-1"]
+    db.litellm_organizationmembership.find_unique.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_company_repair_endpoint_allows_company_admin(monkeypatch):
     db = _db()
     db.litellm_organizationmembership.find_many = AsyncMock(
@@ -1730,7 +2344,10 @@ async def test_company_repair_endpoint_allows_company_admin(monkeypatch):
             company_ids=["company-1"],
             model="cavadalabs/qwen3-32b",
             provider="cavadalabs",
+            status="success",
             api_key="hashed-key",
+            min_spend=0.1,
+            max_spend=1.0,
             dry_run=True,
             batch_limit=25,
         ),
@@ -1744,9 +2361,33 @@ async def test_company_repair_endpoint_allows_company_admin(monkeypatch):
     assert repair.call_args.kwargs["entity_id"] == ["company-1"]
     assert repair.call_args.kwargs["model"] == "cavadalabs/qwen3-32b"
     assert repair.call_args.kwargs["provider"] == "cavadalabs"
+    assert repair.call_args.kwargs["status_filter"] == "success"
     assert repair.call_args.kwargs["api_key"] == "hashed-key"
+    assert repair.call_args.kwargs["min_spend"] == 0.1
+    assert repair.call_args.kwargs["max_spend"] == 1.0
     assert repair.call_args.kwargs["dry_run"] is True
     assert repair.call_args.kwargs["batch_limit"] == 25
+
+
+@pytest.mark.asyncio
+async def test_company_repair_endpoint_allows_native_company_admin(monkeypatch):
+    db = _db()
+    _set_native_company_membership(db, "company_admin")
+    _patch_prisma(monkeypatch, db)
+    repair = AsyncMock(return_value=_repair_response("company", ["company-1"]))
+    monkeypatch.setattr(company_endpoints, "repair_cavadalabs_usage_scope", repair)
+
+    response = await company_endpoints.repair_company_usage(
+        data=_request(company_ids=["company-1"]),
+        http_request=MagicMock(),
+        user_api_key_dict=_auth(),
+    )
+
+    assert response.repaired is True
+    repair.assert_awaited_once()
+    assert repair.call_args.kwargs["entity_type"] == "company"
+    assert repair.call_args.kwargs["entity_id"] == ["company-1"]
+    db.litellm_organizationmembership.find_unique.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1759,6 +2400,47 @@ async def test_company_repair_endpoint_rejects_company_viewer(monkeypatch):
         return_value=_membership(LitellmUserRoles.INTERNAL_USER_VIEW_ONLY)
     )
     db.cavadalabs_companytable.find_many = AsyncMock(return_value=[_company()])
+    _patch_prisma(monkeypatch, db)
+    repair = AsyncMock()
+    monkeypatch.setattr(company_endpoints, "repair_cavadalabs_usage_scope", repair)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await company_endpoints.repair_company_usage(
+            data=_request(company_ids=["company-1"]),
+            http_request=MagicMock(),
+            user_api_key_dict=_auth(),
+        )
+
+    assert exc_info.value.status_code == 403
+    repair.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_company_repair_endpoint_rejects_native_company_viewer(monkeypatch):
+    db = _db()
+    _set_native_company_membership(db, "viewer")
+    _patch_prisma(monkeypatch, db)
+    repair = AsyncMock()
+    monkeypatch.setattr(company_endpoints, "repair_cavadalabs_usage_scope", repair)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await company_endpoints.repair_company_usage(
+            data=_request(company_ids=["company-1"]),
+            http_request=MagicMock(),
+            user_api_key_dict=_auth(),
+        )
+
+    assert exc_info.value.status_code == 403
+    repair.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_company_repair_endpoint_rejects_native_project_admin_scope(
+    monkeypatch,
+):
+    db = _db()
+    _set_native_company_membership(db, None)
+    _set_native_project_membership(db, "project_admin")
     _patch_prisma(monkeypatch, db)
     repair = AsyncMock()
     monkeypatch.setattr(company_endpoints, "repair_cavadalabs_usage_scope", repair)
@@ -1822,6 +2504,29 @@ async def test_project_repair_endpoint_allows_project_admin(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_project_repair_endpoint_allows_native_project_admin(monkeypatch):
+    db = _db()
+    _set_native_project_membership(db, "project_admin")
+    db.cavadalabs_companymembertable = MagicMock()
+    db.cavadalabs_companymembertable.find_unique = AsyncMock(return_value=None)
+    _patch_prisma(monkeypatch, db)
+    repair = AsyncMock(return_value=_repair_response("project", ["project-1"]))
+    monkeypatch.setattr(project_endpoints, "repair_cavadalabs_usage_scope", repair)
+
+    response = await project_endpoints.repair_project_usage(
+        data=_request(project_ids=["project-1"]),
+        http_request=MagicMock(),
+        user_api_key_dict=_auth(),
+    )
+
+    assert response.repaired is True
+    repair.assert_awaited_once()
+    assert repair.call_args.kwargs["entity_type"] == "project"
+    assert repair.call_args.kwargs["entity_id"] == ["project-1"]
+    db.litellm_teamtable.find_unique.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_project_repair_endpoint_rejects_project_operator(monkeypatch):
     db = _db()
     db.litellm_usertable.find_unique = AsyncMock(
@@ -1834,6 +2539,27 @@ async def test_project_repair_endpoint_rejects_project_operator(monkeypatch):
             members_with_roles=[{"user_id": "user-1", "role": "user"}],
         )
     )
+    _patch_prisma(monkeypatch, db)
+    repair = AsyncMock()
+    monkeypatch.setattr(project_endpoints, "repair_cavadalabs_usage_scope", repair)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await project_endpoints.repair_project_usage(
+            data=_request(project_ids=["project-1"]),
+            http_request=MagicMock(),
+            user_api_key_dict=_auth(),
+        )
+
+    assert exc_info.value.status_code == 403
+    repair.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_project_repair_endpoint_rejects_native_project_viewer(monkeypatch):
+    db = _db()
+    _set_native_project_membership(db, "viewer")
+    db.cavadalabs_companymembertable = MagicMock()
+    db.cavadalabs_companymembertable.find_unique = AsyncMock(return_value=None)
     _patch_prisma(monkeypatch, db)
     repair = AsyncMock()
     monkeypatch.setattr(project_endpoints, "repair_cavadalabs_usage_scope", repair)

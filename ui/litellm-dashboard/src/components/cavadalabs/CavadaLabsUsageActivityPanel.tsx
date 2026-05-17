@@ -1,9 +1,24 @@
 "use client";
 
 import { ReloadOutlined, SyncOutlined } from "@ant-design/icons";
-import { Alert, Button, Card, Col, Empty, Input, Radio, Row, Select, Space, Statistic, Table, Typography } from "antd";
+import {
+  Alert,
+  Button,
+  Card,
+  Col,
+  Empty,
+  Input,
+  Pagination,
+  Radio,
+  Row,
+  Select,
+  Space,
+  Statistic,
+  Table,
+  Typography,
+} from "antd";
 import type { ColumnsType } from "antd/es/table";
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cavadaLabsErrorDetailFromUnknown,
   cavadalabsMissingSchemaDiagnosticsFromDetail,
@@ -12,6 +27,7 @@ import {
   isCavadaLabsMissingSchemaDetail,
   repairCavadaLabsUsage,
 } from "./api";
+import CavadaLabsUsageBreakdown from "./CavadaLabsUsageBreakdown";
 import type {
   CavadaLabsDailyActivityResponse,
   CavadaLabsDailyActivityResult,
@@ -21,7 +37,12 @@ import type {
   CavadaLabsUsageDiagnosticsResponse,
   CavadaLabsUsageRepairResponse,
 } from "./types";
-import { canManageCavadaLabsUsageScope } from "./usageScopeAccess";
+import {
+  canManageCavadaLabsUsageScope,
+  cavadaLabsUsageScopeRecords,
+  preferredCavadaLabsUsageEntityType,
+} from "./usageScopeAccess";
+import { cavadaLabsUsageReadinessSummary } from "./usageReadiness";
 
 const { Text, Title } = Typography;
 
@@ -69,7 +90,7 @@ const optionLabel = (row: CavadaLabsRecord, entityType: CavadaLabsUsageDiagnosti
 };
 
 const entityOptions = (context: CavadaLabsRuntimeContext, entityType: CavadaLabsUsageDiagnosticsEntityType) =>
-  (entityType === "company" ? context.companies : context.projects)
+  cavadaLabsUsageScopeRecords(context, entityType)
     .map((row) => {
       const value = entityType === "company" ? row.company_id : row.project_id;
       if (!value) return null;
@@ -105,6 +126,12 @@ const scopedBackfillDetails = (
   if (typeof item.key_metadata_spend_logs === "number") {
     details.push(`Key metadata rows: ${item.key_metadata_spend_logs}`);
   }
+  if (typeof item.legacy_keys_missing_metadata === "number" && item.legacy_keys_missing_metadata > 0) {
+    details.push(`Legacy keys missing metadata: ${item.legacy_keys_missing_metadata}`);
+  }
+  if (typeof item.legacy_key_spend_logs === "number" && item.legacy_key_spend_logs > 0) {
+    details.push(`Legacy key spend rows: ${item.legacy_key_spend_logs}`);
+  }
   if (typeof item.compatibility_spend_logs === "number") {
     details.push(`Compatibility mapping rows: ${item.compatibility_spend_logs}`);
   }
@@ -117,6 +144,7 @@ const scopedBackfillDetails = (
 const emptyUsageSummary = (
   diagnostics: CavadaLabsUsageDiagnosticsResponse | null,
   entityType: CavadaLabsUsageDiagnosticsEntityType,
+  entityId: string | undefined,
   errorDetail: CavadaLabsRecord | null,
   canManageScope: boolean,
 ) => {
@@ -152,6 +180,15 @@ const emptyUsageSummary = (
         "Run the CavadaLabs Prisma migration deploy before reading or repairing Company/Project usage.",
       details: diagnostics.missing_schema?.map((value) => `Missing schema: ${value}`) ?? [],
     };
+  }
+  const readinessSummary = cavadaLabsUsageReadinessSummary({
+    response: diagnostics,
+    entityType,
+    entityId,
+    canManageScope,
+  });
+  if (readinessSummary && readinessSummary.type !== "success") {
+    return readinessSummary;
   }
   if (!item) {
     return {
@@ -226,7 +263,7 @@ const emptyUsageSummary = (
 const CavadaLabsUsageActivityPanel: React.FC<CavadaLabsUsageActivityPanelProps> = ({ accessToken, context }) => {
   const initialDateRange = useMemo(defaultDateRange, []);
   const [entityType, setEntityType] = useState<CavadaLabsUsageDiagnosticsEntityType>(
-    context.companies.length > 0 || context.projects.length === 0 ? "company" : "project",
+    preferredCavadaLabsUsageEntityType(context),
   );
   const [selectedEntityId, setSelectedEntityId] = useState<string | undefined>(undefined);
   const [startDate, setStartDate] = useState(initialDateRange.startDate);
@@ -237,6 +274,8 @@ const CavadaLabsUsageActivityPanel: React.FC<CavadaLabsUsageActivityPanelProps> 
   const [apiKey, setApiKey] = useState("");
   const [minSpend, setMinSpend] = useState("");
   const [maxSpend, setMaxSpend] = useState("");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
   const [activity, setActivity] = useState<CavadaLabsDailyActivityResponse>(emptyActivity);
   const [diagnostics, setDiagnostics] = useState<CavadaLabsUsageDiagnosticsResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -246,22 +285,42 @@ const CavadaLabsUsageActivityPanel: React.FC<CavadaLabsUsageActivityPanelProps> 
   const [error, setError] = useState<string | null>(null);
   const [errorDetail, setErrorDetail] = useState<CavadaLabsRecord | null>(null);
 
-  const options = useMemo(() => entityOptions(context, entityType), [context, entityType]);
+  const companyOptions = useMemo(() => entityOptions(context, "company"), [context]);
+  const projectOptions = useMemo(() => entityOptions(context, "project"), [context]);
+  const options = entityType === "company" ? companyOptions : projectOptions;
 
   useEffect(() => {
-    if (entityType === "company" && context.companies.length === 0 && context.projects.length > 0) {
+    if (entityType === "company" && companyOptions.length === 0 && projectOptions.length > 0) {
       setEntityType("project");
       return;
     }
-    if (entityType === "project" && context.projects.length === 0 && context.companies.length > 0) {
+    if (entityType === "project" && projectOptions.length === 0 && companyOptions.length > 0) {
       setEntityType("company");
     }
-  }, [context.companies.length, context.projects.length, entityType]);
+  }, [companyOptions.length, entityType, projectOptions.length]);
 
   useEffect(() => {
     if (selectedEntityId && options.some((option) => option.value === selectedEntityId)) return;
     setSelectedEntityId(options[0]?.value);
   }, [options, selectedEntityId]);
+
+  const usageFilterKey = useMemo(
+    () =>
+      [
+        apiKey,
+        endDate,
+        entityType,
+        maxSpend,
+        minSpend,
+        model,
+        provider,
+        selectedEntityId ?? "",
+        startDate,
+        status ?? "",
+      ].join("\u0001"),
+    [apiKey, endDate, entityType, maxSpend, minSpend, model, provider, selectedEntityId, startDate, status],
+  );
+  const previousUsageFilterKey = useRef(usageFilterKey);
 
   const loadUsage = useCallback(async () => {
     if (!accessToken || !selectedEntityId || !startDate || !endDate) return;
@@ -277,6 +336,8 @@ const CavadaLabsUsageActivityPanel: React.FC<CavadaLabsUsageActivityPanelProps> 
           startDate,
           endDate,
           timezone,
+          page,
+          pageSize,
           model: model.trim() || undefined,
           provider: provider.trim() || undefined,
           status,
@@ -292,7 +353,10 @@ const CavadaLabsUsageActivityPanel: React.FC<CavadaLabsUsageActivityPanelProps> 
           timezone,
           model: model.trim() || undefined,
           provider: provider.trim() || undefined,
+          status,
           apiKey: apiKey.trim() || undefined,
+          minSpend: parseOptionalNumber(minSpend),
+          maxSpend: parseOptionalNumber(maxSpend),
         }),
       ]);
 
@@ -342,6 +406,8 @@ const CavadaLabsUsageActivityPanel: React.FC<CavadaLabsUsageActivityPanelProps> 
     maxSpend,
     minSpend,
     model,
+    page,
+    pageSize,
     provider,
     selectedEntityId,
     startDate,
@@ -349,10 +415,19 @@ const CavadaLabsUsageActivityPanel: React.FC<CavadaLabsUsageActivityPanelProps> 
   ]);
 
   useEffect(() => {
+    const filtersChanged = previousUsageFilterKey.current !== usageFilterKey;
+    previousUsageFilterKey.current = usageFilterKey;
+    if (filtersChanged && page !== 1) {
+      setPage(1);
+      return;
+    }
     loadUsage();
-  }, [loadUsage]);
+  }, [loadUsage, page, usageFilterKey]);
 
   const hasUsage = (activity.metadata.total_api_requests ?? 0) > 0;
+  const totalUsagePages = activity.metadata.total_pages ?? 0;
+  const showUsagePagination = totalUsagePages > 1 || page > 1;
+  const usagePaginationTotal = Math.max(totalUsagePages * pageSize, activity.results.length);
   const selectedScopeCanManage = canManageCavadaLabsUsageScope(context, entityType, selectedEntityId);
   const repairSchemaReady =
     diagnostics?.schema_status !== "missing_schema" && diagnostics?.migration_status !== "schema_missing";
@@ -384,7 +459,10 @@ const CavadaLabsUsageActivityPanel: React.FC<CavadaLabsUsageActivityPanelProps> 
           timezone: new Date().getTimezoneOffset(),
           model: model.trim() || undefined,
           provider: provider.trim() || undefined,
+          status,
           apiKey: apiKey.trim() || undefined,
+          minSpend: parseOptionalNumber(minSpend),
+          maxSpend: parseOptionalNumber(maxSpend),
           dryRun,
         });
         setRepairPreview(repair);
@@ -409,16 +487,19 @@ const CavadaLabsUsageActivityPanel: React.FC<CavadaLabsUsageActivityPanelProps> 
       entityType,
       loadUsage,
       model,
+      maxSpend,
+      minSpend,
       provider,
       repairableDiagnostic,
       selectedEntityId,
       startDate,
+      status,
     ],
   );
   const emptySummary =
     hasUsage || (loading && diagnostics === null && errorDetail === null)
       ? null
-      : emptyUsageSummary(diagnostics, entityType, errorDetail, selectedScopeCanManage);
+      : emptyUsageSummary(diagnostics, entityType, selectedEntityId, errorDetail, selectedScopeCanManage);
 
   const columns: ColumnsType<CavadaLabsDailyActivityResult> = [
     {
@@ -490,8 +571,8 @@ const CavadaLabsUsageActivityPanel: React.FC<CavadaLabsUsageActivityPanelProps> 
               optionType="button"
               buttonStyle="solid"
               options={[
-                { label: "Company", value: "company" },
-                { label: "Project", value: "project" },
+                { label: "Company", value: "company", disabled: companyOptions.length === 0 },
+                { label: "Project", value: "project", disabled: projectOptions.length === 0 },
               ]}
             />
           </Col>
@@ -693,10 +774,29 @@ const CavadaLabsUsageActivityPanel: React.FC<CavadaLabsUsageActivityPanelProps> 
             columns={columns}
             dataSource={activity.results}
             loading={loading}
+            expandable={{
+              expandedRowRender: (row) => (
+                <CavadaLabsUsageBreakdown breakdown={row.breakdown} entityLabel={entityLabel(entityType)} />
+              ),
+            }}
             pagination={false}
             scroll={{ x: 1030 }}
           />
         )}
+        {showUsagePagination ? (
+          <Pagination
+            aria-label="Usage day pagination"
+            current={page}
+            pageSize={pageSize}
+            total={usagePaginationTotal}
+            showSizeChanger
+            pageSizeOptions={[30, 60, 100, 180].map(String)}
+            onChange={(nextPage, nextPageSize) => {
+              setPage(nextPage);
+              setPageSize(nextPageSize);
+            }}
+          />
+        ) : null}
       </Space>
     </Card>
   );

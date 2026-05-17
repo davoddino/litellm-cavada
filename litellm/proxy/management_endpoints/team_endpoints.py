@@ -74,7 +74,9 @@ from litellm.proxy.auth.auth_checks import (
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.cavadalabs.access_control import (
     require_company_access,
+    require_project_access,
     resolve_cavadalabs_team_list_filters,
+    visible_project_ids_for_user,
 )
 from litellm.proxy.management_endpoints.common_utils import (
     _is_user_org_admin_for_team,
@@ -132,9 +134,58 @@ def _sanitize_for_log(value: Any) -> str:
     return text.replace("\r", "").replace("\n", "")
 
 
+def _cavadalabs_row_value(row: Any, field_name: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(field_name)
+    return getattr(row, field_name, None)
+
+
+async def _cavadalabs_project_id_for_compat_team(
+    db: Any,
+    team_id: Optional[str],
+) -> Optional[str]:
+    if not team_id:
+        return None
+    try:
+        project = await db.cavadalabs_projecttable.find_unique(
+            where={"litellm_team_id": team_id}
+        )
+    except AttributeError:
+        return None
+    if project is None:
+        return None
+    project_id = _cavadalabs_row_value(project, "project_id")
+    if isinstance(project_id, str) and project_id:
+        return project_id
+    return None
+
+
+async def _has_cavadalabs_project_team_access(
+    db: Any,
+    *,
+    team_obj: LiteLLM_TeamTable,
+    user_api_key_dict: UserAPIKeyAuth,
+    require_admin: bool,
+) -> bool:
+    project_id = await _cavadalabs_project_id_for_compat_team(
+        db,
+        team_obj.team_id,
+    )
+    if project_id is None:
+        return False
+    await require_project_access(
+        db,
+        project_id=project_id,
+        user_api_key_dict=user_api_key_dict,
+        require_admin=require_admin,
+    )
+    return True
+
+
 async def _verify_team_access(
     team_obj: LiteLLM_TeamTable,
     user_api_key_dict: UserAPIKeyAuth,
+    db: Optional[Any] = None,
 ) -> None:
     """
     Verify the caller is authorized to manage the given team.
@@ -146,7 +197,10 @@ async def _verify_team_access(
 
     Raises HTTPException(403) otherwise.
     """
-    if user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN:
+    if user_api_key_dict.user_role in {
+        LitellmUserRoles.PROXY_ADMIN,
+        LitellmUserRoles.PROXY_ADMIN.value,
+    }:
         return
 
     if _is_user_team_admin(user_api_key_dict=user_api_key_dict, team_obj=team_obj):
@@ -154,6 +208,14 @@ async def _verify_team_access(
 
     if await _is_user_org_admin_for_team(
         user_api_key_dict=user_api_key_dict, team_obj=team_obj
+    ):
+        return
+
+    if db is not None and await _has_cavadalabs_project_team_access(
+        db,
+        team_obj=team_obj,
+        user_api_key_dict=user_api_key_dict,
+        require_admin=True,
     ):
         return
 
@@ -1666,6 +1728,7 @@ async def update_team(  # noqa: PLR0915
         await _verify_team_access(
             team_obj=LiteLLM_TeamTable(**existing_team_row.model_dump()),
             user_api_key_dict=user_api_key_dict,
+            db=prisma_client.db,
         )
 
         if data.soft_budget is not None:
@@ -2049,6 +2112,7 @@ async def _validate_team_member_add_permissions(
     user_api_key_dict: UserAPIKeyAuth,
     complete_team_data: LiteLLM_TeamTable,
     data: TeamMemberAddRequest,
+    prisma_client: Optional[PrismaClient] = None,
 ) -> None:
     """Validate if user has permission to add members to the team.
 
@@ -2070,6 +2134,13 @@ async def _validate_team_member_add_permissions(
         return
     if await _is_user_org_admin_for_team(
         user_api_key_dict=user_api_key_dict, team_obj=complete_team_data
+    ):
+        return
+    if prisma_client is not None and await _has_cavadalabs_project_team_access(
+        prisma_client.db,
+        team_obj=complete_team_data,
+        user_api_key_dict=user_api_key_dict,
+        require_admin=True,
     ):
         return
 
@@ -2471,6 +2542,7 @@ async def team_member_add(
         user_api_key_dict=user_api_key_dict,
         complete_team_data=complete_team_data,
         data=data,
+        prisma_client=prisma_client,
     )
 
     # Validate and populate user_email/user_id for members before processing
@@ -2590,17 +2662,14 @@ async def team_member_delete(
         )
     existing_team_row = LiteLLM_TeamTable(**_existing_team_row.model_dump())
 
-    ## CHECK IF USER IS PROXY ADMIN OR TEAM ADMIN OR ORG ADMIN
-
-    if (
-        user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value
-        and not _is_user_team_admin(
-            user_api_key_dict=user_api_key_dict, team_obj=existing_team_row
+    ## CHECK IF USER IS PROXY ADMIN OR TEAM ADMIN, OR NATIVE CAVADALABS PROJECT ADMIN
+    try:
+        await _verify_team_access(
+            team_obj=existing_team_row,
+            user_api_key_dict=user_api_key_dict,
+            db=prisma_client.db,
         )
-        and not await _is_user_org_admin_for_team(
-            user_api_key_dict=user_api_key_dict, team_obj=existing_team_row
-        )
-    ):
+    except HTTPException as exc:
         raise HTTPException(
             status_code=403,
             detail={
@@ -2608,7 +2677,7 @@ async def team_member_delete(
                     "/team/member_delete", existing_team_row.team_id
                 )
             },
-        )
+        ) from exc
 
     ## DELETE MEMBER FROM TEAM
     is_member_in_team, new_team_members = _cleanup_members_with_roles(
@@ -3114,6 +3183,7 @@ async def delete_team(
         await _verify_team_access(
             team_obj=team_row_pydantic,
             user_api_key_dict=user_api_key_dict,
+            db=prisma_client.db,
         )
 
         team_rows.append(team_row_pydantic)
@@ -3338,6 +3408,29 @@ async def validate_membership(
     )
 
 
+async def _validate_team_info_access(
+    prisma_client: PrismaClient,
+    *,
+    user_api_key_dict: UserAPIKeyAuth,
+    team_table: LiteLLM_TeamTable,
+) -> None:
+    try:
+        await validate_membership(
+            user_api_key_dict=user_api_key_dict,
+            team_table=team_table,
+        )
+        return
+    except HTTPException as legacy_exception:
+        if await _has_cavadalabs_project_team_access(
+            prisma_client.db,
+            team_obj=team_table,
+            user_api_key_dict=user_api_key_dict,
+            require_admin=False,
+        ):
+            return
+        raise legacy_exception
+
+
 async def _add_team_member_budget_table(
     team_member_budget_id: str,
     prisma_client: PrismaClient,
@@ -3426,7 +3519,8 @@ async def team_info(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail={"message": f"Team not found, passed team id: {team_id}."},
             )
-        await validate_membership(
+        await _validate_team_info_access(
+            prisma_client=prisma_client,
             user_api_key_dict=user_api_key_dict,
             team_table=LiteLLM_TeamTable(**team_info.model_dump()),
         )
@@ -3686,6 +3780,7 @@ async def block_team(
     await _verify_team_access(
         team_obj=LiteLLM_TeamTable(**existing_team.model_dump()),
         user_api_key_dict=user_api_key_dict,
+        db=prisma_client.db,
     )
 
     record = await prisma_client.db.litellm_teamtable.update(
@@ -3738,6 +3833,7 @@ async def unblock_team(
     await _verify_team_access(
         team_obj=LiteLLM_TeamTable(**existing_team.model_dump()),
         user_api_key_dict=user_api_key_dict,
+        db=prisma_client.db,
     )
 
     record = await prisma_client.db.litellm_teamtable.update(
@@ -3836,6 +3932,7 @@ async def _get_org_admin_org_ids(
 async def _build_team_list_where_conditions(
     prisma_client: PrismaClient,
     team_id: Optional[str],
+    team_ids: Optional[List[str]],
     team_alias: Optional[str],
     organization_id: Optional[str],
     user_id: Optional[str],
@@ -3855,6 +3952,10 @@ async def _build_team_list_where_conditions(
 
     if team_id:
         where_conditions["team_id"] = team_id
+    elif team_ids is not None:
+        if not team_ids:
+            return None
+        where_conditions["team_id"] = {"in": team_ids}
 
     if team_alias:
         where_conditions["team_alias"] = {
@@ -4134,6 +4235,114 @@ async def _resolve_cavadalabs_team_list_compat_scope(
     return cavadalabs_organization_id, cavadalabs_team_id, None
 
 
+def _is_cavadalabs_missing_schema_exception(exc: HTTPException) -> bool:
+    detail = exc.detail
+    return (
+        exc.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        and isinstance(detail, dict)
+        and detail.get("schema_status") == "missing_schema"
+    )
+
+
+async def _resolve_default_cavadalabs_team_ids_for_user(
+    *,
+    db: Any,
+    user_api_key_dict: UserAPIKeyAuth,
+) -> Optional[List[str]]:
+    if _user_has_admin_view(user_api_key_dict):
+        return None
+
+    try:
+        visible_project_ids = await visible_project_ids_for_user(
+            db,
+            user_api_key_dict,
+        )
+    except HTTPException as exc:
+        if _is_cavadalabs_missing_schema_exception(exc):
+            return None
+        raise
+    if not visible_project_ids:
+        return None
+
+    try:
+        project_rows = await db.cavadalabs_projecttable.find_many(
+            where={"project_id": {"in": sorted(visible_project_ids)}}
+        )
+    except AttributeError:
+        return None
+
+    return sorted(
+        {
+            team_id
+            for project in project_rows
+            if (team_id := getattr(project, "litellm_team_id", None)) is not None
+        }
+    )
+
+
+async def _resolve_team_list_cavadalabs_scope(
+    *,
+    db: Any,
+    user_api_key_dict: UserAPIKeyAuth,
+    cavadalabs_company_id: Optional[str],
+    cavadalabs_project_id: Optional[str],
+    organization_id: Optional[str],
+    team_id: Optional[str],
+    user_id: Optional[str],
+    page: int,
+    page_size: int,
+) -> Tuple[
+    Optional[str],
+    Optional[str],
+    Optional[List[str]],
+    Optional[Dict[str, Any]],
+    bool,
+]:
+    has_explicit_cavadalabs_scope = (
+        cavadalabs_company_id is not None or cavadalabs_project_id is not None
+    )
+    (
+        cavadalabs_organization_id,
+        cavadalabs_team_id,
+        cavadalabs_empty_response,
+    ) = await _resolve_cavadalabs_team_list_compat_scope(
+        db=db,
+        user_api_key_dict=user_api_key_dict,
+        cavadalabs_company_id=cavadalabs_company_id,
+        cavadalabs_project_id=cavadalabs_project_id,
+        page=page,
+        page_size=page_size,
+    )
+    if cavadalabs_empty_response is not None:
+        return organization_id, team_id, None, cavadalabs_empty_response, True
+    if cavadalabs_organization_id is not None:
+        organization_id = cavadalabs_organization_id
+    if cavadalabs_team_id is not None:
+        team_id = cavadalabs_team_id
+
+    default_cavadalabs_team_ids: Optional[List[str]] = None
+    if (
+        not has_explicit_cavadalabs_scope
+        and organization_id is None
+        and team_id is None
+        and user_id is None
+    ):
+        default_cavadalabs_team_ids = (
+            await _resolve_default_cavadalabs_team_ids_for_user(
+                db=db,
+                user_api_key_dict=user_api_key_dict,
+            )
+        )
+
+    return (
+        organization_id,
+        team_id,
+        default_cavadalabs_team_ids,
+        None,
+        has_explicit_cavadalabs_scope or default_cavadalabs_team_ids is not None,
+    )
+
+
 @router.get(
     "/v2/team/list",
     tags=["team management"],
@@ -4228,23 +4437,24 @@ async def list_team_v2(
         cavadalabs_project_id = None
 
     (
-        cavadalabs_organization_id,
-        cavadalabs_team_id,
+        organization_id,
+        team_id,
+        default_cavadalabs_team_ids,
         cavadalabs_empty_response,
-    ) = await _resolve_cavadalabs_team_list_compat_scope(
+        cavadalabs_scope_authorized,
+    ) = await _resolve_team_list_cavadalabs_scope(
         db=prisma_client.db,
         user_api_key_dict=user_api_key_dict,
         cavadalabs_company_id=cavadalabs_company_id,
         cavadalabs_project_id=cavadalabs_project_id,
+        organization_id=organization_id,
+        team_id=team_id,
+        user_id=user_id,
         page=page,
         page_size=page_size,
     )
     if cavadalabs_empty_response is not None:
         return cavadalabs_empty_response
-    if cavadalabs_organization_id is not None:
-        organization_id = cavadalabs_organization_id
-    if cavadalabs_team_id is not None:
-        team_id = cavadalabs_team_id
 
     # --- Access control ---
     user_id, org_admin_org_ids = await _enforce_list_team_v2_access(
@@ -4254,9 +4464,7 @@ async def list_team_v2(
         prisma_client=prisma_client,
         user_api_key_cache=user_api_key_cache,
         proxy_logging_obj=proxy_logging_obj,
-        cavadalabs_scope_authorized=(
-            cavadalabs_company_id is not None or cavadalabs_project_id is not None
-        ),
+        cavadalabs_scope_authorized=cavadalabs_scope_authorized,
     )
 
     if status is not None and status != "deleted":
@@ -4277,6 +4485,7 @@ async def list_team_v2(
     where_conditions = await _build_team_list_where_conditions(
         prisma_client=prisma_client,
         team_id=team_id,
+        team_ids=default_cavadalabs_team_ids,
         team_alias=team_alias,
         organization_id=organization_id,
         user_id=user_id,

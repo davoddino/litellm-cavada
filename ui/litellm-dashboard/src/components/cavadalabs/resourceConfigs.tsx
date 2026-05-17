@@ -11,6 +11,7 @@ import type {
   CavadaLabsResourceConfig,
   CavadaLabsRuntimeContext,
 } from "./types";
+import { modelNamesToOptions } from "./modelOptions";
 import { enumOptions, toOptions } from "./utils";
 
 const status = {
@@ -102,12 +103,31 @@ export const buildCavadaLabsResourceConfigs = (
   const manageableCompanies = hasExplicitManageFlag(context.companies)
     ? context.companies.filter((company) => company.cavadalabs_can_manage === true)
     : context.companies;
+  const manageableProjects = hasExplicitManageFlag(context.projects)
+    ? context.projects.filter((project) => project.cavadalabs_can_manage === true)
+    : context.projects;
+  const manageableProjectCompanyIds = new Set(
+    manageableProjects.map((project) => project.company_id).filter(Boolean),
+  );
+  const complianceCreateCompanies =
+    hasExplicitManageFlag(context.companies) || hasExplicitManageFlag(context.projects)
+      ? context.companies.filter(
+          (company) =>
+            company.cavadalabs_can_manage === true || manageableProjectCompanyIds.has(company.company_id),
+        )
+      : context.companies;
+  const canCreateComplianceResource = (runtimeContext: CavadaLabsRuntimeContext): boolean =>
+    (runtimeContext.companies.length > 0 || runtimeContext.projects.length > 0) &&
+    (canCreateFor(runtimeContext.companies) || canCreateFor(runtimeContext.projects));
   const companyOptions = toOptions(context.companies, "company_id", "legal_name");
   const manageableCompanyOptions = toOptions(manageableCompanies, "company_id", "legal_name");
+  const complianceCompanyOptions = toOptions(complianceCreateCompanies, "company_id", "legal_name");
   const projectOptions = toOptions(context.projects, "project_id", "name");
+  const manageableProjectOptions = toOptions(manageableProjects, "project_id", "name");
   const chatbotOptions = toOptions(context.chatbots, "chatbot_id", "name");
   const collectionOptions = toOptions(context.ragCollections, "collection_id", "name");
   const nodeOptions = toOptions(context.nodes, "node_id", "display_name");
+  const modelOptions = modelNamesToOptions(context.availableModels ?? []);
 
   const companyFilter = {
     name: "company_id",
@@ -202,7 +222,13 @@ export const buildCavadaLabsResourceConfigs = (
         { name: "name", label: "Name", type: "text", required: true },
         { name: "status", label: "Status", type: "select", options: status.project, defaultValue: "dev" },
         { name: "budget", label: "Budget", type: "number", min: 0, step: 0.01 },
-        { name: "allowed_models", label: "Allowed models", type: "tags", fullWidth: true },
+        {
+          name: "allowed_models",
+          label: "Allowed models",
+          type: "multiSelect",
+          options: modelOptions,
+          fullWidth: true,
+        },
         {
           name: "allowed_rag_collections",
           label: "Allowed RAG collections",
@@ -219,7 +245,13 @@ export const buildCavadaLabsResourceConfigs = (
         { name: "name", label: "Name", type: "text", required: true },
         { name: "status", label: "Status", type: "select", options: status.project },
         { name: "budget", label: "Budget", type: "number", min: 0, step: 0.01, emptyValue: "null" },
-        { name: "allowed_models", label: "Allowed models", type: "tags", fullWidth: true },
+        {
+          name: "allowed_models",
+          label: "Allowed models",
+          type: "multiSelect",
+          options: modelOptions,
+          fullWidth: true,
+        },
         {
           name: "allowed_rag_collections",
           label: "Allowed RAG collections",
@@ -857,6 +889,7 @@ export const buildCavadaLabsResourceConfigs = (
       rowKey: "document_id",
       createPath: "/cavadalabs/compliance-documents",
       createLabel: "New document",
+      canCreate: canCreateComplianceResource,
       filters: [
         companyFilter,
         projectFilter,
@@ -866,8 +899,8 @@ export const buildCavadaLabsResourceConfigs = (
         { name: "status", label: "Status", type: "select", options: status.compliance },
       ],
       createFields: [
-        companyField(companyOptions),
-        projectField(projectOptions, false),
+        companyField(complianceCompanyOptions),
+        projectField(manageableProjectOptions, false),
         chatbotField(chatbotOptions, false),
         collectionField(collectionOptions, false),
         { name: "framework", label: "Framework", type: "select", options: frameworkOptions, defaultValue: "gdpr" },
@@ -904,6 +937,7 @@ export const buildCavadaLabsResourceConfigs = (
       rowKey: "evidence_id",
       createPath: "/cavadalabs/compliance-evidence",
       createLabel: "New evidence",
+      canCreate: canCreateComplianceResource,
       filters: [
         companyFilter,
         projectFilter,
@@ -913,8 +947,8 @@ export const buildCavadaLabsResourceConfigs = (
         { name: "status", label: "Status", type: "select", options: status.compliance },
       ],
       createFields: [
-        companyField(companyOptions),
-        projectField(projectOptions, false),
+        companyField(complianceCompanyOptions),
+        projectField(manageableProjectOptions, false),
         chatbotField(chatbotOptions, false),
         collectionField(collectionOptions, false),
         { name: "framework", label: "Framework", type: "select", options: frameworkOptions, required: true },
@@ -946,14 +980,15 @@ export const buildCavadaLabsResourceConfigs = (
       rowKey: "activity_id",
       createPath: "/cavadalabs/processing-activities",
       createLabel: "New activity",
+      canCreate: canCreateComplianceResource,
       filters: [
         companyFilter,
         projectFilter,
         { name: "status", label: "Status", type: "select", options: status.compliance },
       ],
       createFields: [
-        companyField(companyOptions),
-        projectField(projectOptions, false),
+        companyField(complianceCompanyOptions),
+        projectField(manageableProjectOptions, false),
         { name: "name", label: "Name", type: "text", required: true },
         { name: "status", label: "Status", type: "select", options: status.compliance, defaultValue: "active" },
         { name: "controller", label: "Controller", type: "text" },
@@ -985,10 +1020,11 @@ export const buildCavadaLabsResourceConfigs = (
       rowKey: "dsr_id",
       createPath: "/cavadalabs/data-subject-requests",
       createLabel: "New DSR",
+      canCreate: canCreateComplianceResource,
       filters: [companyFilter, projectFilter, { name: "status", label: "Status", type: "select", options: status.dsr }],
       createFields: [
-        companyField(companyOptions),
-        projectField(projectOptions, false),
+        companyField(complianceCompanyOptions),
+        projectField(manageableProjectOptions, false),
         { name: "requester_email", label: "Requester email", type: "text", required: true },
         {
           name: "request_type",
@@ -1021,6 +1057,7 @@ export const buildCavadaLabsResourceConfigs = (
       rowKey: "assessment_id",
       createPath: "/cavadalabs/ai-system-assessments",
       createLabel: "New assessment",
+      canCreate: canCreateComplianceResource,
       filters: [
         companyFilter,
         projectFilter,
@@ -1034,8 +1071,8 @@ export const buildCavadaLabsResourceConfigs = (
         },
       ],
       createFields: [
-        companyField(companyOptions),
-        projectField(projectOptions, false),
+        companyField(complianceCompanyOptions),
+        projectField(manageableProjectOptions, false),
         chatbotField(chatbotOptions, false),
         { name: "name", label: "Name", type: "text", required: true },
         { name: "version", label: "Version", type: "number", min: 1, defaultValue: 1 },

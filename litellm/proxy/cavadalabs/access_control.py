@@ -837,10 +837,16 @@ async def with_company_access_metadata(
         company=company,
         user_api_key_dict=user_api_key_dict,
     )
+    usage_access_info = await company_wide_access_info_for_user(
+        db,
+        company=company,
+        user_api_key_dict=user_api_key_dict,
+    )
     return company.model_copy(
         update={
             "cavadalabs_access_role": access_info.role,
             "cavadalabs_can_manage": access_info.can_manage,
+            "cavadalabs_can_view_usage": usage_access_info.can_view,
         }
     )
 
@@ -860,6 +866,7 @@ async def with_project_access_metadata(
         update={
             "cavadalabs_access_role": access_info.role,
             "cavadalabs_can_manage": access_info.can_manage,
+            "cavadalabs_can_view_usage": access_info.can_view,
         }
     )
 

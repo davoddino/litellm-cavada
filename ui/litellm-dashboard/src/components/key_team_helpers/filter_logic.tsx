@@ -11,8 +11,9 @@ import {
   findCavadaLabsProjectForCompatibilityTeam,
   getKeyCavadaLabsCompanyId,
   getKeyCavadaLabsProjectId,
-  useCavadaLabsKeyContextOptions,
 } from "../cavadalabs/keyContext";
+import type { CavadaLabsKeyContextOptions } from "../cavadalabs/keyContext";
+import { resolveCavadaLabsProductContext } from "../cavadalabs/productContext";
 
 export interface FilterState {
   "Team ID": string;
@@ -30,7 +31,7 @@ export interface FilterState {
 const keyMatchesCavadaLabsCompany = (
   key: KeyResponse,
   companyId: string,
-  companies: ReturnType<typeof useCavadaLabsKeyContextOptions>["companies"],
+  companies: CavadaLabsKeyContextOptions["companies"],
 ) => {
   const explicitCompanyId = getKeyCavadaLabsCompanyId(key);
   if (explicitCompanyId) {
@@ -48,7 +49,7 @@ const keyMatchesCavadaLabsCompany = (
 const keyMatchesCavadaLabsProject = (
   key: KeyResponse,
   projectId: string,
-  projects: ReturnType<typeof useCavadaLabsKeyContextOptions>["projects"],
+  projects: CavadaLabsKeyContextOptions["projects"],
 ) => {
   const explicitProjectId = getKeyCavadaLabsProjectId(key);
   if (explicitProjectId) {
@@ -59,7 +60,42 @@ const keyMatchesCavadaLabsProject = (
   return compatibilityProject?.project_id === projectId;
 };
 
-export function useFilterLogic({ keys, teams }: { keys: KeyResponse[]; teams: Team[] | null }) {
+export const normalizeVirtualKeyFilterState = (newFilters: Record<string, string>): FilterState => {
+  const companyId = newFilters["Company ID"] || "";
+  const projectId = newFilters["Project ID"] || "";
+  const hasCavadaLabsProductFilter = Boolean(companyId || projectId);
+
+  return {
+    "Team ID": hasCavadaLabsProductFilter ? "" : newFilters["Team ID"] || "",
+    "Organization ID": hasCavadaLabsProductFilter ? "" : newFilters["Organization ID"] || "",
+    "Company ID": companyId,
+    "Project ID": projectId,
+    "Key Alias": newFilters["Key Alias"] || "",
+    "Key Hash": newFilters["Key Hash"] || "",
+    "User ID": newFilters["User ID"] || "",
+    "Sort By": newFilters["Sort By"] || "created_at",
+    "Sort Order": newFilters["Sort Order"] || "desc",
+  };
+};
+
+const EMPTY_CAVADALABS_CONTEXT_OPTIONS: CavadaLabsKeyContextOptions = {
+  companies: [],
+  projects: [],
+  isLoading: false,
+  errorDetail: null,
+  contextKnown: false,
+  isCavadaLabsProductContext: false,
+};
+
+export function useFilterLogic({
+  keys,
+  teams,
+  cavadalabsContextOptions = EMPTY_CAVADALABS_CONTEXT_OPTIONS,
+}: {
+  keys: KeyResponse[];
+  teams: Team[] | null;
+  cavadalabsContextOptions?: CavadaLabsKeyContextOptions;
+}) {
   const defaultFilters: FilterState = {
     "Team ID": "",
     "Organization ID": "",
@@ -72,7 +108,8 @@ export function useFilterLogic({ keys, teams }: { keys: KeyResponse[]; teams: Te
     "Sort Order": "desc",
   };
   const { accessToken } = useAuthorized();
-  const { companies: allCompanies, projects: allProjects } = useCavadaLabsKeyContextOptions(accessToken);
+  const { companies: allCompanies, projects: allProjects } = cavadalabsContextOptions;
+  const cavadalabsProductContext = resolveCavadaLabsProductContext(cavadalabsContextOptions);
   const [filters, setFilters] = useState<FilterState>(defaultFilters);
   const [allTeams, setAllTeams] = useState<Team[]>(teams || []);
   const [allOrganizations, setAllOrganizations] = useState<
@@ -187,17 +224,7 @@ export function useFilterLogic({ keys, teams }: { keys: KeyResponse[]; teams: Te
   }, [teams]);
 
   const handleFilterChange = (newFilters: Record<string, string>, skipDebounce: boolean = false) => {
-    const nextFilters: FilterState = {
-      "Team ID": newFilters["Team ID"] || "",
-      "Organization ID": newFilters["Organization ID"] || "",
-      "Company ID": newFilters["Company ID"] || "",
-      "Project ID": newFilters["Project ID"] || "",
-      "Key Alias": newFilters["Key Alias"] || "",
-      "Key Hash": newFilters["Key Hash"] || "",
-      "User ID": newFilters["User ID"] || "",
-      "Sort By": newFilters["Sort By"] || "created_at",
-      "Sort Order": newFilters["Sort Order"] || "desc",
-    };
+    const nextFilters = normalizeVirtualKeyFilterState(newFilters);
 
     // Update filters state
     setFilters(nextFilters);
@@ -226,6 +253,7 @@ export function useFilterLogic({ keys, teams }: { keys: KeyResponse[]; teams: Te
     allOrganizations,
     allCompanies,
     allProjects,
+    cavadalabsProductContext,
     handleFilterChange,
     handleFilterReset,
   };

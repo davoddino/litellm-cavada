@@ -102,6 +102,8 @@ interface CavadaLabsUsageDiagnostic {
   metadata_spend_logs?: number;
   compatibility_spend_logs?: number;
   key_metadata_spend_logs?: number;
+  legacy_keys_missing_metadata?: number;
+  legacy_key_spend_logs?: number;
   unmapped_spend_logs?: number;
   unfiltered_attributable_spend_logs?: number;
   all_time_attributable_spend_logs?: number;
@@ -150,6 +152,16 @@ const ENTITY_FETCH_FNS: Record<EntityType, (...args: any[]) => Promise<any>> = {
   customer: customerDailyActivityCall,
   agent: agentDailyActivityCall,
   user: userDailyActivityCall,
+};
+
+const cavadaLabsDiagnosticsScopeIds = (
+  isCavadaLabsUsageEntity: boolean,
+  selectedEntityIds: string[],
+  entityList: EntityList[] | null,
+): string[] => {
+  if (!isCavadaLabsUsageEntity) return [];
+  if (selectedEntityIds.length > 0) return selectedEntityIds;
+  return entityList?.map((item) => item.value).filter(Boolean) ?? [];
 };
 
 const cavadalabsEntityLabel = (entityType: "company" | "project") => (entityType === "company" ? "Company" : "Project");
@@ -203,6 +215,12 @@ const cavadalabsUsageDiagnosticSummary = (
     }
     if (typeof diagnostic.key_metadata_spend_logs === "number") {
       details.push(`Key metadata rows: ${diagnostic.key_metadata_spend_logs}`);
+    }
+    if (typeof diagnostic.legacy_keys_missing_metadata === "number" && diagnostic.legacy_keys_missing_metadata > 0) {
+      details.push(`Legacy keys missing metadata: ${diagnostic.legacy_keys_missing_metadata}`);
+    }
+    if (typeof diagnostic.legacy_key_spend_logs === "number" && diagnostic.legacy_key_spend_logs > 0) {
+      details.push(`Legacy key spend rows: ${diagnostic.legacy_key_spend_logs}`);
     }
     return {
       type: "warning" as const,
@@ -296,6 +314,7 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
 
   const fetchFn = ENTITY_FETCH_FNS[entityType];
   const enabled = !!accessToken && !!startTime && !!endTime;
+  const isCavadaLabsUsageEntity = entityType === "company" || entityType === "project";
 
   const {
     data: spendDataRaw,
@@ -307,6 +326,7 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
     fetchFn,
     args: [accessToken, startTime, endTime, entityFilterArg],
     enabled,
+    metadataAggregation: isCavadaLabsUsageEntity ? "full_range" : "sum_pages",
   });
 
   const spendData = spendDataRaw as unknown as EntitySpendData;
@@ -328,10 +348,9 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
   const modelMetrics = processActivityData(spendData, "models", teams || []);
   const keyMetrics = processActivityData(spendData, "api_keys", teams || []);
   const agentMetrics = entityType === "team" ? processActivityData(agentSpendData, "entities", teams || []) : {};
-  const isCavadaLabsUsageEntity = entityType === "company" || entityType === "project";
   const selectedCavadaLabsEntityIds = useMemo(
-    () => (isCavadaLabsUsageEntity ? selectedTags : []),
-    [isCavadaLabsUsageEntity, selectedTags],
+    () => cavadaLabsDiagnosticsScopeIds(isCavadaLabsUsageEntity, selectedTags, entityList),
+    [entityList, isCavadaLabsUsageEntity, selectedTags],
   );
 
   useEffect(() => {

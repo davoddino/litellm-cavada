@@ -56,6 +56,7 @@ from litellm.proxy.cavadalabs.key_context import (
     _apply_cavadalabs_key_context,
     _cavadalabs_key_context_filter,
     _can_access_existing_cavadalabs_key,
+    _extract_cavadalabs_key_context,
     _is_proxy_admin_user,
     _metadata_to_dict,
     _normalize_cavadalabs_generate_key_request,
@@ -920,14 +921,11 @@ async def _common_key_generation_helper(  # noqa: PLR0915
         from litellm.proxy.proxy_server import prisma_client
 
         if prisma_client:
-            # Mirror the membership rule applied to /key/update: when the
-            # caller specifies an organization_id, require that they are a
-            # member of (or proxy admin over) the target organization.
-            _is_proxy_admin = (
-                user_api_key_dict.user_role is not None
-                and user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value
-            )
-            if not _is_proxy_admin:
+            if _should_validate_litellm_org_assignment_for_key_generate(
+                data_json=data_json,
+                organization_id=effective_organization_id,
+                user_api_key_dict=user_api_key_dict,
+            ):
                 await _validate_caller_can_assign_key_org(
                     user_api_key_dict=user_api_key_dict,
                     organization_id=effective_organization_id,
@@ -1327,6 +1325,32 @@ async def _validate_caller_can_assign_key_org(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Caller is not a member of organization_id={organization_id}",
         )
+
+
+def _has_cavadalabs_product_key_context(data_json: Dict[str, Any]) -> bool:
+    company_id, project_id = _extract_cavadalabs_key_context(
+        _metadata_to_dict(data_json.get("metadata"))
+    )
+    company_id = company_id or _optional_str(
+        data_json.get(CAVADALABS_COMPANY_METADATA_KEY)
+    )
+    project_id = project_id or _optional_str(
+        data_json.get(CAVADALABS_PROJECT_METADATA_KEY)
+    )
+    return company_id is not None and project_id is not None
+
+
+def _should_validate_litellm_org_assignment_for_key_generate(
+    *,
+    data_json: Dict[str, Any],
+    organization_id: Optional[str],
+    user_api_key_dict: UserAPIKeyAuth,
+) -> bool:
+    if organization_id is None:
+        return False
+    if _is_proxy_admin_user(user_api_key_dict):
+        return False
+    return not _has_cavadalabs_product_key_context(data_json)
 
 
 async def _check_org_key_limits(

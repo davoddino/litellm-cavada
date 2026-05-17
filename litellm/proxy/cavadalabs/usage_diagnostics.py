@@ -13,9 +13,13 @@ from litellm.proxy.cavadalabs.usage_diagnostics_items import (
     _company_usage_diagnostics,
     _project_usage_diagnostics,
 )
+from litellm.proxy.cavadalabs.usage_diagnostics_readiness import (
+    build_usage_readiness_checks,
+)
 from litellm.proxy.cavadalabs.usage_schema_readiness import (
     USAGE_BACKFILL_MIGRATION_COMMAND as _USAGE_BACKFILL_MIGRATION_COMMAND,
     USAGE_BACKFILL_MIGRATION_NAME as _USAGE_BACKFILL_MIGRATION_NAME,
+    UsageSchemaState,
     diagnostics_migration_status as _diagnostics_migration_status,
     probe_usage_schema as _probe_usage_schema,
     schema_missing_diagnostics as _schema_missing_diagnostics,
@@ -35,6 +39,96 @@ from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
 )
 
 
+def _missing_schema_contains(missing_schema: List[str], *markers: str) -> bool:
+    return any(
+        all(marker in missing_item for marker in markers)
+        for missing_item in missing_schema
+    )
+
+
+def _schema_availability_kwargs(schema_state: UsageSchemaState) -> dict:
+    missing_schema = schema_state.missing_schema
+    return {
+        "ledger_table_available": not _missing_schema_contains(
+            missing_schema,
+            "CavadaLabs_RequestLedgerTable",
+        ),
+        "spend_logs_table_available": not _missing_schema_contains(
+            missing_schema,
+            "LiteLLM_SpendLogs",
+        ),
+        "key_context_available": not (
+            _missing_schema_contains(missing_schema, "LiteLLM_VerificationToken")
+            or _missing_schema_contains(
+                missing_schema,
+                "LiteLLM_DeletedVerificationToken",
+            )
+        ),
+    }
+
+
+def _operator_commands(
+    *,
+    entity_type: str,
+) -> List[str]:
+    entity_param = "company_ids" if entity_type == "company" else "project_ids"
+    plural = "companies" if entity_type == "company" else "projects"
+    entity_env = (
+        "CAVADALABS_COMPANY_ID"
+        if entity_type == "company"
+        else "CAVADALABS_PROJECT_ID"
+    )
+    entity_shell_ref = f"${{{entity_env}}}"
+    entity_column = "company_id" if entity_type == "company" else "project_id"
+    ledger_filter = f"{entity_column} = :'entity_id'"
+    repair_payload_command = (
+        '"$(uv run python -c '
+        f'\'import json, os; print(json.dumps({{"{entity_param}":'
+        f'[os.environ["{entity_env}"]],'
+        '"start_date":os.environ["CAVADALABS_START_DATE"],'
+        '"end_date":os.environ["CAVADALABS_END_DATE"],'
+        '"dry_run":True}))\')"'
+    )
+    return [
+        (
+            f"export {entity_env}='REPLACE_WITH_{entity_type.upper()}_ID' "
+            "CAVADALABS_START_DATE='YYYY-MM-DD' "
+            "CAVADALABS_END_DATE='YYYY-MM-DD'"
+        ),
+        (
+            "DATABASE_URL='postgresql://USER:PASSWORD@HOST:PORT/DB' "
+            "uv run prisma migrate status --schema "
+            "litellm-proxy-extras/litellm_proxy_extras/schema.prisma"
+        ),
+        _USAGE_BACKFILL_MIGRATION_COMMAND,
+        (
+            f'psql "$DATABASE_URL" -v entity_id="{entity_shell_ref}" '
+            '-v start_date="$CAVADALABS_START_DATE" '
+            '-v end_date="$CAVADALABS_END_DATE" '
+            '-c "select company_id, project_id, count(*) as ledger_rows, '
+            "sum(spend) as total_spend, min(created_at) as first_seen, "
+            'max(created_at) as last_seen from \\"CavadaLabs_RequestLedgerTable\\" '
+            f"where {ledger_filter} and created_at >= :'start_date'::date "
+            "and created_at < (:'end_date'::date + interval '1 day') "
+            'group by company_id, project_id order by company_id, project_id;"'
+        ),
+        (
+            "curl -sS -H 'Authorization: Bearer $LITELLM_API_KEY' "
+            "-G "
+            f'"$LITELLM_PROXY_URL/cavadalabs/{plural}/usage/diagnostics" '
+            '--data-urlencode "start_date=$CAVADALABS_START_DATE" '
+            '--data-urlencode "end_date=$CAVADALABS_END_DATE" '
+            f'--data-urlencode "{entity_param}={entity_shell_ref}"'
+        ),
+        (
+            "curl -sS -X POST -H 'Authorization: Bearer $LITELLM_API_KEY' "
+            "-H 'Content-Type: application/json' "
+            f'"$LITELLM_PROXY_URL/cavadalabs/{plural}/usage/repair" '
+            f"-d {repair_payload_command}"
+        ),
+    ]
+
+
 async def get_cavadalabs_usage_diagnostics(
     *,
     prisma_client: Optional[PrismaClient],
@@ -46,6 +140,9 @@ async def get_cavadalabs_usage_diagnostics(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     api_key: Optional[Union[str, List[str]]] = None,
+    status_filter: Optional[str] = None,
+    min_spend: Optional[float] = None,
+    max_spend: Optional[float] = None,
 ) -> CavadaLabsUsageDiagnosticsResponse:
     if prisma_client is None:
         raise HTTPException(
@@ -74,6 +171,7 @@ async def get_cavadalabs_usage_diagnostics(
             missing_schema=[],
             migration_names=_usage_backfill_migration_names(),
             migration_plan=_usage_backfill_migration_steps(),
+            operator_commands=[],
         )
 
     try:
@@ -99,8 +197,16 @@ async def get_cavadalabs_usage_diagnostics(
                 schema_status=schema_state.schema_status,
                 migration_status=schema_state.migration_status,
                 missing_schema=schema_state.missing_schema,
+                **_schema_availability_kwargs(schema_state),
                 migration_names=_usage_backfill_migration_names(),
                 migration_plan=_usage_backfill_migration_steps(),
+                operator_commands=_operator_commands(
+                    entity_type=entity_type,
+                ),
+                readiness_checks=build_usage_readiness_checks(
+                    schema_state=schema_state,
+                    diagnostics=diagnostics,
+                ),
             )
 
         if entity_type == "company":
@@ -111,6 +217,9 @@ async def get_cavadalabs_usage_diagnostics(
                 model=model,
                 provider=provider,
                 api_key=api_key,
+                status_filter=status_filter,
+                min_spend=min_spend,
+                max_spend=max_spend,
             )
         else:
             diagnostics = await _project_usage_diagnostics(
@@ -120,6 +229,9 @@ async def get_cavadalabs_usage_diagnostics(
                 model=model,
                 provider=provider,
                 api_key=api_key,
+                status_filter=status_filter,
+                min_spend=min_spend,
+                max_spend=max_spend,
             )
 
         return CavadaLabsUsageDiagnosticsResponse(
@@ -132,8 +244,16 @@ async def get_cavadalabs_usage_diagnostics(
                 diagnostics=diagnostics,
             ),
             missing_schema=schema_state.missing_schema,
+            **_schema_availability_kwargs(schema_state),
             migration_names=_usage_backfill_migration_names(),
             migration_plan=_usage_backfill_migration_steps(),
+            operator_commands=_operator_commands(
+                entity_type=entity_type,
+            ),
+            readiness_checks=build_usage_readiness_checks(
+                schema_state=schema_state,
+                diagnostics=diagnostics,
+            ),
         )
     except HTTPException:
         raise
@@ -160,6 +280,9 @@ async def repair_cavadalabs_usage_scope(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     api_key: Optional[Union[str, List[str]]] = None,
+    status_filter: Optional[str] = None,
+    min_spend: Optional[float] = None,
+    max_spend: Optional[float] = None,
     dry_run: bool = False,
     batch_limit: Optional[int] = None,
 ) -> CavadaLabsUsageRepairResponse:
@@ -226,6 +349,10 @@ async def repair_cavadalabs_usage_scope(
                 missing_schema=schema_state.missing_schema,
                 migration_names=_usage_backfill_migration_names(),
                 migration_plan=_usage_backfill_migration_steps(),
+                readiness_checks=build_usage_readiness_checks(
+                    schema_state=schema_state,
+                    diagnostics=diagnostics,
+                ),
             )
 
         entity_id_field = "company_id" if entity_type == "company" else "project_id"
@@ -237,6 +364,9 @@ async def repair_cavadalabs_usage_scope(
             model=model,
             provider=provider,
             api_key=api_key,
+            status_filter=status_filter,
+            min_spend=min_spend,
+            max_spend=max_spend,
             dry_run=dry_run,
             batch_limit=batch_limit,
         )
@@ -248,6 +378,9 @@ async def repair_cavadalabs_usage_scope(
                 model=model,
                 provider=provider,
                 api_key=api_key,
+                status_filter=status_filter,
+                min_spend=min_spend,
+                max_spend=max_spend,
             )
         else:
             diagnostics = await _project_usage_diagnostics(
@@ -257,6 +390,9 @@ async def repair_cavadalabs_usage_scope(
                 model=model,
                 provider=provider,
                 api_key=api_key,
+                status_filter=status_filter,
+                min_spend=min_spend,
+                max_spend=max_spend,
             )
         return CavadaLabsUsageRepairResponse(
             entity_type=entity_type,
@@ -280,6 +416,10 @@ async def repair_cavadalabs_usage_scope(
             missing_schema=schema_state.missing_schema,
             migration_names=_usage_backfill_migration_names(),
             migration_plan=_usage_backfill_migration_steps(),
+            readiness_checks=build_usage_readiness_checks(
+                schema_state=schema_state,
+                diagnostics=diagnostics,
+            ),
         )
     except HTTPException:
         raise

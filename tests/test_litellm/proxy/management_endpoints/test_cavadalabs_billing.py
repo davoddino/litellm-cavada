@@ -176,7 +176,7 @@ def _service():
     return CavadaLabsBillingService(prisma_client), prisma_client
 
 
-def _billing_endpoint_db():
+def _billing_endpoint_db(company_role="viewer", project_role=None):
     db = MagicMock()
 
     async def _find_company(*, where):
@@ -188,11 +188,29 @@ def _billing_endpoint_db():
 
     async def _find_company_member(*, where):
         key = where["company_id_user_id"]
-        if key["company_id"] == "company-1" and key["user_id"] == "user-1":
+        if (
+            company_role is not None
+            and key["company_id"] == "company-1"
+            and key["user_id"] == "user-1"
+        ):
             return SimpleNamespace(
                 company_id="company-1",
                 user_id="user-1",
-                role="viewer",
+                role=company_role,
+            )
+        return None
+
+    async def _find_project_member(*, where):
+        key = where["project_id_user_id"]
+        if (
+            project_role is not None
+            and key["project_id"] == "project-1"
+            and key["user_id"] == "user-1"
+        ):
+            return SimpleNamespace(
+                project_id="project-1",
+                user_id="user-1",
+                role=project_role,
             )
         return None
 
@@ -201,22 +219,43 @@ def _billing_endpoint_db():
     db.cavadalabs_companytable.find_many = AsyncMock(return_value=[])
     db.cavadalabs_projecttable = MagicMock()
     db.cavadalabs_projecttable.find_many = AsyncMock(return_value=[])
+    db.cavadalabs_projecttable.find_unique = AsyncMock(
+        return_value=SimpleNamespace(project_id="project-1", company_id="company-1")
+    )
     db.cavadalabs_companymembertable = MagicMock()
     db.cavadalabs_companymembertable.find_unique = AsyncMock(
         side_effect=_find_company_member
     )
     db.cavadalabs_companymembertable.find_many = AsyncMock(
-        return_value=[
-            SimpleNamespace(
-                company_id="company-1",
-                user_id="user-1",
-                role="viewer",
-            )
-        ]
+        return_value=(
+            [
+                SimpleNamespace(
+                    company_id="company-1",
+                    user_id="user-1",
+                    role=company_role,
+                )
+            ]
+            if company_role is not None
+            else []
+        )
     )
     db.cavadalabs_projectmembertable = MagicMock()
-    db.cavadalabs_projectmembertable.find_unique = AsyncMock(return_value=None)
-    db.cavadalabs_projectmembertable.find_many = AsyncMock(return_value=[])
+    db.cavadalabs_projectmembertable.find_unique = AsyncMock(
+        side_effect=_find_project_member
+    )
+    db.cavadalabs_projectmembertable.find_many = AsyncMock(
+        return_value=(
+            [
+                SimpleNamespace(
+                    project_id="project-1",
+                    user_id="user-1",
+                    role=project_role,
+                )
+            ]
+            if project_role is not None
+            else []
+        )
+    )
     db.litellm_organizationmembership = MagicMock()
     db.litellm_organizationmembership.find_unique = AsyncMock(return_value=None)
     db.litellm_organizationmembership.find_many = AsyncMock(return_value=[])
@@ -241,6 +280,28 @@ def _billing_endpoint_db():
 
 def _patch_proxy_prisma(monkeypatch, db):
     monkeypatch.setattr(proxy_server, "prisma_client", SimpleNamespace(db=db))
+
+
+def _patch_generate_billing_service(monkeypatch):
+    calls = []
+    report = billing_endpoints.CavadaLabsBillingReportResponse.model_validate(
+        _billing_report_row().__dict__
+    )
+
+    class _GenerateBillingService:
+        def __init__(self, prisma_client):
+            self.prisma_client = prisma_client
+
+        async def generate_monthly_report(self, data, user_api_key_dict):
+            calls.append((data, user_api_key_dict, self.prisma_client))
+            return report
+
+    monkeypatch.setattr(
+        billing_endpoints,
+        "CavadaLabsBillingService",
+        _GenerateBillingService,
+    )
+    return calls, report
 
 
 @pytest.mark.asyncio
@@ -811,9 +872,77 @@ async def test_billing_list_endpoint_rejects_cross_company_scope(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_billing_list_endpoint_rejects_project_only_parent_company_scope(
+    monkeypatch,
+):
+    db = _billing_endpoint_db(company_role=None, project_role="viewer")
+    _patch_proxy_prisma(monkeypatch, db)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await billing_endpoints.list_billing_reports(
+            http_request=MagicMock(),
+            company_id="company-1",
+            year=None,
+            month=None,
+            take=100,
+            skip=0,
+            user_api_key_dict=_internal_user(),
+        )
+
+    assert exc_info.value.status_code == 403
+    db.cavadalabs_billingreporttable.find_many.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_billing_list_endpoint_returns_empty_for_project_only_user_without_company_scope(
+    monkeypatch,
+):
+    db = _billing_endpoint_db(company_role=None, project_role="project_admin")
+    _patch_proxy_prisma(monkeypatch, db)
+
+    response = await billing_endpoints.list_billing_reports(
+        http_request=MagicMock(),
+        company_id=None,
+        year=None,
+        month=None,
+        take=100,
+        skip=0,
+        user_api_key_dict=_internal_user(),
+    )
+
+    assert response.count == 0
+    assert response.billing_reports == []
+    db.cavadalabs_billingreporttable.find_many.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_billing_generate_endpoint_allows_native_company_admin(monkeypatch):
+    db = _billing_endpoint_db(company_role="company_admin")
+    _patch_proxy_prisma(monkeypatch, db)
+    calls, expected_report = _patch_generate_billing_service(monkeypatch)
+
+    response = await billing_endpoints.generate_billing_report(
+        data=CavadaLabsBillingReportGenerateRequest(
+            company_id="company-1",
+            year=2026,
+            month=5,
+            formats=["json"],
+        ),
+        http_request=MagicMock(),
+        user_api_key_dict=_internal_user(),
+    )
+
+    assert response == expected_report
+    assert len(calls) == 1
+    assert calls[0][0].company_id == "company-1"
+    assert calls[0][1].user_id == "user-1"
+
+
+@pytest.mark.asyncio
 async def test_billing_generate_endpoint_rejects_company_viewer(monkeypatch):
     db = _billing_endpoint_db()
     _patch_proxy_prisma(monkeypatch, db)
+    calls, _ = _patch_generate_billing_service(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
         await billing_endpoints.generate_billing_report(
@@ -828,4 +957,56 @@ async def test_billing_generate_endpoint_rejects_company_viewer(monkeypatch):
         )
 
     assert exc_info.value.status_code == 403
-    db.cavadalabs_billingreporttable.create.assert_not_called()
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_billing_generate_endpoint_rejects_native_project_admin(monkeypatch):
+    db = _billing_endpoint_db(company_role=None, project_role="project_admin")
+    _patch_proxy_prisma(monkeypatch, db)
+    calls, _ = _patch_generate_billing_service(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await billing_endpoints.generate_billing_report(
+            data=CavadaLabsBillingReportGenerateRequest(
+                company_id="company-1",
+                year=2026,
+                month=5,
+                formats=["json"],
+            ),
+            http_request=MagicMock(),
+            user_api_key_dict=_internal_user(),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_billing_get_endpoint_allows_native_company_viewer(monkeypatch):
+    db = _billing_endpoint_db(company_role="viewer")
+    _patch_proxy_prisma(monkeypatch, db)
+
+    response = await billing_endpoints.get_billing_report(
+        report_id="billing-report-1",
+        http_request=MagicMock(),
+        user_api_key_dict=_internal_user(),
+    )
+
+    assert response.report_id == "billing-report-1"
+    assert response.company_id == "company-1"
+
+
+@pytest.mark.asyncio
+async def test_billing_get_endpoint_rejects_native_project_admin(monkeypatch):
+    db = _billing_endpoint_db(company_role=None, project_role="project_admin")
+    _patch_proxy_prisma(monkeypatch, db)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await billing_endpoints.get_billing_report(
+            report_id="billing-report-1",
+            http_request=MagicMock(),
+            user_api_key_dict=_internal_user(),
+        )
+
+    assert exc_info.value.status_code == 403

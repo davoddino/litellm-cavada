@@ -13,6 +13,7 @@ export interface CavadaLabsStructuredErrorDetail extends CavadaLabsRecord {
     name: string;
     purpose: string;
   }>;
+  readiness_checks?: CavadaLabsUsageDiagnosticsResponse["readiness_checks"];
 }
 
 const isRecord = (value: unknown): value is CavadaLabsRecord =>
@@ -55,6 +56,19 @@ export const cavadalabsMissingSchemaDiagnosticsFromDetail = (
   missing_schema: Array.isArray(detail.missing_schema) ? detail.missing_schema : [],
   migration_names: Array.isArray(detail.migration_names) ? detail.migration_names : undefined,
   migration_plan: Array.isArray(detail.migration_plan) ? detail.migration_plan : undefined,
+  readiness_checks: Array.isArray(detail.readiness_checks)
+    ? detail.readiness_checks
+    : [
+        {
+          code: "usage_schema",
+          status: "blocked",
+          message: "CavadaLabs usage schema is missing or incomplete.",
+          recommended_action: "run_migration_backfill",
+          details: {
+            missing_schema: Array.isArray(detail.missing_schema) ? detail.missing_schema : [],
+          },
+        },
+      ],
 });
 
 export const cavadalabsMissingSchemaDetailLines = (detail: CavadaLabsStructuredErrorDetail): string[] => {

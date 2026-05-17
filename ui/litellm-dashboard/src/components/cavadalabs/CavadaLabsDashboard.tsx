@@ -3,11 +3,13 @@
 import { Alert, Card, Col, Row, Space, Spin, Tabs, Tag, Typography } from "antd";
 import { useSearchParams } from "next/navigation";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { modelAvailableCall } from "../networking";
 import { listCavadaLabsResource } from "./api";
 import CavadaLabsChatbotCreator from "./CavadaLabsChatbotCreator";
 import CavadaLabsResourcePanel from "./CavadaLabsResourcePanel";
 import CavadaLabsUsageActivityPanel from "./CavadaLabsUsageActivityPanel";
 import CavadaLabsUsageDiagnosticsPanel from "./CavadaLabsUsageDiagnosticsPanel";
+import { extractModelNamesFromResponse } from "./modelOptions";
 import { buildCavadaLabsResourceConfigs } from "./resourceConfigs";
 import type { CavadaLabsResourceConfig, CavadaLabsRuntimeContext } from "./types";
 import { statusColor } from "./utils";
@@ -27,6 +29,7 @@ const emptyContext: CavadaLabsRuntimeContext = {
   chatbots: [],
   ragCollections: [],
   nodes: [],
+  availableModels: [],
 };
 
 const countFromResponse = (response: any, key: string): number => {
@@ -129,12 +132,13 @@ const CavadaLabsDashboard: React.FC<CavadaLabsDashboardProps> = ({ accessToken, 
     setReferenceLoading(true);
     setReferenceError(null);
     try {
-      const [companies, projects, chatbots, ragCollections, nodes] = await Promise.all([
+      const [companies, projects, chatbots, ragCollections, nodes, models] = await Promise.all([
         listCavadaLabsResource<Record<string, any>>(accessToken, "/cavadalabs/companies"),
         listCavadaLabsResource<Record<string, any>>(accessToken, "/cavadalabs/projects"),
         listCavadaLabsResource<Record<string, any>>(accessToken, "/cavadalabs/chatbots"),
         listCavadaLabsResource<Record<string, any>>(accessToken, "/cavadalabs/rag-collections"),
         listCavadaLabsResource<Record<string, any>>(accessToken, "/cavadalabs/nodes"),
+        modelAvailableCall(accessToken, "", "", true, null, true, false, "expand").catch(() => ({ data: [] })),
       ]);
 
       setContext({
@@ -143,6 +147,7 @@ const CavadaLabsDashboard: React.FC<CavadaLabsDashboardProps> = ({ accessToken, 
         chatbots: chatbots.chatbots ?? [],
         ragCollections: ragCollections.rag_collections ?? [],
         nodes: nodes.nodes ?? [],
+        availableModels: extractModelNamesFromResponse(models),
       });
     } catch (err) {
       setReferenceError(err instanceof Error ? err.message : String(err));

@@ -37,6 +37,29 @@ const viewerContext: CavadaLabsRuntimeContext = {
   nodes: [],
 };
 
+const projectMemberContext: CavadaLabsRuntimeContext = {
+  companies: [
+    {
+      company_id: "company-1",
+      legal_name: "Acme Srl",
+      cavadalabs_can_manage: false,
+      cavadalabs_can_view_usage: false,
+    },
+  ],
+  projects: [
+    {
+      project_id: "project-1",
+      company_id: "company-1",
+      name: "Support",
+      cavadalabs_can_manage: false,
+      cavadalabs_can_view_usage: true,
+    },
+  ],
+  chatbots: [],
+  ragCollections: [],
+  nodes: [],
+};
+
 describe("CavadaLabsUsageDiagnosticsPanel", () => {
   const originalFetch = global.fetch;
 
@@ -63,6 +86,8 @@ describe("CavadaLabsUsageDiagnosticsPanel", () => {
               metadata_spend_logs: 1,
               compatibility_spend_logs: 1,
               key_metadata_spend_logs: 1,
+              legacy_keys_missing_metadata: 1,
+              legacy_key_spend_logs: 1,
               unmapped_spend_logs: 0,
               ledger_gap: 2,
               missing_ledger_rows: 2,
@@ -149,6 +174,8 @@ describe("CavadaLabsUsageDiagnosticsPanel", () => {
     expect(screen.getAllByText("Direct metadata").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Compat mapping").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Key metadata").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Legacy keys").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Legacy key rows").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Unmapped candidates").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: /run scoped backfill/i })).toBeInTheDocument();
     expect(screen.getByText("20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata")).toBeInTheDocument();
@@ -215,6 +242,58 @@ describe("CavadaLabsUsageDiagnosticsPanel", () => {
     expect(screen.queryByText(/organization/i)).not.toBeInTheDocument();
   });
 
+  it("should render backend readiness checks for repairable usage", async () => {
+    const mockFetch = vi.fn().mockResolvedValue(
+      jsonResponse({
+        diagnostics: [
+          {
+            entity_type: "company",
+            entity_id: "company-1",
+            status: "scoped_backfill_available",
+            ledger_rows: 0,
+            attributable_spend_logs: 2,
+            ledger_gap: 2,
+            recommended_action: "run_scoped_backfill",
+            scoped_backfill_available: true,
+            missing_mappings: [],
+            message: "Company usage exists in LiteLLM SpendLogs.",
+          },
+        ],
+        migration_name: "20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash",
+        migration_command: "uv run prisma migrate deploy",
+        schema_status: "ready",
+        migration_status: "backfill_pending",
+        readiness_checks: [
+          {
+            code: "usage_schema",
+            status: "ready",
+            message: "Schema ready.",
+          },
+          {
+            code: "repair_status",
+            status: "action_required",
+            message: "Scoped repair can copy attributable SpendLogs.",
+            entity_type: "company",
+            entity_id: "company-1",
+            recommended_action: "run_scoped_backfill",
+            details: {
+              scoped_spend_logs: 2,
+              missing_ledger_rows: 2,
+            },
+          },
+        ],
+      }),
+    );
+    global.fetch = mockFetch as any;
+
+    renderWithProviders(<CavadaLabsUsageDiagnosticsPanel accessToken="token-1" context={context} />);
+
+    expect(await screen.findByText("Company usage can be repaired")).toBeInTheDocument();
+    expect(screen.getByText("repair status: action required")).toBeInTheDocument();
+    expect(screen.getByText("Missing ledger rows: 2")).toBeInTheDocument();
+    expect(screen.queryByText(/organization/i)).not.toBeInTheDocument();
+  });
+
   it("should show scoped backfill diagnostics without repair action for viewers", async () => {
     const mockFetch = vi.fn().mockResolvedValue(
       jsonResponse({
@@ -245,6 +324,42 @@ describe("CavadaLabsUsageDiagnosticsPanel", () => {
     expect(await screen.findByText("Scoped backfill is available")).toBeInTheDocument();
     expect(screen.getByText("Admin required")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /run scoped backfill/i })).not.toBeInTheDocument();
+  });
+
+  it("should default project-only members to Project diagnostics when the parent Company record is visible", async () => {
+    const mockFetch = vi.fn().mockResolvedValue(
+      jsonResponse({
+        diagnostics: [
+          {
+            entity_type: "project",
+            entity_id: "project-1",
+            status: "visible",
+            ledger_rows: 1,
+            attributable_spend_logs: 0,
+            ledger_gap: 0,
+            recommended_action: "none",
+            scoped_backfill_available: false,
+            missing_mappings: [],
+            message: "Project usage is visible.",
+          },
+        ],
+        migration_name: "20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash",
+        migration_command: "uv run prisma migrate deploy",
+        schema_status: "ready",
+        migration_status: "ready",
+      }),
+    );
+    global.fetch = mockFetch as any;
+
+    renderWithProviders(<CavadaLabsUsageDiagnosticsPanel accessToken="token-1" context={projectMemberContext} />);
+
+    expect(await screen.findByText("Usage attribution is healthy")).toBeInTheDocument();
+    await waitFor(() => {
+      const url = new URL(String(mockFetch.mock.calls[0][0]));
+      expect(url.pathname).toBe("/cavadalabs/projects/usage/diagnostics");
+      expect(url.searchParams.get("project_ids")).toBe("project-1");
+      expect(url.searchParams.get("company_ids")).toBeNull();
+    });
   });
 
   it("should show schema migration status without offering scoped repair", async () => {

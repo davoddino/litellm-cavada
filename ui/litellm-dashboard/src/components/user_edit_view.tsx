@@ -18,6 +18,7 @@ interface UserEditViewProps {
   userModels: string[];
   possibleUIRoles: Record<string, Record<string, string>> | null;
   isBulkEdit?: boolean;
+  showLiteLLMCompatibilityFields?: boolean;
 }
 
 export function UserEditView({
@@ -31,6 +32,7 @@ export function UserEditView({
   userModels,
   possibleUIRoles,
   isBulkEdit = false,
+  showLiteLLMCompatibilityFields = true,
 }: UserEditViewProps) {
   const [form] = Form.useForm();
   const [unlimitedBudget, setUnlimitedBudget] = useState(false);
@@ -101,7 +103,13 @@ export function UserEditView({
         label={
           <span>
             Global Proxy Role{" "}
-            <Tooltip title="This is the role that the user will globally on the proxy. This role is independent of any team/org specific roles.">
+            <Tooltip
+              title={
+                showLiteLLMCompatibilityFields
+                  ? "This is the role that the user has globally on the proxy. This role is independent of any team/org-specific roles."
+                  : "This is the role that the user has globally on the proxy. This role is independent of Company and Project memberships."
+              }
+            >
               <InfoCircleOutlined />
             </Tooltip>
           </span>
@@ -127,7 +135,13 @@ export function UserEditView({
         label={
           <span>
             Personal Models{" "}
-            <Tooltip title="Select which models this user can access outside of team-scope. Choose 'All Proxy Models' to grant access to all models available on the proxy.">
+            <Tooltip
+              title={
+                showLiteLLMCompatibilityFields
+                  ? "Select which models this user can access outside of team scope. Choose 'All Proxy Models' to grant access to all models available on the proxy."
+                  : "Select which models this user can access outside Company and Project memberships. Choose 'All Proxy Models' to grant access to all models available on the proxy."
+              }
+            >
               <InfoCircleOutlined style={{ marginLeft: "4px" }} />
             </Tooltip>
           </span>

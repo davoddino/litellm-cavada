@@ -389,6 +389,74 @@ describe("KeyInfoView", () => {
     expect(screen.queryByText("Company")).not.toBeInTheDocument();
   });
 
+  it("should hide legacy Organization and Team ID when CavadaLabs product context is active with empty options", async () => {
+    vi.mocked(useAuthorized).mockReturnValue(baseUseAuthorizedMock);
+    const legacyKeyData = {
+      ...MOCK_KEY_DATA,
+      team_id: "team-legacy",
+      organization_id: "org-legacy",
+      cavadalabs_company_id: undefined,
+      cavadalabs_project_id: undefined,
+      metadata: {},
+    };
+
+    renderWithProviders(
+      <KeyInfoView
+        keyData={legacyKeyData}
+        onClose={() => {}}
+        keyId={"test-key-id"}
+        onKeyDataUpdate={() => {}}
+        teams={[]}
+        cavadalabsCompanies={[]}
+        cavadalabsProjects={[]}
+        showLiteLLMCompatibilityFields={false}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Company")).toBeInTheDocument();
+      expect(screen.getByText("Project")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+    expect(screen.queryByText("org-legacy")).not.toBeInTheDocument();
+    expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
+    expect(screen.queryByText("team-legacy")).not.toBeInTheDocument();
+  });
+
+  it("should hide legacy Organization and Team ID when CavadaLabs product context is explicit", async () => {
+    vi.mocked(useAuthorized).mockReturnValue(baseUseAuthorizedMock);
+    const legacyKeyData = {
+      ...MOCK_KEY_DATA,
+      team_id: "team-legacy",
+      organization_id: "org-legacy",
+      cavadalabs_company_id: undefined,
+      cavadalabs_project_id: undefined,
+      metadata: {},
+    };
+
+    renderWithProviders(
+      <KeyInfoView
+        keyData={legacyKeyData}
+        onClose={() => {}}
+        keyId={"test-key-id"}
+        onKeyDataUpdate={() => {}}
+        teams={[]}
+        cavadalabsCompanies={[]}
+        cavadalabsProjects={[]}
+        isCavadaLabsProductContext
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Company")).toBeInTheDocument();
+      expect(screen.getByText("Project")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+    expect(screen.queryByText("org-legacy")).not.toBeInTheDocument();
+    expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
+    expect(screen.queryByText("team-legacy")).not.toBeInTheDocument();
+  });
+
   it("should allow team admin to modify key", async () => {
     const teamId = "test-team-id";
     const teamAdminUserId = "team-admin-user";
@@ -450,6 +518,126 @@ describe("KeyInfoView", () => {
     const keyData = { ...MOCK_KEY_DATA, user_id: ownerUserId };
     renderWithProviders(
       <KeyInfoView keyData={keyData} onClose={() => {}} keyId={"test-key-id"} onKeyDataUpdate={() => {}} teams={[]} />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Regenerate Key")).toBeInTheDocument();
+      expect(screen.getByText("Delete Key")).toBeInTheDocument();
+    });
+  });
+
+  it("should not allow a CavadaLabs key owner to modify without Company or Project admin access", async () => {
+    vi.mocked(useTeams).mockReturnValue({
+      teams: [],
+      setTeams: vi.fn(),
+    });
+
+    vi.mocked(useAuthorized).mockReturnValue({
+      ...baseUseAuthorizedMock,
+      userId: "owner-user-id",
+      userRole: "Internal User",
+    });
+
+    const keyData = {
+      ...MOCK_KEY_DATA,
+      user_id: "owner-user-id",
+      team_id: "team-project-1",
+      organization_id: "org-company-1",
+      cavadalabs_company_id: "company-1",
+      cavadalabs_project_id: "project-1",
+      metadata: {
+        cavadalabs_company_id: "company-1",
+        cavadalabs_project_id: "project-1",
+      },
+    };
+
+    renderWithProviders(
+      <KeyInfoView
+        keyData={keyData}
+        onClose={() => {}}
+        keyId={"test-key-id"}
+        onKeyDataUpdate={() => {}}
+        teams={[]}
+        cavadalabsCompanies={[
+          {
+            company_id: "company-1",
+            legal_name: "Acme Srl",
+            cavadalabs_can_manage: false,
+          },
+        ]}
+        cavadalabsProjects={[
+          {
+            project_id: "project-1",
+            company_id: "company-1",
+            name: "Support",
+            cavadalabs_can_manage: false,
+          },
+        ]}
+        isCavadaLabsProductContext
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByText("Regenerate Key")).not.toBeInTheDocument();
+      expect(screen.queryByText("Delete Key")).not.toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole("tab", { name: /settings/i }));
+
+    expect(screen.queryByRole("button", { name: /edit settings/i })).not.toBeInTheDocument();
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+    expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
+  });
+
+  it("should allow CavadaLabs Project admins to modify key actions without Team admin ownership", async () => {
+    vi.mocked(useTeams).mockReturnValue({
+      teams: [],
+      setTeams: vi.fn(),
+    });
+
+    vi.mocked(useAuthorized).mockReturnValue({
+      ...baseUseAuthorizedMock,
+      userId: "project-admin-user-id",
+      userRole: "Internal User",
+    });
+
+    const keyData = {
+      ...MOCK_KEY_DATA,
+      user_id: "other-user-id",
+      team_id: "team-project-1",
+      organization_id: "org-company-1",
+      cavadalabs_company_id: "company-1",
+      cavadalabs_project_id: "project-1",
+      metadata: {
+        cavadalabs_company_id: "company-1",
+        cavadalabs_project_id: "project-1",
+      },
+    };
+
+    renderWithProviders(
+      <KeyInfoView
+        keyData={keyData}
+        onClose={() => {}}
+        keyId={"test-key-id"}
+        onKeyDataUpdate={() => {}}
+        teams={[]}
+        cavadalabsCompanies={[
+          {
+            company_id: "company-1",
+            legal_name: "Acme Srl",
+            cavadalabs_can_manage: false,
+          },
+        ]}
+        cavadalabsProjects={[
+          {
+            project_id: "project-1",
+            company_id: "company-1",
+            name: "Support",
+            cavadalabs_can_manage: true,
+          },
+        ]}
+        isCavadaLabsProductContext
+      />,
     );
 
     await waitFor(() => {
@@ -574,9 +762,16 @@ describe("KeyInfoView", () => {
   });
 
   describe("'Edit Settings' button visibility in the Settings tab", () => {
-    const renderAndOpenSettingsTab = async (keyData = MOCK_KEY_DATA) => {
+    const renderAndOpenSettingsTab = async (keyData = MOCK_KEY_DATA, extraProps: Record<string, any> = {}) => {
       renderWithProviders(
-        <KeyInfoView keyData={keyData} onClose={() => {}} keyId="test-key-id" onKeyDataUpdate={() => {}} teams={[]} />,
+        <KeyInfoView
+          keyData={keyData}
+          onClose={() => {}}
+          keyId="test-key-id"
+          onKeyDataUpdate={() => {}}
+          teams={[]}
+          {...extraProps}
+        />,
       );
       await waitFor(() => {
         expect(screen.getByRole("tab", { name: /settings/i })).toBeInTheDocument();
@@ -663,6 +858,52 @@ describe("KeyInfoView", () => {
       await renderAndOpenSettingsTab({ ...MOCK_KEY_DATA, team_id: teamId, user_id: "other-user-id" });
 
       expect(screen.getByRole("button", { name: /edit settings/i })).toBeInTheDocument();
+    });
+
+    it("should show the Edit Settings button for a CavadaLabs Project admin without Team admin ownership", async () => {
+      vi.mocked(useAuthorized).mockReturnValue({
+        ...baseUseAuthorizedMock,
+        userId: "project-admin-user",
+        userRole: "Internal User",
+      });
+
+      await renderAndOpenSettingsTab(
+        {
+          ...MOCK_KEY_DATA,
+          user_id: "other-user-id",
+          team_id: "team-project-1",
+          organization_id: "org-company-1",
+          cavadalabs_company_id: "company-1",
+          cavadalabs_project_id: "project-1",
+          metadata: {
+            cavadalabs_company_id: "company-1",
+            cavadalabs_project_id: "project-1",
+          },
+        },
+        {
+          cavadalabsCompanies: [
+            {
+              company_id: "company-1",
+              legal_name: "Acme Srl",
+              cavadalabs_can_manage: false,
+            },
+          ],
+          cavadalabsProjects: [
+            {
+              project_id: "project-1",
+              company_id: "company-1",
+              name: "Support",
+              cavadalabs_can_manage: true,
+            },
+          ],
+        },
+      );
+
+      expect(screen.getByRole("button", { name: /edit settings/i })).toBeInTheDocument();
+      expect(screen.getByText("Company")).toBeInTheDocument();
+      expect(screen.getByText("Project")).toBeInTheDocument();
+      expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+      expect(screen.queryByText("Team ID")).not.toBeInTheDocument();
     });
   });
 

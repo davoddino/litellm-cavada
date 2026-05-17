@@ -28,6 +28,7 @@ interface BulkEditUserModalProps {
   userRole: string | null;
   userModels: string[];
   allowAllUsers?: boolean; // Optional flag to enable "all users" mode
+  showLiteLLMCompatibilityFields?: boolean;
 }
 
 const BulkEditUserModal: React.FC<BulkEditUserModalProps> = ({
@@ -41,6 +42,7 @@ const BulkEditUserModal: React.FC<BulkEditUserModalProps> = ({
   userRole,
   userModels,
   allowAllUsers = false,
+  showLiteLLMCompatibilityFields = true,
 }) => {
   const [loading, setLoading] = useState(false);
   const [selectedTeams, setSelectedTeams] = useState<string[]>([]);
@@ -114,10 +116,14 @@ const BulkEditUserModal: React.FC<BulkEditUserModalProps> = ({
 
       // Check if any operations were requested
       const hasUserUpdates = Object.keys(updatePayload).length > 0;
-      const hasTeamAdditions = addToTeams && selectedTeams.length > 0;
+      const hasTeamAdditions = showLiteLLMCompatibilityFields && addToTeams && selectedTeams.length > 0;
 
       if (!hasUserUpdates && !hasTeamAdditions) {
-        NotificationsManager.fromBackend("Please modify at least one field or select teams to add users to");
+        NotificationsManager.fromBackend(
+          showLiteLLMCompatibilityFields
+            ? "Please modify at least one field or select teams to add users to"
+            : "Please modify at least one user field",
+        );
         return;
       }
 
@@ -296,60 +302,62 @@ const BulkEditUserModal: React.FC<BulkEditUserModalProps> = ({
       <div className="mb-4">
         <Text>
           <strong>Instructions:</strong> Fill in the fields below with the values you want to apply to all selected
-          users. You can bulk edit: role, budget, models, and metadata. You can also add users to teams.
+          users. You can bulk edit: role, budget, models, and metadata.
+          {showLiteLLMCompatibilityFields ? " You can also add users to teams." : ""}
         </Text>
       </div>
 
-      {/* Team Management Section */}
-      <Card title="Team Management" size="small" className="mb-4" style={{ backgroundColor: "#fafafa" }}>
-        <Space direction="vertical" style={{ width: "100%" }}>
-          <Checkbox checked={addToTeams} onChange={(e) => setAddToTeams(e.target.checked)}>
-            Add selected users to teams
-          </Checkbox>
+      {showLiteLLMCompatibilityFields && (
+        <Card title="Team Management" size="small" className="mb-4" style={{ backgroundColor: "#fafafa" }}>
+          <Space direction="vertical" style={{ width: "100%" }}>
+            <Checkbox checked={addToTeams} onChange={(e) => setAddToTeams(e.target.checked)}>
+              Add selected users to teams
+            </Checkbox>
 
-          {addToTeams && (
-            <>
-              <div>
-                <Text strong>Select Teams:</Text>
-                <Select
-                  mode="multiple"
-                  placeholder="Select teams to add users to"
-                  value={selectedTeams}
-                  onChange={setSelectedTeams}
-                  style={{ width: "100%", marginTop: 8 }}
-                  options={
-                    teams?.map((team) => ({
-                      label: team.team_alias || team.team_id,
-                      value: team.team_id,
-                    })) || []
-                  }
-                />
-              </div>
+            {addToTeams && (
+              <>
+                <div>
+                  <Text strong>Select Teams:</Text>
+                  <Select
+                    mode="multiple"
+                    placeholder="Select teams to add users to"
+                    value={selectedTeams}
+                    onChange={setSelectedTeams}
+                    style={{ width: "100%", marginTop: 8 }}
+                    options={
+                      teams?.map((team) => ({
+                        label: team.team_alias || team.team_id,
+                        value: team.team_id,
+                      })) || []
+                    }
+                  />
+                </div>
 
-              <div>
-                <Text strong>Team Budget (Optional):</Text>
-                <InputNumber
-                  placeholder="Max budget per user in team"
-                  value={teamBudget}
-                  onChange={(value) => setTeamBudget(value)}
-                  style={{ width: "100%", marginTop: 8 }}
-                  min={0}
-                  step={0.01}
-                  precision={2}
-                />
+                <div>
+                  <Text strong>Team Budget (Optional):</Text>
+                  <InputNumber
+                    placeholder="Max budget per user in team"
+                    value={teamBudget}
+                    onChange={(value) => setTeamBudget(value)}
+                    style={{ width: "100%", marginTop: 8 }}
+                    min={0}
+                    step={0.01}
+                    precision={2}
+                  />
+                  <Text type="secondary" style={{ fontSize: "12px" }}>
+                    Leave empty for unlimited budget within team limits
+                  </Text>
+                </div>
+
                 <Text type="secondary" style={{ fontSize: "12px" }}>
-                  Leave empty for unlimited budget within team limits
+                  Users will be added with &quot;user&quot; role by default. All users will be added to each selected
+                  team.
                 </Text>
-              </div>
-
-              <Text type="secondary" style={{ fontSize: "12px" }}>
-                Users will be added with &quot;user&quot; role by default. All users will be added to each selected
-                team.
-              </Text>
-            </>
-          )}
-        </Space>
-      </Card>
+              </>
+            )}
+          </Space>
+        </Card>
+      )}
 
       <UserEditView
         userData={mockUserData}
@@ -362,6 +370,7 @@ const BulkEditUserModal: React.FC<BulkEditUserModalProps> = ({
         userModels={userModels}
         possibleUIRoles={possibleUIRoles}
         isBulkEdit={true}
+        showLiteLLMCompatibilityFields={showLiteLLMCompatibilityFields}
       />
 
       {loading && (

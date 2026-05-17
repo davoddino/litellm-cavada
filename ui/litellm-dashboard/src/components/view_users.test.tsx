@@ -1,9 +1,10 @@
 import React from "react";
-import { act, render, waitFor, screen, fireEvent } from "@testing-library/react";
+import { act, render, waitFor, screen, fireEvent, within } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ViewUserDashboard from "./view_users";
 import * as Networking from "./networking";
+import * as keyContext from "./cavadalabs/keyContext";
 
 // Mock the networking module
 vi.mock("./networking", () => ({
@@ -46,6 +47,18 @@ vi.mock("./networking", () => ({
 }));
 
 vi.mock("./cavadalabs/keyContext", () => ({
+  filterManageableCavadaLabsCompanies: vi.fn((companies) => {
+    if (!companies.some((company: any) => typeof company.cavadalabs_can_manage === "boolean")) {
+      return companies;
+    }
+    return companies.filter((company: any) => company.cavadalabs_can_manage === true);
+  }),
+  filterManageableCavadaLabsProjects: vi.fn((projects) => {
+    if (!projects.some((project: any) => typeof project.cavadalabs_can_manage === "boolean")) {
+      return projects;
+    }
+    return projects.filter((project: any) => project.cavadalabs_can_manage === true);
+  }),
   getCavadaLabsCompanyDisplayName: vi.fn((company) =>
     company.legal_name ? `${company.legal_name} (${company.company_id})` : company.company_id,
   ),
@@ -68,6 +81,7 @@ vi.mock("./molecules/notifications_manager", () => ({
 }));
 
 const mockUserListCall = vi.mocked(Networking.userListCall);
+const mockUseCavadaLabsKeyContextOptions = vi.mocked(keyContext.useCavadaLabsKeyContextOptions);
 
 const createQueryClient = () =>
   new QueryClient({
@@ -92,6 +106,12 @@ describe("ViewUserDashboard", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUseCavadaLabsKeyContextOptions.mockReturnValue({
+      companies: [{ company_id: "company-1", legal_name: "Acme Corp" }],
+      projects: [{ project_id: "project-1", company_id: "company-1", name: "Support" }],
+      isLoading: false,
+      errorDetail: null,
+    });
   });
 
   it("should render the ViewUserDashboard component", async () => {
@@ -234,5 +254,129 @@ describe("ViewUserDashboard", () => {
         null,
       );
     });
+  });
+
+  it("should allow CavadaLabs Company admins to invite users without proxy admin role", async () => {
+    mockUseCavadaLabsKeyContextOptions.mockReturnValue({
+      companies: [{ company_id: "company-1", legal_name: "Acme Corp", cavadalabs_can_manage: true }],
+      projects: [],
+      isLoading: false,
+      errorDetail: null,
+    });
+
+    const queryClient = createQueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ViewUserDashboard {...defaultProps} userRole="internal_user" />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /\+ invite user/i })).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: /select users/i })).not.toBeInTheDocument();
+  });
+
+  it("should keep Team and Organization controls hidden for empty CavadaLabs product context", async () => {
+    mockUseCavadaLabsKeyContextOptions.mockReturnValue({
+      companies: [],
+      projects: [],
+      isLoading: false,
+      errorDetail: null,
+      contextKnown: true,
+      isCavadaLabsProductContext: true,
+    });
+
+    const queryClient = createQueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ViewUserDashboard {...defaultProps} userRole="Admin" />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("test@example.com")).toBeInTheDocument();
+    });
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /^filters$/i }));
+    });
+
+    expect(screen.queryByText("Select Team")).not.toBeInTheDocument();
+    expect(screen.queryByText("Select Organization")).not.toBeInTheDocument();
+    expect(screen.getByText("Select Company")).toBeInTheDocument();
+    expect(screen.getByText("Select Project")).toBeInTheDocument();
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /\+ invite user/i }));
+    });
+
+    const dialog = screen.getByRole("dialog", { name: /invite user/i });
+    expect(within(dialog).getByRole("combobox", { name: /^company$/i })).toBeInTheDocument();
+    expect(within(dialog).getByRole("combobox", { name: /^project$/i })).toBeInTheDocument();
+    expect(within(dialog).queryByRole("combobox", { name: /^team$/i })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("combobox", { name: /organization/i })).not.toBeInTheDocument();
+  });
+
+  it("should let backend CavadaLabs membership scoping handle empty product context without Organization scope", async () => {
+    mockUseCavadaLabsKeyContextOptions.mockReturnValue({
+      companies: [],
+      projects: [],
+      isLoading: false,
+      errorDetail: null,
+      contextKnown: true,
+      isCavadaLabsProductContext: true,
+    });
+
+    const queryClient = createQueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ViewUserDashboard
+          {...defaultProps}
+          userRole="internal_user_viewer"
+          orgAdminOrgIds={[{ organization_id: "org-legacy", organization_alias: "Legacy Org" }]}
+        />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(mockUserListCall).toHaveBeenCalledWith(
+        "test-token",
+        null,
+        1,
+        25,
+        null,
+        null,
+        null,
+        null,
+        "created_at",
+        "desc",
+        null,
+        null,
+        null,
+      );
+    });
+  });
+
+  it("should not show invite controls for CavadaLabs viewer-only users", async () => {
+    mockUseCavadaLabsKeyContextOptions.mockReturnValue({
+      companies: [{ company_id: "company-1", legal_name: "Acme Corp", cavadalabs_can_manage: false }],
+      projects: [{ project_id: "project-1", company_id: "company-1", name: "Support", cavadalabs_can_manage: false }],
+      isLoading: false,
+      errorDetail: null,
+    });
+
+    const queryClient = createQueryClient();
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ViewUserDashboard {...defaultProps} userRole="internal_user_viewer" />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("test@example.com")).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("button", { name: /\+ invite user/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /select users/i })).not.toBeInTheDocument();
   });
 });

@@ -125,6 +125,11 @@ def test_should_keep_cavadalabs_usage_migrations_aligned_with_schema_contract():
         / "20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata"
         / "migration.sql"
     ).read_text()
+    metadata_key_hash_backfill_sql = (
+        migration_root
+        / "20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash"
+        / "migration.sql"
+    ).read_text()
     native_membership_sql = (
         migration_root
         / "20260515150000_add_cavadalabs_native_memberships"
@@ -210,7 +215,11 @@ def test_should_keep_cavadalabs_usage_migrations_aligned_with_schema_contract():
     ]:
         assert fragment in spend_indexes_sql
 
-    for sql in (spend_backfill_sql, key_backfill_sql):
+    for sql in (
+        spend_backfill_sql,
+        key_backfill_sql,
+        metadata_key_hash_backfill_sql,
+    ):
         assert 'INSERT INTO "CavadaLabs_RequestLedgerTable"' in sql
         assert 'FROM "LiteLLM_SpendLogs"' in sql
         assert 'ON CONFLICT ("request_id") DO NOTHING' in sql
@@ -224,6 +233,10 @@ def test_should_keep_cavadalabs_usage_migrations_aligned_with_schema_contract():
     assert "key_chatbot_id" in key_backfill_sql
     assert "k.key_chatbot_id" in key_backfill_sql
     assert "cavadalabs_chatbot_id" in key_backfill_sql
+    assert "metadata_api_key_hash" in metadata_key_hash_backfill_sql
+    assert "user_api_key_hash" in metadata_key_hash_backfill_sql
+    assert "spend_logs_metadata" in metadata_key_hash_backfill_sql
+    assert 'ON k."token" = s.metadata_api_key_hash' in metadata_key_hash_backfill_sql
 
     for fragment in [
         'CREATE TABLE IF NOT EXISTS "CavadaLabs_CompanyMemberTable"',
@@ -286,7 +299,7 @@ async def test_should_raise_missing_request_ledger_schema_before_empty_daily_usa
     )
     assert (
         detail["migration_name"]
-        == "20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata"
+        == "20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash"
     )
     assert (
         "20260514120000_add_cavadalabs_dispatcher_tables" in detail["migration_names"]
@@ -305,6 +318,10 @@ async def test_should_raise_missing_request_ledger_schema_before_empty_daily_usa
     )
     assert (
         "20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata"
+        in detail["migration_names"]
+    )
+    assert (
+        "20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash"
         in detail["migration_names"]
     )
     migration_plan_names = [step["name"] for step in detail["migration_plan"]]

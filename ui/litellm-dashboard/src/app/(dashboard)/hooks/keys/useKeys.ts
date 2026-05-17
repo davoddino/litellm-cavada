@@ -38,6 +38,7 @@ export interface KeyListCallOptions {
   sortOrder?: string | null;
   expand?: string | null;
   status?: string | null;
+  enabled?: boolean;
 }
 
 const keyListCall = async (accessToken: string, page: number, pageSize: number, options: KeyListCallOptions = {}) => {
@@ -107,7 +108,7 @@ export const useKeys = (
   return useQuery<KeysResponse>({
     queryKey: keyKeys.list({ page, limit: pageSize, ...options }),
     queryFn: async () => await keyListCall(accessToken!, page, pageSize, options),
-    enabled: Boolean(accessToken),
+    enabled: Boolean(accessToken) && options.enabled !== false,
     staleTime: 30000, // 30 seconds
     placeholderData: keepPreviousData,
   });
@@ -124,7 +125,7 @@ export const useDeletedKeys = (
   return useQuery<KeysResponse>({
     queryKey: deletedKeyKeys.list({ page, limit: pageSize, ...options }),
     queryFn: async () => await keyListCall(accessToken!, page, pageSize, { ...options, status: "deleted" }),
-    enabled: Boolean(accessToken),
+    enabled: Boolean(accessToken) && options.enabled !== false,
     staleTime: 30000, // 30 seconds
     placeholderData: keepPreviousData,
   });

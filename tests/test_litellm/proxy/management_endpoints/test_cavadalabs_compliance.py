@@ -40,6 +40,15 @@ def _row(**kwargs):
     return SimpleNamespace(**{**defaults, **kwargs})
 
 
+def _json_value(value):
+    if isinstance(value, str):
+        return json.loads(value)
+    data = getattr(value, "data", None)
+    if data is not None:
+        return data
+    return value
+
+
 def _company_row(**kwargs):
     return _row(
         company_id=kwargs.pop("company_id", "company-1"),
@@ -265,8 +274,8 @@ async def test_should_create_published_compliance_document_with_checksum_and_aud
         assert data["published_at"] is not None
         assert data["checksum"]
         assert data["content"] == "DPIA content"
-        assert json.loads(data["generated_from"]) == {}
-        assert json.loads(data["metadata"]) == {}
+        assert _json_value(data["generated_from"]) == {}
+        assert _json_value(data["metadata"]) == {}
         return _document_row(**data)
 
     prisma_client.db.cavadalabs_compliancedocumenttable.create = AsyncMock(
@@ -302,8 +311,8 @@ async def test_should_serialize_compliance_evidence_content_without_coercing_doc
     )
 
     def _create_evidence(*, data):
-        assert json.loads(data["content"]) == {"deleted_documents": 3}
-        assert json.loads(data["metadata"]) == {}
+        assert _json_value(data["content"]) == {"deleted_documents": 3}
+        assert _json_value(data["metadata"]) == {}
         return _evidence_row(**data)
 
     prisma_client.db.cavadalabs_complianceevidencetable.create = AsyncMock(
@@ -392,8 +401,8 @@ async def test_should_default_dsr_due_date_and_complete_workflow():
 
     def _create_dsr(*, data):
         assert data["due_at"] == received_at.replace(day=14, month=6)
-        assert json.loads(data["scope"]) == {}
-        assert json.loads(data["result"]) == {}
+        assert _json_value(data["scope"]) == {}
+        assert _json_value(data["result"]) == {}
         return _dsr_row(**data)
 
     prisma_client.db.cavadalabs_datasubjectrequesttable.create = AsyncMock(
@@ -443,7 +452,7 @@ async def test_should_default_dsr_due_date_and_complete_workflow():
         ]
     )
     assert update_payload["completed_at"] is not None
-    assert json.loads(update_payload["result"]) == {"deleted_sessions": ["session-1"]}
+    assert _json_value(update_payload["result"]) == {"deleted_sessions": ["session-1"]}
     assert completed.status == "completed"
 
 

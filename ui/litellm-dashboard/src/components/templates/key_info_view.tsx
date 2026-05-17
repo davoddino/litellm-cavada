@@ -14,6 +14,7 @@ import { mapDisplayToInternalNames, mapInternalToDisplayNames } from "../callbac
 import AutoRotationView from "../common_components/AutoRotationView";
 import DeleteResourceModal from "../common_components/DeleteResourceModal";
 import {
+  canManageCavadaLabsKeyContext,
   findCavadaLabsCompanyForCompatibilityOrganization,
   findCavadaLabsProjectForCompatibilityTeam,
   getCavadaLabsCompanyDisplayName,
@@ -44,6 +45,8 @@ interface KeyInfoViewProps {
   backButtonText?: string;
   cavadalabsCompanies?: CavadaLabsCompanyOption[];
   cavadalabsProjects?: CavadaLabsProjectOption[];
+  isCavadaLabsProductContext?: boolean;
+  showLiteLLMCompatibilityFields?: boolean;
 }
 
 // Must stay in sync with LiteLLM_ManagementEndpoint_MetadataFields_Premium
@@ -69,6 +72,8 @@ export default function KeyInfoView({
   backButtonText = "Back to Keys",
   cavadalabsCompanies = [],
   cavadalabsProjects = [],
+  isCavadaLabsProductContext = false,
+  showLiteLLMCompatibilityFields = true,
 }: KeyInfoViewProps) {
   const { accessToken, userId: userID, userRole, premiumUser } = useAuthorized();
   const canEditGuardrails = premiumUser || (userRole != null && rolesWithWriteAccess.includes(userRole));
@@ -174,6 +179,9 @@ export default function KeyInfoView({
   const resolvedCavadaLabsCompanyId = cavadalabsCompanyId ?? cavadalabsCompany?.company_id ?? null;
   const resolvedCavadaLabsProjectId = cavadalabsProjectId ?? cavadalabsProject?.project_id ?? null;
   const hasResolvedCavadaLabsContext = Boolean(resolvedCavadaLabsCompanyId || resolvedCavadaLabsProjectId);
+  const shouldShowCavadaLabsProductContext =
+    isCavadaLabsProductContext || hasResolvedCavadaLabsContext || !showLiteLLMCompatibilityFields;
+  const shouldShowLiteLLMCompatibilityReadback = !shouldShowCavadaLabsProductContext && showLiteLLMCompatibilityFields;
   const cavadalabsCompanyDisplayValue = resolvedCavadaLabsCompanyId
     ? cavadalabsCompany
       ? getCavadaLabsCompanyDisplayName(cavadalabsCompany)
@@ -211,7 +219,7 @@ export default function KeyInfoView({
       value: currentKeyData?.token_id || currentKeyData?.token || "-",
       code: true,
     },
-    ...(hasResolvedCavadaLabsContext
+    ...(shouldShowCavadaLabsProductContext
       ? [
           {
             label: "Company",
@@ -458,17 +466,26 @@ export default function KeyInfoView({
     return `${dateStr} at ${timeStr}`;
   };
 
-  const canModifyKey =
-    isProxyAdminRole(userRole || "") ||
+  const isProxyAdmin = isProxyAdminRole(userRole || "");
+  const shouldUseCavadaLabsWriteAuthority = shouldShowCavadaLabsProductContext || hasResolvedCavadaLabsContext;
+  const canManageCavadaLabsScope = canManageCavadaLabsKeyContext({
+    companies: cavadalabsCompanies,
+    projects: cavadalabsProjects,
+    companyId: resolvedCavadaLabsCompanyId,
+    projectId: resolvedCavadaLabsProjectId,
+  });
+  const canModifyLegacyKey =
     (teamsData &&
       isUserTeamAdminForSingleTeam(
         teamsData?.filter((team) => team.team_id === currentKeyData.team_id)[0]?.members_with_roles,
         userID || "",
       )) ||
     (userID === currentKeyData.user_id && userRole !== "Internal Viewer");
+  const canModifyKey =
+    isProxyAdmin || (shouldUseCavadaLabsWriteAuthority ? canManageCavadaLabsScope : canModifyLegacyKey);
 
   const canResetSpend =
-    isProxyAdminRole(userRole || "") ||
+    isProxyAdmin ||
     (teamsData &&
       isUserTeamAdminForSingleTeam(
         teamsData?.filter((team) => team.team_id === currentKeyData.team_id)[0]?.members_with_roles,
@@ -730,7 +747,7 @@ export default function KeyInfoView({
                     <Text className="font-mono">{currentKeyData.key_name}</Text>
                   </div>
 
-                  {hasResolvedCavadaLabsContext ? (
+                  {shouldShowCavadaLabsProductContext ? (
                     <>
                       <div>
                         <Text className="font-medium">Company</Text>
@@ -752,14 +769,14 @@ export default function KeyInfoView({
                         </div>
                       )}
                     </>
-                  ) : (
+                  ) : shouldShowLiteLLMCompatibilityReadback ? (
                     <div>
                       <Text className="font-medium">Team ID</Text>
                       <Text>{currentKeyData.team_id || "Not Set"}</Text>
                     </div>
-                  )}
+                  ) : null}
 
-                  {enableProjectsUI && !hasResolvedCavadaLabsContext && (
+                  {enableProjectsUI && !shouldShowCavadaLabsProductContext && showLiteLLMCompatibilityFields && (
                     <div>
                       <Text className="font-medium">Project</Text>
                       <Text>
@@ -775,7 +792,7 @@ export default function KeyInfoView({
                     </div>
                   )}
 
-                  {!hasResolvedCavadaLabsContext && (
+                  {shouldShowLiteLLMCompatibilityReadback && (
                     <div>
                       <Text className="font-medium">Organization</Text>
                       <Text>{(currentKeyData.organization_id ?? currentKeyData.org_id) || "Not Set"}</Text>

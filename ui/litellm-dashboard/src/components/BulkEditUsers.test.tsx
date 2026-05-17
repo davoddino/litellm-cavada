@@ -11,8 +11,17 @@ vi.mock("./networking", () => ({
 }));
 
 vi.mock("./user_edit_view", () => ({
-  UserEditView: ({ onSubmit, onCancel }: { onSubmit: (values: any) => void; onCancel: () => void }) => (
+  UserEditView: ({
+    onSubmit,
+    onCancel,
+    showLiteLLMCompatibilityFields,
+  }: {
+    onSubmit: (values: any) => void;
+    onCancel: () => void;
+    showLiteLLMCompatibilityFields?: boolean;
+  }) => (
     <div data-testid="user-edit-view">
+      <span data-testid="compat-mode">{showLiteLLMCompatibilityFields ? "legacy" : "cavadalabs"}</span>
       <button onClick={() => onSubmit({ user_role: "admin", max_budget: 100 })}>Submit</button>
       <button onClick={onCancel}>Cancel</button>
     </div>
@@ -159,6 +168,17 @@ describe("BulkEditUserModal", () => {
 
     expect(screen.getByText("Team Management")).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /add selected users to teams/i })).toBeInTheDocument();
+  });
+
+  it("should hide Team management in CavadaLabs Company/Project product mode", () => {
+    renderWithProviders(
+      <BulkEditUserModal {...defaultProps} showLiteLLMCompatibilityFields={false} />,
+    );
+
+    expect(screen.queryByText("Team Management")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /add selected users to teams/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/you can also add users to teams/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId("compat-mode")).toHaveTextContent("cavadalabs");
   });
 
   it("should show team budget input when add to teams is checked", async () => {

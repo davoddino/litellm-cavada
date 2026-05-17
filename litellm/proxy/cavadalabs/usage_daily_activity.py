@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 from fastapi import HTTPException, status
@@ -24,16 +25,23 @@ from litellm.proxy.cavadalabs.usage_serialization import (
     _utc_range_for_local_dates,
 )
 from litellm.proxy.management_endpoints.common_daily_activity import (
-    _aggregate_spend_records,
+    get_api_key_metadata,
+    update_breakdown_metrics,
+    update_metrics,
 )
 from litellm.proxy.utils import PrismaClient
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
     CavadaLabsUsageSchemaStatus,
 )
 from litellm.types.proxy.management_endpoints.common_daily_activity import (
+    BreakdownMetrics,
     DailySpendMetadata,
+    DailySpendData,
     SpendAnalyticsPaginatedResponse,
+    SpendMetrics,
 )
+
+_REQUEST_LEDGER_FETCH_PAGE_SIZE = 1000
 
 
 async def _company_metadata(
@@ -75,6 +83,168 @@ async def _project_metadata(
         }
         for row in rows
     }
+
+
+def _daily_bucket(
+    grouped_data: Dict[str, Dict[str, Any]],
+    date_str: str,
+) -> Dict[str, Any]:
+    if date_str not in grouped_data:
+        grouped_data[date_str] = {
+            "metrics": SpendMetrics(),
+            "breakdown": BreakdownMetrics(),
+        }
+    return grouped_data[date_str]
+
+
+def _daily_results_from_grouped(
+    grouped_data: Dict[str, Dict[str, Any]]
+) -> List[DailySpendData]:
+    results = [
+        DailySpendData(
+            date=datetime.strptime(date_str, "%Y-%m-%d").date(),
+            metrics=data["metrics"],
+            breakdown=data["breakdown"],
+        )
+        for date_str, data in grouped_data.items()
+    ]
+    results.sort(key=lambda result: result.date, reverse=True)
+    return results
+
+
+async def _ensure_entity_metadata(
+    *,
+    prisma_client: PrismaClient,
+    entity_id_field: str,
+    entity_metadata: Dict[str, Dict[str, Any]],
+    records: List[Any],
+) -> None:
+    missing_entity_ids = sorted(
+        {
+            entity_id
+            for record in records
+            if (entity_id := getattr(record, entity_id_field, None))
+            and entity_id not in entity_metadata
+        }
+    )
+    if not missing_entity_ids:
+        return
+    fetched_metadata = (
+        await _company_metadata(prisma_client, missing_entity_ids)
+        if entity_id_field == "company_id"
+        else await _project_metadata(prisma_client, missing_entity_ids)
+    )
+    entity_metadata.update(fetched_metadata)
+
+
+async def _ensure_api_key_metadata(
+    *,
+    prisma_client: PrismaClient,
+    api_key_metadata: Dict[str, Dict[str, Any]],
+    records: List[Any],
+) -> None:
+    missing_api_keys = {
+        api_key
+        for record in records
+        if (api_key := getattr(record, "api_key", None))
+        and api_key != "unassigned"
+        and api_key not in api_key_metadata
+    }
+    if not missing_api_keys:
+        return
+    api_key_metadata.update(
+        await get_api_key_metadata(prisma_client, missing_api_keys)
+    )
+
+
+def _add_daily_record_to_grouped(
+    *,
+    grouped_data: Dict[str, Dict[str, Any]],
+    total_metrics: SpendMetrics,
+    record: Any,
+    api_key_metadata: Dict[str, Dict[str, Any]],
+    entity_id_field: str,
+    entity_metadata: Dict[str, Dict[str, Any]],
+) -> None:
+    bucket = _daily_bucket(grouped_data, record.date)
+    bucket["metrics"] = update_metrics(bucket["metrics"], record)
+    bucket["breakdown"] = update_breakdown_metrics(
+        bucket["breakdown"],
+        record,
+        {},
+        {},
+        api_key_metadata,
+        entity_id_field=entity_id_field,
+        entity_metadata_field=entity_metadata,
+    )
+    update_metrics(total_metrics, record)
+
+
+async def _aggregate_ledger_rows_by_day(
+    *,
+    prisma_client: PrismaClient,
+    where_conditions: Dict[str, Any],
+    entity_id_field: str,
+    timezone_offset_minutes: Optional[int],
+) -> Dict[str, Any]:
+    grouped_data: Dict[str, Dict[str, Any]] = {}
+    total_metrics = SpendMetrics()
+    api_key_metadata: Dict[str, Dict[str, Any]] = {}
+    entity_metadata: Dict[str, Dict[str, Any]] = {}
+    skip = 0
+    while True:
+        page = await prisma_client.db.cavadalabs_requestledgertable.find_many(
+            where=where_conditions,
+            order=[{"created_at": "desc"}],
+            skip=skip,
+            take=_REQUEST_LEDGER_FETCH_PAGE_SIZE,
+        )
+        if not page:
+            break
+        daily_records = [
+            _ledger_row_to_daily_record(
+                row,
+                timezone_offset_minutes=timezone_offset_minutes,
+            )
+            for row in page
+        ]
+        await _ensure_entity_metadata(
+            prisma_client=prisma_client,
+            entity_id_field=entity_id_field,
+            entity_metadata=entity_metadata,
+            records=daily_records,
+        )
+        await _ensure_api_key_metadata(
+            prisma_client=prisma_client,
+            api_key_metadata=api_key_metadata,
+            records=daily_records,
+        )
+        for record in daily_records:
+            _add_daily_record_to_grouped(
+                grouped_data=grouped_data,
+                total_metrics=total_metrics,
+                record=record,
+                api_key_metadata=api_key_metadata,
+                entity_id_field=entity_id_field,
+                entity_metadata=entity_metadata,
+            )
+        if len(page) < _REQUEST_LEDGER_FETCH_PAGE_SIZE:
+            break
+        skip += len(page)
+    return {
+        "results": _daily_results_from_grouped(grouped_data),
+        "totals": total_metrics,
+    }
+
+
+def _paginate_daily_results(
+    results: List[DailySpendData],
+    *,
+    page: int,
+    page_size: int,
+) -> List[DailySpendData]:
+    start = (page - 1) * page_size
+    return results[start : start + page_size]
 
 
 async def get_cavadalabs_daily_activity(
@@ -134,10 +304,10 @@ async def get_cavadalabs_daily_activity(
             max_spend=max_spend,
         )
 
-        total_count = await prisma_client.db.cavadalabs_requestledgertable.count(
+        ledger_row_count = await prisma_client.db.cavadalabs_requestledgertable.count(
             where=where_conditions
         )
-        if total_count == 0:
+        if ledger_row_count == 0:
             await ensure_cavadalabs_usage_repair_schema_ready(
                 prisma_client=prisma_client,
                 operation="repair_empty_cavadalabs_daily_activity",
@@ -150,9 +320,12 @@ async def get_cavadalabs_daily_activity(
                 model=model,
                 provider=provider,
                 api_key=api_key,
+                status_filter=status_filter,
+                min_spend=min_spend,
+                max_spend=max_spend,
             )
             if repaired:
-                total_count = (
+                ledger_row_count = (
                     await prisma_client.db.cavadalabs_requestledgertable.count(
                         where=where_conditions
                     )
@@ -163,53 +336,36 @@ async def get_cavadalabs_daily_activity(
                 entity_id_field=entity_id_field,
                 entity_id=normalized_entity_id,
                 date_range=date_range,
-                current_ledger_count=total_count,
+                current_ledger_count=ledger_row_count,
                 model=model,
                 provider=provider,
                 api_key=api_key,
+                status_filter=status_filter,
+                min_spend=min_spend,
+                max_spend=max_spend,
             )
             if repaired:
-                total_count = (
+                ledger_row_count = (
                     await prisma_client.db.cavadalabs_requestledgertable.count(
                         where=where_conditions
                     )
                 )
-        ledger_rows = await prisma_client.db.cavadalabs_requestledgertable.find_many(
-            where=where_conditions,
-            order=[{"created_at": "desc"}],
-            skip=(page - 1) * page_size,
-            take=page_size,
-        )
-        daily_records = [
-            _ledger_row_to_daily_record(
-                row,
-                timezone_offset_minutes=timezone_offset_minutes,
-            )
-            for row in ledger_rows
-        ]
-
-        entity_ids = sorted(
-            {
-                getattr(record, entity_id_field)
-                for record in daily_records
-                if getattr(record, entity_id_field, None)
-            }
-        )
-        entity_metadata = (
-            await _company_metadata(prisma_client, entity_ids)
-            if entity_id_field == "company_id"
-            else await _project_metadata(prisma_client, entity_ids)
-        )
-        aggregated = await _aggregate_spend_records(
+        aggregated = await _aggregate_ledger_rows_by_day(
             prisma_client=prisma_client,
-            records=daily_records,
+            where_conditions=where_conditions,
             entity_id_field=entity_id_field,
-            entity_metadata_field=entity_metadata,
+            timezone_offset_minutes=timezone_offset_minutes,
         )
         metadata_metrics = aggregated["totals"]
+        total_daily_rows = len(aggregated["results"])
+        paginated_results = _paginate_daily_results(
+            aggregated["results"],
+            page=page,
+            page_size=page_size,
+        )
 
         return SpendAnalyticsPaginatedResponse(
-            results=aggregated["results"],
+            results=paginated_results,
             metadata=DailySpendMetadata(
                 total_spend=metadata_metrics.spend,
                 total_prompt_tokens=metadata_metrics.prompt_tokens,
@@ -221,8 +377,8 @@ async def get_cavadalabs_daily_activity(
                 total_cache_read_input_tokens=metadata_metrics.cache_read_input_tokens,
                 total_cache_creation_input_tokens=metadata_metrics.cache_creation_input_tokens,
                 page=page,
-                total_pages=-(-total_count // page_size),
-                has_more=(page * page_size) < total_count,
+                total_pages=-(-total_daily_rows // page_size),
+                has_more=(page * page_size) < total_daily_rows,
             ),
         )
     except HTTPException:

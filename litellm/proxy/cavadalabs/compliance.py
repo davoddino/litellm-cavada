@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Type, TypeVar
+from typing import Any, Dict, List, Optional, Sequence, Type, TypeVar
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel
@@ -119,6 +119,46 @@ def _parse_response(row: Any, response_model: Type[ModelT]) -> ModelT:
     return response_model.model_validate(_row_to_dict(row, response_model))
 
 
+def _clean_scope_ids(values: Optional[Sequence[str]]) -> Optional[List[str]]:
+    if values is None:
+        return None
+    return [value for value in dict.fromkeys(values) if value]
+
+
+def _apply_company_project_scope_filters(
+    where: Dict[str, Any],
+    *,
+    company_id: Optional[str],
+    company_ids: Optional[Sequence[str]],
+    project_id: Optional[str],
+    project_ids: Optional[Sequence[str]],
+) -> bool:
+    if company_id is not None:
+        where["company_id"] = company_id
+    elif company_ids is not None:
+        cleaned_company_ids = _clean_scope_ids(company_ids) or []
+        if project_id is None and project_ids is None and not cleaned_company_ids:
+            return False
+        if cleaned_company_ids:
+            where["company_id"] = {"in": cleaned_company_ids}
+
+    if project_id is not None:
+        where["project_id"] = project_id
+    elif project_ids is not None:
+        cleaned_project_ids = _clean_scope_ids(project_ids) or []
+        if company_id is None and company_ids is None and not cleaned_project_ids:
+            return False
+        if cleaned_project_ids:
+            project_filter: Dict[str, Any] = {"project_id": {"in": cleaned_project_ids}}
+            if "company_id" in where:
+                company_filter = {"company_id": where.pop("company_id")}
+                where["OR"] = [company_filter, project_filter]
+            else:
+                where.update(project_filter)
+
+    return True
+
+
 def _checksum(payload: Dict[str, Any]) -> str:
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
@@ -193,7 +233,9 @@ class CavadaLabsComplianceService:
     async def list_documents(
         self,
         company_id: Optional[str] = None,
+        company_ids: Optional[Sequence[str]] = None,
         project_id: Optional[str] = None,
+        project_ids: Optional[Sequence[str]] = None,
         framework: Optional[CavadaLabsComplianceFramework] = None,
         document_type: Optional[str] = None,
         status_filter: Optional[CavadaLabsComplianceStatus] = None,
@@ -202,9 +244,13 @@ class CavadaLabsComplianceService:
     ) -> List[CavadaLabsComplianceDocumentResponse]:
         where = self._base_where(
             company_id=company_id,
+            company_ids=company_ids,
             project_id=project_id,
+            project_ids=project_ids,
             status_filter=status_filter,
         )
+        if where is None:
+            return []
         if framework is not None:
             where["framework"] = framework.value
         if document_type is not None:
@@ -309,7 +355,9 @@ class CavadaLabsComplianceService:
     async def list_evidence(
         self,
         company_id: Optional[str] = None,
+        company_ids: Optional[Sequence[str]] = None,
         project_id: Optional[str] = None,
+        project_ids: Optional[Sequence[str]] = None,
         framework: Optional[CavadaLabsComplianceFramework] = None,
         evidence_type: Optional[str] = None,
         status_filter: Optional[CavadaLabsComplianceStatus] = None,
@@ -318,9 +366,13 @@ class CavadaLabsComplianceService:
     ) -> List[CavadaLabsComplianceEvidenceResponse]:
         where = self._base_where(
             company_id=company_id,
+            company_ids=company_ids,
             project_id=project_id,
+            project_ids=project_ids,
             status_filter=status_filter,
         )
+        if where is None:
+            return []
         if framework is not None:
             where["framework"] = framework.value
         if evidence_type is not None:
@@ -433,16 +485,22 @@ class CavadaLabsComplianceService:
     async def list_processing_activities(
         self,
         company_id: Optional[str] = None,
+        company_ids: Optional[Sequence[str]] = None,
         project_id: Optional[str] = None,
+        project_ids: Optional[Sequence[str]] = None,
         status_filter: Optional[CavadaLabsComplianceStatus] = None,
         take: int = 100,
         skip: int = 0,
     ) -> List[CavadaLabsProcessingActivityResponse]:
         where = self._base_where(
             company_id=company_id,
+            company_ids=company_ids,
             project_id=project_id,
+            project_ids=project_ids,
             status_filter=status_filter,
         )
+        if where is None:
+            return []
         rows = await self.db.cavadalabs_processingactivitytable.find_many(
             where=where or None,
             take=take,
@@ -557,7 +615,9 @@ class CavadaLabsComplianceService:
     async def list_data_subject_requests(
         self,
         company_id: Optional[str] = None,
+        company_ids: Optional[Sequence[str]] = None,
         project_id: Optional[str] = None,
+        project_ids: Optional[Sequence[str]] = None,
         request_type: Optional[CavadaLabsDataSubjectRequestType] = None,
         status_filter: Optional[CavadaLabsDataSubjectRequestStatus] = None,
         requester_email: Optional[str] = None,
@@ -565,10 +625,14 @@ class CavadaLabsComplianceService:
         skip: int = 0,
     ) -> List[CavadaLabsDataSubjectRequestResponse]:
         where: Dict[str, Any] = {}
-        if company_id is not None:
-            where["company_id"] = company_id
-        if project_id is not None:
-            where["project_id"] = project_id
+        if not _apply_company_project_scope_filters(
+            where,
+            company_id=company_id,
+            company_ids=company_ids,
+            project_id=project_id,
+            project_ids=project_ids,
+        ):
+            return []
         if request_type is not None:
             where["request_type"] = request_type.value
         if status_filter is not None:
@@ -673,7 +737,9 @@ class CavadaLabsComplianceService:
     async def list_ai_system_assessments(
         self,
         company_id: Optional[str] = None,
+        company_ids: Optional[Sequence[str]] = None,
         project_id: Optional[str] = None,
+        project_ids: Optional[Sequence[str]] = None,
         chatbot_id: Optional[str] = None,
         status_filter: Optional[CavadaLabsComplianceStatus] = None,
         take: int = 100,
@@ -681,9 +747,13 @@ class CavadaLabsComplianceService:
     ) -> List[CavadaLabsAISystemAssessmentResponse]:
         where = self._base_where(
             company_id=company_id,
+            company_ids=company_ids,
             project_id=project_id,
+            project_ids=project_ids,
             status_filter=status_filter,
         )
+        if where is None:
+            return []
         if chatbot_id is not None:
             where["chatbot_id"] = chatbot_id
         rows = await self.db.cavadalabs_aisystemassessmenttable.find_many(
@@ -901,14 +971,20 @@ class CavadaLabsComplianceService:
     def _base_where(
         self,
         company_id: Optional[str],
+        company_ids: Optional[Sequence[str]],
         project_id: Optional[str],
+        project_ids: Optional[Sequence[str]],
         status_filter: Optional[CavadaLabsComplianceStatus],
-    ) -> Dict[str, Any]:
+    ) -> Optional[Dict[str, Any]]:
         where: Dict[str, Any] = {}
-        if company_id is not None:
-            where["company_id"] = company_id
-        if project_id is not None:
-            where["project_id"] = project_id
+        if not _apply_company_project_scope_filters(
+            where,
+            company_id=company_id,
+            company_ids=company_ids,
+            project_id=project_id,
+            project_ids=project_ids,
+        ):
+            return None
         if status_filter is not None:
             where["status"] = status_filter.value
         return where

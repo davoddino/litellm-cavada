@@ -29,6 +29,7 @@ import { UserDataTable } from "./view_users/table";
 import { UserInfo } from "./view_users/types";
 import { Skeleton } from "antd";
 import { useCavadaLabsKeyContextOptions } from "./cavadalabs/keyContext";
+import { resolveCavadaLabsProductContext } from "./cavadalabs/productContext";
 
 const { Text, Title } = Typography;
 
@@ -41,6 +42,7 @@ interface ViewUserDashboardProps {
   teams: any[] | null;
   setKeys: React.Dispatch<React.SetStateAction<object[] | null>>;
   orgAdminOrgIds?: Array<{ organization_id: string; organization_alias: string }> | null;
+  userListScopeReady?: boolean;
 }
 
 interface FilterState {
@@ -82,6 +84,7 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({
   userID,
   teams,
   orgAdminOrgIds,
+  userListScopeReady = true,
 }) => {
   const isProxyAdmin = userRole ? isProxyAdminRole(userRole) : false;
   const queryClient = useQueryClient();
@@ -101,7 +104,14 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({
   const [isBulkEditModalVisible, setIsBulkEditModalVisible] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [userModels, setUserModels] = useState<string[]>([]);
-  const { companies: cavadalabsCompanies, projects: cavadalabsProjects } = useCavadaLabsKeyContextOptions(accessToken);
+  const cavadalabsContext = useCavadaLabsKeyContextOptions(accessToken);
+  const { companies: cavadalabsCompanies, projects: cavadalabsProjects } = cavadalabsContext;
+  const cavadalabsProductContext = resolveCavadaLabsProductContext(cavadalabsContext);
+  const hasCavadaLabsProductContext = cavadalabsProductContext.isCavadaLabsProductContext;
+  const canManageCavadaLabsUsers =
+    cavadalabsCompanies.some((company) => company.cavadalabs_can_manage === true) ||
+    cavadalabsProjects.some((project) => project.cavadalabs_can_manage === true);
+  const canInviteUsers = isProxyAdmin || canManageCavadaLabsUsers;
 
   const handleDelete = (user: UserInfo) => {
     setUserToDelete(user);
@@ -259,13 +269,21 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({
     setSelectionMode(false);
   };
 
+  const canQueryUsers = Boolean(accessToken && token && userRole && userID && userListScopeReady);
   const userListQuery = useQuery({
-    queryKey: ["userList", { debouncedFilter: debouncedFilters, currentPage, orgAdminOrgIds }],
+    queryKey: [
+      "userList",
+      { debouncedFilter: debouncedFilters, currentPage, orgAdminOrgIds, hasCavadaLabsProductContext },
+    ],
     queryFn: async () => {
       if (!accessToken) throw new Error("Access token required");
       const hasCavadaLabsScopeFilter = Boolean(
         debouncedFilters.cavadalabs_company_id || debouncedFilters.cavadalabs_project_id,
       );
+      const legacyOrganizationScopeIds =
+        !hasCavadaLabsProductContext && !hasCavadaLabsScopeFilter && orgAdminOrgIds
+          ? orgAdminOrgIds.map((o) => o.organization_id)
+          : null;
 
       return await userListCall(
         accessToken,
@@ -278,12 +296,12 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({
         debouncedFilters.sso_user_id || null,
         debouncedFilters.sort_by,
         debouncedFilters.sort_order,
-        !hasCavadaLabsScopeFilter && orgAdminOrgIds ? orgAdminOrgIds.map((o) => o.organization_id) : null,
+        legacyOrganizationScopeIds,
         debouncedFilters.cavadalabs_company_id ? [debouncedFilters.cavadalabs_company_id] : null,
         debouncedFilters.cavadalabs_project_id ? [debouncedFilters.cavadalabs_project_id] : null,
       );
     },
-    enabled: Boolean(accessToken && token && userRole && userID),
+    enabled: canQueryUsers,
     placeholderData: (previousData) => previousData,
   });
   const userListResponse = userListQuery.data;
@@ -322,7 +340,7 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({
             </>
           ) : userID && accessToken ? (
             <>
-              {isProxyAdmin && (
+              {canInviteUsers && (
                 <CreateUserButton
                   userID={userID}
                   accessToken={accessToken}
@@ -392,6 +410,7 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({
                 teams={teams}
                 cavadalabsCompanies={cavadalabsCompanies}
                 cavadalabsProjects={cavadalabsProjects}
+                showLiteLLMCompatibilityFields={cavadalabsProductContext.showLiteLLMCompatibilityFields}
                 userListResponse={userListResponse}
                 currentPage={currentPage}
                 handlePageChange={handlePageChange}
@@ -442,6 +461,7 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({
           teams={teams}
           cavadalabsCompanies={cavadalabsCompanies}
           cavadalabsProjects={cavadalabsProjects}
+          showLiteLLMCompatibilityFields={cavadalabsProductContext.showLiteLLMCompatibilityFields}
           userListResponse={userListResponse}
           currentPage={currentPage}
           handlePageChange={handlePageChange}
@@ -457,6 +477,7 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({
         onSubmit={handleEditSubmit}
         cavadalabsCompanies={cavadalabsCompanies}
         cavadalabsProjects={cavadalabsProjects}
+        isCavadaLabsProductContext={hasCavadaLabsProductContext}
       />
 
       <DeleteResourceModal
@@ -498,6 +519,7 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({
         userRole={userRole}
         userModels={userModels}
         allowAllUsers={userRole ? isAdminRole(userRole) : false}
+        showLiteLLMCompatibilityFields={cavadalabsProductContext.showLiteLLMCompatibilityFields}
       />
     </div>
   );

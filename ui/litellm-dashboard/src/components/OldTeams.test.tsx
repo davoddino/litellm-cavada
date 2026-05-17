@@ -8,8 +8,24 @@ import OldTeams from "./OldTeams";
 
 const mockTeamInfoView = vi.fn();
 const mockUseOrganizations = vi.fn();
+const mockRouterPush = vi.hoisted(() => vi.fn());
+const mockCavadaLabsKeyContext = vi.hoisted(() => ({
+  value: {
+    companies: [] as any[],
+    projects: [] as any[],
+    isLoading: false,
+    errorDetail: null,
+  },
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: mockRouterPush,
+  }),
+}));
 
 vi.mock("./networking", () => ({
+  serverRootPath: "",
   teamCreateCall: vi.fn(),
   teamDeleteCall: vi.fn(),
   fetchMCPAccessGroups: vi.fn(),
@@ -94,6 +110,10 @@ vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
   useOrganizations: () => mockUseOrganizations(),
 }));
 
+vi.mock("./cavadalabs/keyContext", () => ({
+  useCavadaLabsKeyContextOptions: () => mockCavadaLabsKeyContext.value,
+}));
+
 vi.mock("@/app/(dashboard)/hooks/accessGroups/useAccessGroups", () => ({
   useAccessGroups: vi.fn().mockReturnValue({
     data: [
@@ -129,6 +149,16 @@ const renderWithQueryClient = (component: React.ReactElement) => {
   const queryClient = createQueryClient();
   return render(<QueryClientProvider client={queryClient}>{component}</QueryClientProvider>);
 };
+
+beforeEach(() => {
+  mockRouterPush.mockReset();
+  mockCavadaLabsKeyContext.value = {
+    companies: [],
+    projects: [],
+    isLoading: false,
+    errorDetail: null,
+  };
+});
 
 describe("OldTeams - handleCreate organization handling", () => {
   beforeEach(() => {
@@ -383,6 +413,106 @@ describe("OldTeams - handleCreate organization handling", () => {
       fireEvent.click(deleteTeamButton);
     });
     expect(screen.getByText("Delete Team?")).toBeInTheDocument();
+  });
+});
+
+describe("OldTeams - CavadaLabs product context", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(fetchAvailableModelsForTeamOrKey).mockResolvedValue([]);
+    vi.mocked(fetchMCPAccessGroups).mockResolvedValue([]);
+    vi.mocked(getGuardrailsList).mockResolvedValue({ guardrails: [] });
+    mockUseOrganizations.mockReturnValue({ data: [] });
+    mockRouterPush.mockReset();
+    mockCavadaLabsKeyContext.value = {
+      companies: [{ company_id: "company-1", legal_name: "Acme", cavadalabs_can_manage: true }],
+      projects: [{ project_id: "project-1", company_id: "company-1", name: "Support" }],
+      isLoading: false,
+      errorDetail: null,
+    };
+  });
+
+  it("should route the legacy Teams surface to CavadaLabs Projects without Organization controls", async () => {
+    renderWithQueryClient(
+      <OldTeams
+        teams={[
+          {
+            team_id: "team-1",
+            team_alias: "Legacy Team",
+            organization_id: "org-1",
+            models: ["gpt-4"],
+            max_budget: 100,
+            budget_duration: "1d",
+            tpm_limit: 1000,
+            rpm_limit: 1000,
+            created_at: new Date().toISOString(),
+            keys: [],
+            members_with_roles: [],
+            spend: 0,
+          },
+        ]}
+        searchParams={{}}
+        accessToken="test-token"
+        setTeams={vi.fn()}
+        userID="user-123"
+        userRole="Admin"
+        organizations={[
+          {
+            organization_id: "org-1",
+            organization_alias: "Legacy Org",
+            models: [],
+            members: [],
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Projects" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Projects" })).toBeInTheDocument();
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create Team" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Legacy Team")).not.toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Open Projects" }));
+    });
+
+    expect(mockRouterPush).toHaveBeenCalledWith("/cavadalabs/projects");
+  });
+
+  it("should keep the CavadaLabs Projects route when context is explicit but options are empty", () => {
+    mockCavadaLabsKeyContext.value = {
+      companies: [],
+      projects: [],
+      isLoading: false,
+      errorDetail: null,
+      contextKnown: true,
+      isCavadaLabsProductContext: true,
+    };
+
+    renderWithQueryClient(
+      <OldTeams
+        teams={[]}
+        searchParams={{}}
+        accessToken="test-token"
+        setTeams={vi.fn()}
+        userID="user-123"
+        userRole="Admin"
+        organizations={[
+          {
+            organization_id: "org-1",
+            organization_alias: "Legacy Org",
+            models: [],
+            members: [],
+          },
+        ]}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Projects" })).toBeInTheDocument();
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create Team" })).not.toBeInTheDocument();
+    expect(screen.queryByText("No teams yet")).not.toBeInTheDocument();
   });
 });
 

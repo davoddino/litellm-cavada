@@ -118,6 +118,13 @@ class CavadaLabsUsageDiagnosticsAction(str, enum.Enum):
     FIX_COMPATIBILITY_MAPPING = "fix_compatibility_mapping"
 
 
+class CavadaLabsUsageReadinessCheckStatus(str, enum.Enum):
+    READY = "ready"
+    WARNING = "warning"
+    ACTION_REQUIRED = "action_required"
+    BLOCKED = "blocked"
+
+
 class CavadaLabsUsageSchemaStatus(str, enum.Enum):
     READY = "ready"
     MISSING_SCHEMA = "missing_schema"
@@ -315,6 +322,7 @@ class CavadaLabsCompanyResponse(CavadaLabsCompanyCreateRequest):
     litellm_organization_id: Optional[str] = None
     cavadalabs_access_role: Optional[str] = None
     cavadalabs_can_manage: bool = False
+    cavadalabs_can_view_usage: bool = False
     created_at: datetime
     created_by: str
     updated_at: datetime
@@ -370,6 +378,7 @@ class CavadaLabsProjectResponse(CavadaLabsProjectCreateRequest):
     litellm_team_id: Optional[str] = None
     cavadalabs_access_role: Optional[str] = None
     cavadalabs_can_manage: bool = False
+    cavadalabs_can_view_usage: bool = False
     created_at: datetime
     created_by: str
     updated_at: datetime
@@ -416,15 +425,30 @@ class CavadaLabsProjectMemberDeleteResponse(CavadaLabsBaseModel):
     deleted: bool
 
 
+class CavadaLabsUsageRepairDryRunStatus(CavadaLabsBaseModel):
+    attempted: bool = False
+    available: bool = False
+    would_repair: bool = False
+    scoped_spend_logs: int = 0
+    missing_ledger_rows: int = 0
+    batch_limit: Optional[int] = None
+    message: str = ""
+
+
 class CavadaLabsUsageDiagnosticsItem(CavadaLabsBaseModel):
     entity_type: str
     entity_id: str
     status: CavadaLabsUsageDiagnosticsStatus
     ledger_rows: int = 0
+    ledger_total_spend: float = 0.0
+    ledger_min_created_at: Optional[datetime] = None
+    ledger_max_created_at: Optional[datetime] = None
     attributable_spend_logs: int = 0
     metadata_spend_logs: int = 0
     compatibility_spend_logs: int = 0
     key_metadata_spend_logs: int = 0
+    legacy_keys_missing_metadata: int = 0
+    legacy_key_spend_logs: int = 0
     unmapped_spend_logs: int = 0
     unfiltered_attributable_spend_logs: int = 0
     all_time_attributable_spend_logs: int = 0
@@ -438,12 +462,27 @@ class CavadaLabsUsageDiagnosticsItem(CavadaLabsBaseModel):
     date_range_excludes_usage: bool = False
     missing_mappings: List[str] = Field(default_factory=list)
     missing_schema: List[str] = Field(default_factory=list)
+    repair_dry_run: CavadaLabsUsageRepairDryRunStatus = Field(
+        default_factory=CavadaLabsUsageRepairDryRunStatus
+    )
     message: str
 
 
 class CavadaLabsUsageMigrationStep(CavadaLabsBaseModel):
     name: str
     purpose: str
+
+
+class CavadaLabsUsageReadinessCheck(CavadaLabsBaseModel):
+    code: str
+    status: CavadaLabsUsageReadinessCheckStatus
+    message: str
+    entity_type: Optional[str] = None
+    entity_id: Optional[str] = None
+    recommended_action: CavadaLabsUsageDiagnosticsAction = (
+        CavadaLabsUsageDiagnosticsAction.NONE
+    )
+    details: Dict[str, Any] = Field(default_factory=dict)
 
 
 class CavadaLabsUsageDiagnosticsResponse(CavadaLabsBaseModel):
@@ -455,8 +494,15 @@ class CavadaLabsUsageDiagnosticsResponse(CavadaLabsBaseModel):
         CavadaLabsUsageMigrationStatus.READY
     )
     missing_schema: List[str] = Field(default_factory=list)
+    ledger_table_available: bool = True
+    spend_logs_table_available: bool = True
+    key_context_available: bool = True
     migration_names: List[str] = Field(default_factory=list)
     migration_plan: List[CavadaLabsUsageMigrationStep] = Field(default_factory=list)
+    operator_commands: List[str] = Field(default_factory=list)
+    readiness_checks: List[CavadaLabsUsageReadinessCheck] = Field(
+        default_factory=list
+    )
 
 
 class CavadaLabsUsageRepairRequest(CavadaLabsBaseModel):
@@ -467,7 +513,10 @@ class CavadaLabsUsageRepairRequest(CavadaLabsBaseModel):
     timezone: Optional[int] = None
     model: Optional[str] = None
     provider: Optional[str] = None
+    status: Optional[str] = None
     api_key: Optional[str] = None
+    min_spend: Optional[float] = Field(default=None, ge=0)
+    max_spend: Optional[float] = Field(default=None, ge=0)
     dry_run: bool = False
     batch_limit: Optional[int] = Field(default=None, ge=1, le=100000)
 
@@ -493,6 +542,9 @@ class CavadaLabsUsageRepairResponse(CavadaLabsBaseModel):
     missing_schema: List[str] = Field(default_factory=list)
     migration_names: List[str] = Field(default_factory=list)
     migration_plan: List[CavadaLabsUsageMigrationStep] = Field(default_factory=list)
+    readiness_checks: List[CavadaLabsUsageReadinessCheck] = Field(
+        default_factory=list
+    )
 
 
 class CavadaLabsChatbotCreateRequest(CavadaLabsBaseModel):
@@ -1809,14 +1861,8 @@ class CavadaLabsChatCompletionRequest(CavadaLabsBaseModel):
     @field_validator("metadata")
     @classmethod
     def reject_reserved_metadata(cls, value: Dict[str, Any]) -> Dict[str, Any]:
-        reserved_keys = {
-            "cavadalabs",
-            "cavadalabs_company_id",
-            "cavadalabs_project_id",
-            "cavadalabs_chatbot_id",
-            "cavadalabs_web_token_id",
-            "cavadalabs_provider",
-        }
-        if any(key in value for key in reserved_keys):
+        if "spend_logs_metadata" in value:
+            raise ValueError("metadata contains reserved CavadaLabs keys")
+        if any(key == "cavadalabs" or key.startswith("cavadalabs_") for key in value):
             raise ValueError("metadata contains reserved CavadaLabs keys")
         return value

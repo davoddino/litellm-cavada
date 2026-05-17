@@ -132,8 +132,9 @@ export function UserDataTable({
 
   const isAllSelected = data.length > 0 && selectedUsers.length === data.length;
   const isIndeterminate = selectedUsers.length > 0 && selectedUsers.length < data.length;
-  const hasCavadaLabsProductContext = cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
-  const showLiteLLMCompatibilityFields = showLiteLLMCompatibilityFieldsProp ?? !hasCavadaLabsProductContext;
+  const hasCavadaLabsTenantOptions = cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
+  const showLiteLLMCompatibilityFields = showLiteLLMCompatibilityFieldsProp ?? !hasCavadaLabsTenantOptions;
+  const hasCavadaLabsProductContext = !showLiteLLMCompatibilityFields;
   const filteredCavadaLabsProjects = filters.cavadalabs_company_id
     ? cavadalabsProjects.filter((project) => project.company_id === filters.cavadalabs_company_id)
     : cavadalabsProjects;
@@ -221,6 +222,9 @@ export function UserDataTable({
         possibleUIRoles={possibleUIRoles}
         initialTab={openInEditMode ? 1 : 0}
         startInEditMode={openInEditMode}
+        cavadalabsCompanies={cavadalabsCompanies}
+        cavadalabsProjects={cavadalabsProjects}
+        showLiteLLMCompatibilityFields={showLiteLLMCompatibilityFields}
       />
     );
   }

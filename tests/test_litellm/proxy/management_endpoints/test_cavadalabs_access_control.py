@@ -543,6 +543,13 @@ async def test_company_access_allows_native_project_member_to_view_parent_compan
     assert access_info.role == "operator"
     assert access_info.can_view is True
     assert access_info.can_manage is False
+    company_with_metadata = await with_company_access_metadata(
+        db,
+        company=_company_response(),
+        user_api_key_dict=_internal_user(),
+    )
+    assert company_with_metadata.cavadalabs_access_role == "operator"
+    assert company_with_metadata.cavadalabs_can_view_usage is False
 
     with pytest.raises(HTTPException) as exc_info:
         await require_company_access(
@@ -1271,6 +1278,7 @@ async def test_company_access_metadata_marks_global_admin_as_company_admin():
 
     assert company.cavadalabs_access_role == "company_admin"
     assert company.cavadalabs_can_manage is True
+    assert company.cavadalabs_can_view_usage is True
 
 
 @pytest.mark.asyncio
@@ -1324,8 +1332,10 @@ async def test_company_access_metadata_maps_company_admin_and_operator_roles():
 
     assert admin_company.cavadalabs_access_role == "company_admin"
     assert admin_company.cavadalabs_can_manage is True
+    assert admin_company.cavadalabs_can_view_usage is True
     assert operator_company.cavadalabs_access_role == "operator"
     assert operator_company.cavadalabs_can_manage is False
+    assert operator_company.cavadalabs_can_view_usage is True
 
 
 @pytest.mark.asyncio
@@ -1374,10 +1384,13 @@ async def test_project_access_metadata_maps_project_admin_operator_and_parent_co
 
     assert admin_project.cavadalabs_access_role == "project_admin"
     assert admin_project.cavadalabs_can_manage is True
+    assert admin_project.cavadalabs_can_view_usage is True
     assert operator_project.cavadalabs_access_role == "operator"
     assert operator_project.cavadalabs_can_manage is False
+    assert operator_project.cavadalabs_can_view_usage is True
     assert company_admin_project.cavadalabs_access_role == "company_admin"
     assert company_admin_project.cavadalabs_can_manage is True
+    assert company_admin_project.cavadalabs_can_view_usage is True
 
 
 @pytest.mark.asyncio

@@ -304,6 +304,7 @@ def _service():
     prisma_client.db.cavadalabs_auditlogtable = MagicMock()
     prisma_client.db.cavadalabs_auditlogtable.create = AsyncMock()
     prisma_client.db.cavadalabs_projectmembertable.upsert = AsyncMock()
+    prisma_client.db.cavadalabs_companytable.find_unique = AsyncMock(return_value=None)
     prisma_client.db.cavadalabs_companytable.find_many = AsyncMock(return_value=[])
     prisma_client.db.cavadalabs_projecttable.find_many = AsyncMock(return_value=[])
     prisma_client.db.cavadalabs_companytable.update = AsyncMock(
@@ -643,6 +644,8 @@ async def test_should_create_browser_web_token_hash_only_and_return_secret_once(
     assert token_metadata["cavadalabs_company_id"] == "company-1"
     assert token_metadata["cavadalabs_project_id"] == "project-1"
     assert token_metadata["cavadalabs_chatbot_id"] == "chatbot-1"
+    assert token_metadata["cavadalabs_metadata_authenticated"] is True
+    assert token_metadata["cavadalabs_metadata_source"] == "chatbot_runtime"
     assert token_metadata["cavadalabs"] == {
         "company_id": "company-1",
         "project_id": "project-1",
@@ -982,6 +985,8 @@ async def test_should_build_chatbot_completion_payload_with_cavadalabs_metadata(
     assert payload["metadata"]["cavadalabs_project_id"] == "project-1"
     assert payload["metadata"]["cavadalabs_chatbot_id"] == "chatbot-1"
     assert payload["metadata"]["cavadalabs_web_token_id"] == "web-token-1"
+    assert payload["metadata"]["cavadalabs_metadata_authenticated"] is True
+    assert payload["metadata"]["cavadalabs_metadata_source"] == "chatbot_runtime"
     assert payload["metadata"]["cavadalabs"]["policy_id"] == "policy-primary"
     assert payload["metadata"]["cavadalabs"]["client_request_id"] == "client-request-1"
 
@@ -1919,7 +1924,7 @@ async def test_should_repair_partial_company_usage_ledger_from_scoped_spend_logs
         timezone_offset_minutes=0,
     )
 
-    assert prisma_client.db.litellm_spendlogs.count.await_count == 3
+    assert prisma_client.db.litellm_spendlogs.count.await_count == 2
     prisma_client.db.cavadalabs_requestledgertable.create_many.assert_awaited_once()
     ledger_row = (
         prisma_client.db.cavadalabs_requestledgertable.create_many.call_args.kwargs[
@@ -2524,12 +2529,7 @@ async def test_should_repair_empty_project_usage_ledger_from_team_mapping():
         ]
     )
     prisma_client.db.cavadalabs_projecttable.find_many = AsyncMock(
-        side_effect=[
-            [project],
-            [project],
-            [project],
-            [project],
-        ]
+        return_value=[project]
     )
     prisma_client.db.litellm_spendlogs = MagicMock()
     prisma_client.db.litellm_spendlogs.find_many = AsyncMock(
@@ -2930,7 +2930,7 @@ async def test_should_diagnose_company_usage_backfill_when_spend_logs_exist():
     assert diagnostic.missing_ledger_rows == 2
     assert (
         response.migration_name
-        == "20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata"
+        == "20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash"
     )
     assert response.migration_names == [
         "20260514120000_add_cavadalabs_dispatcher_tables",
@@ -2938,9 +2938,10 @@ async def test_should_diagnose_company_usage_backfill_when_spend_logs_exist():
         "20260515122000_add_cavadalabs_usage_spend_log_indexes",
         "20260515123000_backfill_cavadalabs_request_ledger_from_spend_logs",
         "20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata",
+        "20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash",
     ]
     assert [step.name for step in response.migration_plan] == response.migration_names
-    assert "deleted key" in response.migration_plan[-1].purpose
+    assert "metadata" in response.migration_plan[-1].purpose
     assert "migrate deploy" in response.migration_command
 
     spend_where = next(
@@ -3079,10 +3080,10 @@ async def test_should_diagnose_company_usage_backfill_from_deleted_key_metadata(
     assert diagnostic.attributable_spend_logs == 1
     assert (
         response.migration_name
-        == "20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata"
+        == "20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash"
     )
     assert (
-        "20260515143000_backfill_cavadalabs_request_ledger_from_key_metadata"
+        "20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash"
         in response.migration_names
     )
     spend_where = prisma_client.db.litellm_spendlogs.count.call_args.kwargs["where"]
@@ -3272,7 +3273,11 @@ async def test_should_diagnose_missing_project_without_spend_log_fallback():
     )
     assert diagnostic.missing_mappings == ["CavadaLabs project row"]
     assert diagnostic.attributable_spend_logs == 0
-    prisma_client.db.litellm_spendlogs.count.assert_not_awaited()
+    assert prisma_client.db.litellm_spendlogs.count.await_count == 1
+    spend_count_where = prisma_client.db.litellm_spendlogs.count.call_args.kwargs[
+        "where"
+    ]
+    assert spend_count_where["request_id"] == "__cavadalabs_schema_probe__"
 
 
 def test_cavadalabs_ledger_backfill_migration_matches_schema_contract():
@@ -3420,6 +3425,49 @@ def test_cavadalabs_key_metadata_backfill_migration_matches_schema_contract():
         _prisma_field_line(verification_token_model, key_field)
         _prisma_field_line(deleted_token_model, key_field)
     _prisma_field_line(company_model, "litellm_organization_id")
+    for project_field in ["project_id", "company_id", "litellm_team_id"]:
+        _prisma_field_line(project_model, project_field)
+    for ledger_field in _migration_insert_columns(sql, "CavadaLabs_RequestLedgerTable"):
+        _prisma_field_line(ledger_model, ledger_field)
+
+
+def test_cavadalabs_metadata_key_hash_backfill_migration_matches_schema_contract():
+    repo_root = Path(__file__).parents[4]
+    migration_path = (
+        repo_root
+        / "litellm-proxy-extras"
+        / "litellm_proxy_extras"
+        / "migrations"
+        / "20260515161000_backfill_cavadalabs_request_ledger_from_metadata_key_hash"
+        / "migration.sql"
+    )
+    schema_path = repo_root / "litellm" / "proxy" / "schema.prisma"
+    sql = migration_path.read_text()
+    schema = schema_path.read_text()
+
+    ledger_model = _prisma_model_block(schema, "CavadaLabs_RequestLedgerTable")
+    spend_log_model = _prisma_model_block(schema, "LiteLLM_SpendLogs")
+    verification_token_model = _prisma_model_block(schema, "LiteLLM_VerificationToken")
+    deleted_token_model = _prisma_model_block(
+        schema, "LiteLLM_DeletedVerificationToken"
+    )
+    project_model = _prisma_model_block(schema, "CavadaLabs_ProjectTable")
+
+    assert "metadata_api_key_hash" in sql
+    assert "user_api_key_hash" in sql
+    assert "api_key_hash" in sql
+    assert "spend_logs_metadata" in sql
+    assert 'INNER JOIN key_context k' in sql
+    assert 'ON k."token" = s.metadata_api_key_hash' in sql
+    assert "candidate.value NOT LIKE 'sk-%'" in sql
+    assert "c.company_id = c.project_company_id" in sql
+    assert 'ON CONFLICT ("request_id") DO NOTHING' in sql
+
+    for source_field in ["request_id", "metadata", "startTime"]:
+        _prisma_field_line(spend_log_model, source_field)
+    for key_field in ["token", "metadata", "team_id", "organization_id"]:
+        _prisma_field_line(verification_token_model, key_field)
+        _prisma_field_line(deleted_token_model, key_field)
     for project_field in ["project_id", "company_id", "litellm_team_id"]:
         _prisma_field_line(project_model, project_field)
     for ledger_field in _migration_insert_columns(sql, "CavadaLabs_RequestLedgerTable"):
@@ -4051,6 +4099,7 @@ async def test_should_process_explicit_cavadalabs_ledger_when_compat_lookup_fail
                     {
                         "cavadalabs_company_id": "company-explicit",
                         "cavadalabs_project_id": "project-explicit",
+                        "cavadalabs_metadata_authenticated": True,
                     }
                 ),
                 "api_key": "hashed-key",

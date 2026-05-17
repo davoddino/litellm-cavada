@@ -148,6 +148,46 @@ def _enum_value(value: Any) -> Any:
     return value.value if hasattr(value, "value") else value
 
 
+def _clean_scope_ids(values: Optional[Sequence[str]]) -> Optional[List[str]]:
+    if values is None:
+        return None
+    return [value for value in dict.fromkeys(values) if value]
+
+
+def _apply_company_project_scope_filters(
+    where: Dict[str, Any],
+    *,
+    company_id: Optional[str],
+    company_ids: Optional[Sequence[str]],
+    project_id: Optional[str],
+    project_ids: Optional[Sequence[str]],
+) -> bool:
+    if company_id is not None:
+        where["company_id"] = company_id
+    elif company_ids is not None:
+        cleaned_company_ids = _clean_scope_ids(company_ids) or []
+        if project_id is None and project_ids is None and not cleaned_company_ids:
+            return False
+        if cleaned_company_ids:
+            where["company_id"] = {"in": cleaned_company_ids}
+
+    if project_id is not None:
+        where["project_id"] = project_id
+    elif project_ids is not None:
+        cleaned_project_ids = _clean_scope_ids(project_ids) or []
+        if company_id is None and company_ids is None and not cleaned_project_ids:
+            return False
+        if cleaned_project_ids:
+            project_filter: Dict[str, Any] = {"project_id": {"in": cleaned_project_ids}}
+            if "company_id" in where:
+                company_filter = {"company_id": where.pop("company_id")}
+                where["OR"] = [company_filter, project_filter]
+            else:
+                where.update(project_filter)
+
+    return True
+
+
 class CavadaLabsGuardrailService:
     def __init__(self, prisma_client: Any):
         self.prisma_client = prisma_client
@@ -195,17 +235,26 @@ class CavadaLabsGuardrailService:
     async def list_policies(
         self,
         company_id: Optional[str] = None,
+        company_ids: Optional[Sequence[str]] = None,
         project_id: Optional[str] = None,
+        project_ids: Optional[Sequence[str]] = None,
         chatbot_id: Optional[str] = None,
         status_filter: Optional[CavadaLabsGuardrailPolicyStatus] = None,
         take: int = 100,
         skip: int = 0,
     ) -> CavadaLabsGuardrailPolicyListResponse:
         where: Dict[str, Any] = {}
-        if company_id is not None:
-            where["company_id"] = company_id
-        if project_id is not None:
-            where["project_id"] = project_id
+        if not _apply_company_project_scope_filters(
+            where,
+            company_id=company_id,
+            company_ids=company_ids,
+            project_id=project_id,
+            project_ids=project_ids,
+        ):
+            return CavadaLabsGuardrailPolicyListResponse(
+                guardrail_policies=[],
+                count=0,
+            )
         if chatbot_id is not None:
             where["chatbot_id"] = chatbot_id
         if status_filter is not None:
@@ -366,7 +415,9 @@ class CavadaLabsGuardrailService:
     async def list_decision_logs(
         self,
         company_id: Optional[str] = None,
+        company_ids: Optional[Sequence[str]] = None,
         project_id: Optional[str] = None,
+        project_ids: Optional[Sequence[str]] = None,
         chatbot_id: Optional[str] = None,
         policy_id: Optional[str] = None,
         decision: Optional[CavadaLabsGuardrailDecision] = None,
@@ -374,10 +425,17 @@ class CavadaLabsGuardrailService:
         skip: int = 0,
     ) -> CavadaLabsGuardrailDecisionLogListResponse:
         where: Dict[str, Any] = {}
-        if company_id is not None:
-            where["company_id"] = company_id
-        if project_id is not None:
-            where["project_id"] = project_id
+        if not _apply_company_project_scope_filters(
+            where,
+            company_id=company_id,
+            company_ids=company_ids,
+            project_id=project_id,
+            project_ids=project_ids,
+        ):
+            return CavadaLabsGuardrailDecisionLogListResponse(
+                guardrail_decisions=[],
+                count=0,
+            )
         if chatbot_id is not None:
             where["chatbot_id"] = chatbot_id
         if policy_id is not None:
@@ -552,27 +610,27 @@ class CavadaLabsGuardrailService:
         row = await self.db.cavadalabs_guardraildecisionlogtable.create(
             data=serialize_prisma_json_fields(
                 {
-                "policy_id": policy.policy_id,
-                "policy_name": policy.name,
-                "company_id": data.company_id,
-                "project_id": data.project_id,
-                "chatbot_id": data.chatbot_id,
-                "web_token_id": data.web_token_id,
-                "session_id": data.session_id,
-                "request_id": data.request_id,
-                "phase": _enum_value(data.phase),
-                "decision": _enum_value(decision),
-                "action": _enum_value(action),
-                "confidence": 1.0 if triggered_rules else None,
-                "reason_code": (
-                    str(triggered_rules[0].get("reason_code"))
-                    if triggered_rules
-                    else None
-                ),
-                "triggered_rules": triggered_rules,
-                "redaction_summary": redaction_summary,
-                "latency_ms": latency_ms,
-                "metadata": metadata,
+                    "policy_id": policy.policy_id,
+                    "policy_name": policy.name,
+                    "company_id": data.company_id,
+                    "project_id": data.project_id,
+                    "chatbot_id": data.chatbot_id,
+                    "web_token_id": data.web_token_id,
+                    "session_id": data.session_id,
+                    "request_id": data.request_id,
+                    "phase": _enum_value(data.phase),
+                    "decision": _enum_value(decision),
+                    "action": _enum_value(action),
+                    "confidence": 1.0 if triggered_rules else None,
+                    "reason_code": (
+                        str(triggered_rules[0].get("reason_code"))
+                        if triggered_rules
+                        else None
+                    ),
+                    "triggered_rules": triggered_rules,
+                    "redaction_summary": redaction_summary,
+                    "latency_ms": latency_ms,
+                    "metadata": metadata,
                 }
             )
         )
@@ -637,15 +695,15 @@ class CavadaLabsGuardrailService:
             await self.db.cavadalabs_auditlogtable.create(
                 data=serialize_prisma_json_fields(
                     {
-                    "actor_user_id": _actor_user_id(user_api_key_dict),
-                    "actor_api_key_hash": _actor_key_hash(user_api_key_dict),
-                    "action": action,
-                    "resource_type": resource_type,
-                    "resource_id": resource_id,
-                    "company_id": company_id,
-                    "project_id": project_id,
-                    "before_value": before_value,
-                    "after_value": after_value,
+                        "actor_user_id": _actor_user_id(user_api_key_dict),
+                        "actor_api_key_hash": _actor_key_hash(user_api_key_dict),
+                        "action": action,
+                        "resource_type": resource_type,
+                        "resource_id": resource_id,
+                        "company_id": company_id,
+                        "project_id": project_id,
+                        "before_value": before_value,
+                        "after_value": after_value,
                     }
                 )
             )

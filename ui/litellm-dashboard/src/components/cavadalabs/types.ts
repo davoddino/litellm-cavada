@@ -60,6 +60,7 @@ export interface CavadaLabsRuntimeContext {
   chatbots: CavadaLabsRecord[];
   ragCollections: CavadaLabsRecord[];
   nodes: CavadaLabsRecord[];
+  availableModels?: string[];
 }
 
 export type CavadaLabsUsageDiagnosticsEntityType = "company" | "project";
@@ -78,6 +79,18 @@ export type CavadaLabsUsageDiagnosticsAction =
   | "run_migration_backfill"
   | "fix_compatibility_mapping";
 
+export type CavadaLabsUsageReadinessCheckStatus = "ready" | "warning" | "action_required" | "blocked";
+
+export interface CavadaLabsUsageReadinessCheck {
+  code: string;
+  status: CavadaLabsUsageReadinessCheckStatus;
+  message: string;
+  entity_type?: CavadaLabsUsageDiagnosticsEntityType;
+  entity_id?: string;
+  recommended_action?: CavadaLabsUsageDiagnosticsAction;
+  details?: CavadaLabsRecord;
+}
+
 export interface CavadaLabsUsageDiagnosticsItem {
   entity_type: CavadaLabsUsageDiagnosticsEntityType;
   entity_id: string;
@@ -87,6 +100,8 @@ export interface CavadaLabsUsageDiagnosticsItem {
   metadata_spend_logs?: number;
   compatibility_spend_logs?: number;
   key_metadata_spend_logs?: number;
+  legacy_keys_missing_metadata?: number;
+  legacy_key_spend_logs?: number;
   unmapped_spend_logs?: number;
   unfiltered_attributable_spend_logs?: number;
   all_time_attributable_spend_logs?: number;
@@ -117,6 +132,7 @@ export interface CavadaLabsUsageDiagnosticsResponse {
     name: string;
     purpose: string;
   }[];
+  readiness_checks?: CavadaLabsUsageReadinessCheck[];
 }
 
 export interface CavadaLabsUsageRepairResponse {
@@ -141,6 +157,7 @@ export interface CavadaLabsUsageRepairResponse {
     name: string;
     purpose: string;
   }[];
+  readiness_checks?: CavadaLabsUsageReadinessCheck[];
 }
 
 export interface CavadaLabsUsageMetrics {

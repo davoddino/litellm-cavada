@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -18,6 +19,7 @@ from litellm.proxy.cavadalabs.usage import (
     get_cavadalabs_daily_activity,
 )
 from litellm.proxy.cavadalabs.usage_tracking import (
+    inspect_cavadalabs_ledger_attribution_inputs,
     process_spend_logs_cavadalabs_ledger,
 )
 from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
@@ -25,6 +27,11 @@ from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payloa
 
 
 UTC = datetime.timezone.utc
+
+
+class _JsonLike:
+    def __init__(self, data: dict):
+        self.data = data
 
 
 def _project_row(*, project_id: str = "project-1", company_id: str = "company-1"):
@@ -98,6 +105,7 @@ def _usage_db(*, project_company_id: str = "company-1", ledger_rows=None):
             count=AsyncMock(return_value=len(ledger_rows)),
             find_many=AsyncMock(return_value=ledger_rows),
             create_many=AsyncMock(return_value=SimpleNamespace(count=1)),
+            update_many=AsyncMock(return_value=SimpleNamespace(count=0)),
         ),
         litellm_verificationtoken=SimpleNamespace(
             find_many=AsyncMock(
@@ -196,6 +204,67 @@ async def test_should_attribute_server_key_request_to_cavadalabs_ledger():
     assert ledger_row["project_id"] == "project-1"
     assert ledger_row["api_key_hash"] == "hashed-key"
     assert ledger_row["spend"] == 0.25
+
+
+def test_should_diagnose_nested_serialized_spend_metadata_as_attributable():
+    check = inspect_cavadalabs_ledger_attribution_inputs(
+        {
+            "request_id": "chatcmpl-nested-spend-metadata",
+            "metadata": {
+                "spend_logs_metadata": json.dumps(
+                    {
+                        "cavadalabs_company_id": "company-1",
+                        "cavadalabs_project_id": "project-1",
+                    }
+                )
+            },
+            "model": "openai/gpt-4.1",
+            "custom_llm_provider": "openai",
+        }
+    )
+
+    assert check.can_attempt_attribution is True
+    assert check.company_id == "company-1"
+    assert check.project_id == "project-1"
+    assert check.missing_inputs == ()
+
+
+@pytest.mark.asyncio
+async def test_should_attribute_serialized_nested_spend_metadata_to_ledger():
+    db = _usage_db()
+
+    created = await process_spend_logs_cavadalabs_ledger(
+        prisma_client=SimpleNamespace(db=db),
+        logs_to_process=[
+            {
+                "request_id": "chatcmpl-nested-spend-metadata",
+                "metadata": {
+                    "spend_logs_metadata": json.dumps(
+                        {
+                            "cavadalabs_company_id": "company-1",
+                            "cavadalabs_project_id": "project-1",
+                        }
+                    )
+                },
+                "custom_llm_provider": "openai",
+                "model": "openai/gpt-4.1",
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "spend": 0.05,
+                "status": "success",
+                "startTime": datetime.datetime(2026, 5, 16, 12, tzinfo=UTC),
+            }
+        ],
+    )
+
+    assert created == 1
+    ledger_row = db.cavadalabs_requestledgertable.create_many.call_args.kwargs["data"][
+        0
+    ]
+    assert ledger_row["company_id"] == "company-1"
+    assert ledger_row["project_id"] == "project-1"
+    assert ledger_row["spend"] == 0.05
 
 
 @pytest.mark.asyncio
@@ -343,6 +412,118 @@ async def test_should_attribute_server_key_request_from_key_metadata_to_chatbot_
 
 
 @pytest.mark.asyncio
+async def test_should_resolve_key_context_from_prisma_json_nested_spend_metadata():
+    db = _usage_db()
+    db.litellm_verificationtoken.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                token="hashed-key",
+                team_id=None,
+                organization_id=None,
+                metadata=_JsonLike(
+                    {
+                        "spend_logs_metadata": json.dumps(
+                            {
+                                "cavadalabs_company_id": "company-1",
+                                "cavadalabs_project_id": "project-1",
+                                "cavadalabs_chatbot_id": "chatbot-1",
+                            }
+                        )
+                    }
+                ),
+            )
+        ]
+    )
+
+    created = await process_spend_logs_cavadalabs_ledger(
+        prisma_client=SimpleNamespace(db=db),
+        logs_to_process=[
+            {
+                "request_id": "chatcmpl-json-nested-key-context",
+                "metadata": {"user_api_key_hash": "hashed-key"},
+                "custom_llm_provider": "openai",
+                "model": "openai/gpt-4.1",
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "spend": 0.05,
+                "status": "success",
+                "startTime": datetime.datetime(2026, 5, 16, 12, tzinfo=UTC),
+            }
+        ],
+    )
+
+    assert created == 1
+    ledger_row = db.cavadalabs_requestledgertable.create_many.call_args.kwargs["data"][
+        0
+    ]
+    assert ledger_row["company_id"] == "company-1"
+    assert ledger_row["project_id"] == "project-1"
+    assert ledger_row["chatbot_id"] == "chatbot-1"
+    assert ledger_row["api_key_hash"] == "hashed-key"
+
+
+@pytest.mark.asyncio
+async def test_should_repair_existing_ledger_context_from_authoritative_key_metadata():
+    db = _usage_db()
+    db.cavadalabs_requestledgertable.create_many = AsyncMock(
+        return_value=SimpleNamespace(count=0)
+    )
+    db.cavadalabs_requestledgertable.update_many = AsyncMock(
+        return_value=SimpleNamespace(count=1)
+    )
+    db.litellm_verificationtoken.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                token="hashed-key",
+                team_id="team-project-1",
+                organization_id="org-company-1",
+                metadata={
+                    "cavadalabs_company_id": "company-1",
+                    "cavadalabs_project_id": "project-1",
+                    "cavadalabs_chatbot_id": "chatbot-1",
+                },
+            )
+        ]
+    )
+
+    repaired = await process_spend_logs_cavadalabs_ledger(
+        prisma_client=SimpleNamespace(db=db),
+        logs_to_process=[
+            {
+                "request_id": "chatcmpl-repair-duplicate",
+                "metadata": {"user_api_key_hash": "hashed-key"},
+                "custom_llm_provider": "openai",
+                "model": "openai/gpt-4.1",
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15,
+                "spend": 0.05,
+                "status": "success",
+                "startTime": datetime.datetime(2026, 5, 16, 12, tzinfo=UTC),
+            }
+        ],
+    )
+
+    assert repaired == 1
+    update_call = db.cavadalabs_requestledgertable.update_many.call_args.kwargs
+    assert update_call["where"] == {
+        "request_id": "chatcmpl-repair-duplicate",
+        "OR": [
+            {"company_id": {"not": "company-1"}},
+            {"project_id": {"not": "project-1"}},
+        ],
+    }
+    assert update_call["data"]["company_id"] == "company-1"
+    assert update_call["data"]["project_id"] == "project-1"
+    assert update_call["data"]["chatbot_id"] == "chatbot-1"
+    assert update_call["data"]["api_key_hash"] == "hashed-key"
+    assert "request_id" not in update_call["data"]
+    metadata = getattr(update_call["data"]["metadata"], "data", {})
+    assert metadata["cavadalabs"]["attribution_source"] == "key_metadata"
+
+
+@pytest.mark.asyncio
 async def test_should_not_create_cross_project_ledger_from_conflicting_metadata():
     db = _usage_db(project_company_id="company-2")
 
@@ -354,6 +535,7 @@ async def test_should_not_create_cross_project_ledger_from_conflicting_metadata(
                 "metadata": {
                     "cavadalabs_company_id": "company-1",
                     "cavadalabs_project_id": "project-1",
+                    "cavadalabs_metadata_authenticated": True,
                 },
                 "spend": 0.42,
                 "total_tokens": 42,

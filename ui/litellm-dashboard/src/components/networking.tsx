@@ -1299,6 +1299,14 @@ export interface UserInfoV2Response {
   updated_at: string | null;
   sso_user_id: string | null;
   teams: string[];
+  cavadalabs_company_memberships?: Array<{
+    company_id: string;
+    role: "company_admin" | "operator" | "viewer";
+  }>;
+  cavadalabs_project_memberships?: Array<{
+    project_id: string;
+    role: "project_admin" | "operator" | "viewer";
+  }>;
 }
 
 /**

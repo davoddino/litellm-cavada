@@ -20,7 +20,17 @@ import type {
   CavadaLabsUsageDiagnosticsResponse,
   CavadaLabsUsageDiagnosticsStatus,
 } from "./types";
-import { canManageCavadaLabsUsageScope } from "./usageScopeAccess";
+import {
+  canManageCavadaLabsUsageScope,
+  cavadaLabsUsageScopeRecords,
+  preferredCavadaLabsUsageEntityType,
+} from "./usageScopeAccess";
+import {
+  cavadaLabsReadinessCheckLabel,
+  cavadaLabsReadinessStatusColor,
+  cavadaLabsUsageReadinessChecksForScope,
+  cavadaLabsUsageReadinessSummary,
+} from "./usageReadiness";
 import { statusColor } from "./utils";
 
 const { Text, Title } = Typography;
@@ -55,7 +65,7 @@ const optionLabel = (row: CavadaLabsRecord, entityType: CavadaLabsUsageDiagnosti
 };
 
 const entityOptions = (context: CavadaLabsRuntimeContext, entityType: CavadaLabsUsageDiagnosticsEntityType) =>
-  (entityType === "company" ? context.companies : context.projects)
+  cavadaLabsUsageScopeRecords(context, entityType)
     .map((row) => {
       const value = entityType === "company" ? row.company_id : row.project_id;
       if (!value) return null;
@@ -121,12 +131,25 @@ const sanitizedMessage = (item: CavadaLabsUsageDiagnosticsItem): string => {
   }
 };
 
-const summaryFor = (response: CavadaLabsUsageDiagnosticsResponse | null) => {
+const summaryFor = (
+  response: CavadaLabsUsageDiagnosticsResponse | null,
+  entityType: CavadaLabsUsageDiagnosticsEntityType,
+  entityId: string | undefined,
+  canManageScope: boolean,
+): { type: "success" | "info" | "warning" | "error"; message: string; description: string; details: string[] } => {
+  const readinessSummary = cavadaLabsUsageReadinessSummary({
+    response,
+    entityType,
+    entityId,
+    canManageScope,
+  });
+  if (readinessSummary) return readinessSummary;
   if (response === null) {
     return {
       type: "info" as const,
       message: "Select a Company or Project to inspect usage attribution",
       description: "Diagnostics compare CavadaLabs ledger rows with LiteLLM spend rows for the selected scope.",
+      details: [],
     };
   }
   if (response.schema_status === "missing_schema" || response.migration_status === "schema_missing") {
@@ -135,6 +158,7 @@ const summaryFor = (response: CavadaLabsUsageDiagnosticsResponse | null) => {
       message: "CavadaLabs usage schema is not ready",
       description:
         "The request ledger schema or migration is missing. Run the migration command before scoped repair or billing verification.",
+      details: response.missing_schema?.map((value) => `Missing schema: ${value}`) ?? [],
     };
   }
   const diagnostics = response.diagnostics;
@@ -143,6 +167,7 @@ const summaryFor = (response: CavadaLabsUsageDiagnosticsResponse | null) => {
       type: "info" as const,
       message: "No diagnostics returned for this scope",
       description: "The selected Company/Project scope returned no diagnostic rows for the current date range.",
+      details: [],
     };
   }
   if (diagnostics.some((item) => item.recommended_action === "fix_compatibility_mapping")) {
@@ -151,6 +176,7 @@ const summaryFor = (response: CavadaLabsUsageDiagnosticsResponse | null) => {
       message: "Company/Project mapping is incomplete",
       description:
         "Usage is intentionally hidden until the selected scope has a valid Company/Project compatibility mapping or key metadata.",
+      details: [],
     };
   }
   if (diagnostics.some((item) => item.recommended_action === "run_scoped_backfill")) {
@@ -159,6 +185,7 @@ const summaryFor = (response: CavadaLabsUsageDiagnosticsResponse | null) => {
       message: "Scoped backfill is available",
       description:
         "Run scoped backfill for this Company/Project date range, or run the migration command for a full historical repair.",
+      details: [],
     };
   }
   if (diagnostics.some((item) => item.recommended_action === "run_migration_backfill")) {
@@ -166,6 +193,7 @@ const summaryFor = (response: CavadaLabsUsageDiagnosticsResponse | null) => {
       type: "warning" as const,
       message: "Historical migration backfill is required",
       description: "Run the CavadaLabs usage migration before relying on full historical billing.",
+      details: [],
     };
   }
   if (diagnostics.some((item) => item.status === "filters_exclude_usage")) {
@@ -174,6 +202,7 @@ const summaryFor = (response: CavadaLabsUsageDiagnosticsResponse | null) => {
       message: "Current filters hide attributable usage",
       description:
         "Company/Project spend is attributable, but the selected date range or filters exclude it. Adjust the scope before running repair.",
+      details: [],
     };
   }
   if (diagnostics.some((item) => item.status === "no_attributable_spend")) {
@@ -182,12 +211,14 @@ const summaryFor = (response: CavadaLabsUsageDiagnosticsResponse | null) => {
       message: "No Company/Project-attributable spend",
       description:
         "No ledger rows, SpendLogs metadata, key metadata, or internal compatibility mapping matched this Company/Project scope.",
+      details: [],
     };
   }
   return {
     type: "success" as const,
     message: "Usage attribution is healthy",
     description: "CavadaLabs ledger data covers the selected Company/Project scope.",
+    details: [],
   };
 };
 
@@ -203,7 +234,7 @@ const migrationPlanFor = (response: CavadaLabsUsageDiagnosticsResponse | null) =
 const CavadaLabsUsageDiagnosticsPanel: React.FC<CavadaLabsUsageDiagnosticsPanelProps> = ({ accessToken, context }) => {
   const initialDateRange = useMemo(defaultDateRange, []);
   const [entityType, setEntityType] = useState<CavadaLabsUsageDiagnosticsEntityType>(
-    context.companies.length > 0 || context.projects.length === 0 ? "company" : "project",
+    preferredCavadaLabsUsageEntityType(context),
   );
   const [selectedEntityId, setSelectedEntityId] = useState<string | undefined>(undefined);
   const [startDate, setStartDate] = useState(initialDateRange.startDate);
@@ -213,17 +244,19 @@ const CavadaLabsUsageDiagnosticsPanel: React.FC<CavadaLabsUsageDiagnosticsPanelP
   const [repairingEntityId, setRepairingEntityId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const options = useMemo(() => entityOptions(context, entityType), [context, entityType]);
+  const companyOptions = useMemo(() => entityOptions(context, "company"), [context]);
+  const projectOptions = useMemo(() => entityOptions(context, "project"), [context]);
+  const options = entityType === "company" ? companyOptions : projectOptions;
 
   useEffect(() => {
-    if (entityType === "company" && context.companies.length === 0 && context.projects.length > 0) {
+    if (entityType === "company" && companyOptions.length === 0 && projectOptions.length > 0) {
       setEntityType("project");
       return;
     }
-    if (entityType === "project" && context.projects.length === 0 && context.companies.length > 0) {
+    if (entityType === "project" && projectOptions.length === 0 && companyOptions.length > 0) {
       setEntityType("company");
     }
-  }, [context.companies.length, context.projects.length, entityType]);
+  }, [companyOptions.length, entityType, projectOptions.length]);
 
   useEffect(() => {
     if (selectedEntityId && options.some((option) => option.value === selectedEntityId)) return;
@@ -282,6 +315,7 @@ const CavadaLabsUsageDiagnosticsPanel: React.FC<CavadaLabsUsageDiagnosticsPanelP
           missing_schema: repair.missing_schema,
           migration_names: repair.migration_names,
           migration_plan: repair.migration_plan,
+          readiness_checks: repair.readiness_checks,
         });
       } catch (err) {
         const detail = cavadaLabsErrorDetailFromUnknown(err);
@@ -298,12 +332,13 @@ const CavadaLabsUsageDiagnosticsPanel: React.FC<CavadaLabsUsageDiagnosticsPanelP
     [accessToken, endDate, startDate],
   );
 
-  const summary = summaryFor(response);
-  const migrationPlan = migrationPlanFor(response);
   const diagnostics = response?.diagnostics ?? [];
   const repairSchemaReady =
     response?.schema_status !== "missing_schema" && response?.migration_status !== "schema_missing";
   const selectedScopeCanManage = canManageCavadaLabsUsageScope(context, entityType, selectedEntityId);
+  const summary = summaryFor(response, entityType, selectedEntityId, selectedScopeCanManage);
+  const migrationPlan = migrationPlanFor(response);
+  const readinessChecks = cavadaLabsUsageReadinessChecksForScope(response, entityType, selectedEntityId);
 
   const columns: ColumnsType<CavadaLabsUsageDiagnosticsItem> = [
     {
@@ -350,6 +385,18 @@ const CavadaLabsUsageDiagnosticsPanel: React.FC<CavadaLabsUsageDiagnosticsPanelP
       title: "Key metadata",
       dataIndex: "key_metadata_spend_logs",
       width: 135,
+      render: (value?: number) => value ?? 0,
+    },
+    {
+      title: "Legacy keys",
+      dataIndex: "legacy_keys_missing_metadata",
+      width: 125,
+      render: (value?: number) => value ?? 0,
+    },
+    {
+      title: "Legacy key rows",
+      dataIndex: "legacy_key_spend_logs",
+      width: 145,
       render: (value?: number) => value ?? 0,
     },
     {
@@ -434,8 +481,8 @@ const CavadaLabsUsageDiagnosticsPanel: React.FC<CavadaLabsUsageDiagnosticsPanelP
               optionType="button"
               buttonStyle="solid"
               options={[
-                { label: "Company", value: "company" },
-                { label: "Project", value: "project" },
+                { label: "Company", value: "company", disabled: companyOptions.length === 0 },
+                { label: "Project", value: "project", disabled: projectOptions.length === 0 },
               ]}
             />
           </Col>
@@ -493,6 +540,27 @@ const CavadaLabsUsageDiagnosticsPanel: React.FC<CavadaLabsUsageDiagnosticsPanelP
           description={
             <Space direction="vertical" size={4}>
               <span>{summary.description}</span>
+              {summary.details.length > 0 ? (
+                <Space direction="vertical" size={2}>
+                  {summary.details.map((line) => (
+                    <Text key={line} type="secondary">
+                      {line}
+                    </Text>
+                  ))}
+                </Space>
+              ) : null}
+              {readinessChecks.length > 0 ? (
+                <Space wrap size={[4, 4]} aria-label="Usage readiness checks">
+                  {readinessChecks.map((check) => (
+                    <Tag
+                      key={`${check.code}-${check.entity_type ?? "global"}-${check.entity_id ?? "global"}`}
+                      color={cavadaLabsReadinessStatusColor(check.status)}
+                    >
+                      {cavadaLabsReadinessCheckLabel(check)}: {displayLabel(check.status)}
+                    </Tag>
+                  ))}
+                </Space>
+              ) : null}
               {migrationPlan.length > 0 ? (
                 <Space direction="vertical" size={2}>
                   {migrationPlan.map((step) => (

@@ -20,8 +20,11 @@ import BulkCreateUsers from "./bulk_create_users_button";
 import {
   getCavadaLabsCompanyDisplayName,
   getCavadaLabsProjectDisplayName,
+  filterManageableCavadaLabsCompanies,
+  filterManageableCavadaLabsProjects,
   useCavadaLabsKeyContextOptions,
 } from "./cavadalabs/keyContext";
+import { resolveCavadaLabsProductContext } from "./cavadalabs/productContext";
 import TeamDropdown from "./common_components/team_dropdown";
 import { getModelDisplayName } from "./key_team_helpers/fetch_available_models_team_key";
 import NotificationsManager from "./molecules/notifications_manager";
@@ -91,7 +94,19 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
   const [invitationLinkData, setInvitationLinkData] = useState<InvitationLink | null>(null);
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const { data: organizations = [] } = useOrganizations();
-  const { companies: cavadalabsCompanies, projects: cavadalabsProjects } = useCavadaLabsKeyContextOptions(accessToken);
+  const cavadalabsContext = useCavadaLabsKeyContextOptions(accessToken);
+  const { companies: cavadalabsCompanies, projects: cavadalabsProjects } = cavadalabsContext;
+  const cavadalabsProductContext = resolveCavadaLabsProductContext(cavadalabsContext);
+  const hasCavadaLabsProductContext = cavadalabsProductContext.isCavadaLabsProductContext;
+  const showLiteLLMCompatibilityFields = cavadalabsProductContext.showLiteLLMCompatibilityFields;
+  const manageableCavadaLabsCompanies = useMemo(
+    () => filterManageableCavadaLabsCompanies(cavadalabsCompanies),
+    [cavadalabsCompanies],
+  );
+  const manageableCavadaLabsProjects = useMemo(
+    () => filterManageableCavadaLabsProjects(cavadalabsProjects),
+    [cavadalabsProjects],
+  );
   const selectedCavadaLabsCompanyIdsValue = Form.useWatch("cavadalabs_company_ids", form);
   const selectedCavadaLabsCompanyIds = useMemo(
     () => normalizeCavadaLabsSelection(selectedCavadaLabsCompanyIdsValue),
@@ -105,14 +120,13 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
     () => new Map(cavadalabsProjects.map((project) => [project.project_id, project])),
     [cavadalabsProjects],
   );
-  const hasCavadaLabsProductContext = cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
   const filteredCavadaLabsProjects = useMemo(() => {
     if (selectedCavadaLabsCompanyIds.length === 0) {
-      return cavadalabsProjects;
+      return manageableCavadaLabsProjects;
     }
     const selectedCompanyIds = new Set(selectedCavadaLabsCompanyIds);
-    return cavadalabsProjects.filter((project) => selectedCompanyIds.has(project.company_id));
-  }, [cavadalabsProjects, selectedCavadaLabsCompanyIds]);
+    return manageableCavadaLabsProjects.filter((project) => selectedCompanyIds.has(project.company_id));
+  }, [manageableCavadaLabsProjects, selectedCavadaLabsCompanyIds]);
 
   useEffect(() => {
     if (!hasCavadaLabsProductContext || selectedCavadaLabsCompanyIds.length === 0) {
@@ -293,7 +307,7 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
           help="The user will be granted access through CavadaLabs company membership."
         >
           <Select mode="multiple" placeholder="Select Company" style={{ width: "100%" }}>
-            {cavadalabsCompanies.map((company) => (
+            {manageableCavadaLabsCompanies.map((company) => (
               <Option key={company.company_id} value={company.company_id}>
                 {getCavadaLabsCompanyDisplayName(company)}
               </Option>
@@ -378,7 +392,7 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
               ))}
           </Select2>
         </Form.Item>
-        {!hasCavadaLabsProductContext && (
+        {showLiteLLMCompatibilityFields && (
           <Form.Item label="Team" name="team_id">
             <TeamDropdown />
           </Form.Item>
@@ -407,7 +421,7 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
       <Button type="primary" className="mb-0" onClick={() => setIsModalVisible(true)}>
         + Invite User
       </Button>
-      {!hasCavadaLabsProductContext && (
+      {showLiteLLMCompatibilityFields && (
         <BulkCreateUsers accessToken={accessToken} teams={teams} possibleUIRoles={possibleUIRoles} />
       )}
       <Modal
@@ -451,7 +465,13 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
             label={
               <span>
                 Global Proxy Role{" "}
-                <Tooltip title="This role is independent of any team or company-specific roles. Configure Team / Company Admins in the Settings">
+                <Tooltip
+                  title={
+                    hasCavadaLabsProductContext
+                      ? "This role is independent of Company and Project memberships."
+                      : "This role is independent of any team or company-specific roles. Configure Team / Company Admins in the Settings"
+                  }
+                >
                   <InfoCircleOutlined />
                 </Tooltip>
               </span>
@@ -472,7 +492,7 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
             </Select2>
           </Form.Item>
 
-          {!hasCavadaLabsProductContext && (
+          {showLiteLLMCompatibilityFields && (
             <Form.Item
               label="Team"
               className="gap-2"
@@ -483,7 +503,7 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
             </Form.Item>
           )}
 
-          {!hasCavadaLabsProductContext && (
+          {showLiteLLMCompatibilityFields && (
             <Form.Item
               label="Organization"
               name="organization_ids"
@@ -517,13 +537,23 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
                 label={
                   <span>
                     Models{" "}
-                    <Tooltip title="Models user has access to, outside of team scope.">
+                    <Tooltip
+                      title={
+                        hasCavadaLabsProductContext
+                          ? "Models this user can access outside Company and Project memberships."
+                          : "Models user has access to, outside of team scope."
+                      }
+                    >
                       <InfoCircleOutlined style={{ marginLeft: "4px" }} />
                     </Tooltip>
                   </span>
                 }
                 name="models"
-                help="Models user has access to, outside of team scope."
+                help={
+                  hasCavadaLabsProductContext
+                    ? "Models this user can access outside Company and Project memberships."
+                    : "Models user has access to, outside of team scope."
+                }
               >
                 <Select2 mode="multiple" placeholder="Select models" style={{ width: "100%" }}>
                   <Select2.Option key="all-proxy-models" value="all-proxy-models">

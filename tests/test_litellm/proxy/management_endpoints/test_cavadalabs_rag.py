@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException
 
+from litellm.proxy import proxy_server
 from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.cavadalabs.dispatcher import (
     CavadaLabsDispatcherService,
@@ -15,6 +16,9 @@ from litellm.proxy.cavadalabs.rag_runtime import (
     CavadaLabsRAGContext,
     CavadaLabsRAGRuntimeService,
     CavadaLabsRAGSource,
+)
+from litellm.proxy.management_endpoints import (
+    cavadalabs_rag_endpoints as rag_endpoints,
 )
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
     CavadaLabsChatCompletionRequest,
@@ -39,6 +43,14 @@ def _admin() -> UserAPIKeyAuth:
         api_key="sk-test",
         user_id="admin-user",
         user_role=LitellmUserRoles.PROXY_ADMIN,
+    )
+
+
+def _internal_user() -> UserAPIKeyAuth:
+    return UserAPIKeyAuth(
+        api_key="sk-user",
+        user_id="user-1",
+        user_role=LitellmUserRoles.INTERNAL_USER,
     )
 
 
@@ -229,6 +241,152 @@ def _service():
     return CavadaLabsRAGService(prisma_client), prisma_client
 
 
+def _normalize_prisma_json_row(data):
+    return {key: getattr(value, "data", value) for key, value in data.items()}
+
+
+def _filter_matches(value, filter_value):
+    if isinstance(filter_value, dict):
+        return value in filter_value.get("in", [])
+    return value == filter_value
+
+
+def _endpoint_project_row(project_id):
+    company_id = "company-1" if project_id == "project-1" else "company-2"
+    return _project_row(
+        project_id=project_id,
+        company_id=company_id,
+        litellm_team_id=f"team-{project_id}",
+    )
+
+
+def _member_rows(member_type, role):
+    if role is None:
+        return []
+    id_field = f"{member_type}_id"
+    id_value = f"{member_type}-1"
+    return [SimpleNamespace(**{id_field: id_value, "user_id": "user-1", "role": role})]
+
+
+def _setup_company_project_tables(db):
+    async def _find_company(*, where):
+        return _company_row(
+            company_id=where["company_id"],
+            litellm_organization_id=f"org-{where['company_id']}",
+        )
+
+    async def _find_project(*, where):
+        return _endpoint_project_row(where["project_id"])
+
+    async def _find_projects(*, where=None):
+        where = where or {}
+        rows = [_project_row(project_id="project-1", company_id="company-1")]
+        if "project_id" in where:
+            rows = [
+                row
+                for row in rows
+                if _filter_matches(row.project_id, where["project_id"])
+            ]
+        if "company_id" in where:
+            rows = [
+                row
+                for row in rows
+                if _filter_matches(row.company_id, where["company_id"])
+            ]
+        return rows
+
+    db.cavadalabs_companytable = MagicMock()
+    db.cavadalabs_companytable.find_unique = AsyncMock(side_effect=_find_company)
+    db.cavadalabs_companytable.find_many = AsyncMock(return_value=[])
+    db.cavadalabs_projecttable = MagicMock()
+    db.cavadalabs_projecttable.find_unique = AsyncMock(side_effect=_find_project)
+    db.cavadalabs_projecttable.find_many = AsyncMock(side_effect=_find_projects)
+
+
+def _setup_company_project_membership_tables(db, *, company_role, project_role):
+    async def _find_company_member(*, where):
+        key = where["company_id_user_id"]
+        if key["company_id"] == "company-1" and key["user_id"] == "user-1":
+            return next(iter(_member_rows("company", company_role)), None)
+        return None
+
+    async def _find_project_member(*, where):
+        key = where["project_id_user_id"]
+        if key["project_id"] == "project-1" and key["user_id"] == "user-1":
+            return next(iter(_member_rows("project", project_role)), None)
+        return None
+
+    db.cavadalabs_companymembertable = MagicMock()
+    db.cavadalabs_companymembertable.find_unique = AsyncMock(
+        side_effect=_find_company_member
+    )
+    db.cavadalabs_companymembertable.find_many = AsyncMock(
+        return_value=_member_rows("company", company_role)
+    )
+    db.cavadalabs_projectmembertable = MagicMock()
+    db.cavadalabs_projectmembertable.find_unique = AsyncMock(
+        side_effect=_find_project_member
+    )
+    db.cavadalabs_projectmembertable.find_many = AsyncMock(
+        return_value=_member_rows("project", project_role)
+    )
+
+
+def _setup_litellm_compat_membership_tables(db):
+    db.litellm_organizationmembership = MagicMock()
+    db.litellm_organizationmembership.find_unique = AsyncMock(return_value=None)
+    db.litellm_organizationmembership.find_many = AsyncMock(return_value=[])
+    db.litellm_usertable = MagicMock()
+    db.litellm_usertable.find_unique = AsyncMock(return_value=None)
+    db.litellm_teamtable = MagicMock()
+    db.litellm_teamtable.find_unique = AsyncMock(return_value=None)
+
+
+def _setup_rag_tables(db):
+    async def _create_collection(*, data):
+        row_data = _normalize_prisma_json_row(data)
+        return _collection_row(collection_id="collection-created", **row_data)
+
+    db.cavadalabs_ragcollectiontable = MagicMock()
+    db.cavadalabs_ragcollectiontable.create = AsyncMock(side_effect=_create_collection)
+    db.cavadalabs_ragcollectiontable.find_unique = AsyncMock(
+        return_value=_collection_row()
+    )
+    db.cavadalabs_ragcollectiontable.find_many = AsyncMock(
+        return_value=[_collection_row()]
+    )
+    db.cavadalabs_ragcollectiontable.update = AsyncMock(
+        return_value=_collection_row(status="archived")
+    )
+    db.cavadalabs_ragdocumenttable = MagicMock()
+    db.cavadalabs_ragdocumenttable.find_many = AsyncMock(return_value=[])
+    db.cavadalabs_chatbotragassignmenttable = MagicMock()
+    db.cavadalabs_chatbotragassignmenttable.find_many = AsyncMock(return_value=[])
+
+
+def _setup_audit_table(db):
+    db.cavadalabs_auditlogtable = MagicMock()
+    db.cavadalabs_auditlogtable.create = AsyncMock()
+
+
+def _rag_endpoint_db(company_role=None, project_role="project_admin"):
+    db = MagicMock()
+    _setup_company_project_tables(db)
+    _setup_company_project_membership_tables(
+        db,
+        company_role=company_role,
+        project_role=project_role,
+    )
+    _setup_litellm_compat_membership_tables(db)
+    _setup_rag_tables(db)
+    _setup_audit_table(db)
+    return db
+
+
+def _patch_proxy_prisma(monkeypatch, db):
+    monkeypatch.setattr(proxy_server, "prisma_client", SimpleNamespace(db=db))
+
+
 def _runtime_service(search_client=None):
     prisma_client = MagicMock()
     prisma_client.db = MagicMock()
@@ -263,6 +421,76 @@ class _SearchClient:
         if self.exc is not None:
             raise self.exc
         return self.response
+
+
+@pytest.mark.asyncio
+async def test_should_create_project_rag_collection_for_native_project_admin(
+    monkeypatch,
+):
+    db = _rag_endpoint_db(company_role=None, project_role="project_admin")
+    _patch_proxy_prisma(monkeypatch, db)
+
+    response = await rag_endpoints.create_rag_collection(
+        data=CavadaLabsRAGCollectionCreateRequest(
+            company_id="company-1",
+            project_id="project-1",
+            name="Support FAQ",
+            scope=CavadaLabsRAGCollectionScope.PROJECT,
+            status=CavadaLabsRAGCollectionStatus.DRAFT,
+        ),
+        http_request=MagicMock(),
+        user_api_key_dict=_internal_user(),
+    )
+
+    assert response.collection_id == "collection-created"
+    create_data = db.cavadalabs_ragcollectiontable.create.call_args.kwargs["data"]
+    assert create_data["company_id"] == "company-1"
+    assert create_data["project_id"] == "project-1"
+
+
+@pytest.mark.asyncio
+async def test_should_reject_project_rag_collection_create_for_project_viewer(
+    monkeypatch,
+):
+    db = _rag_endpoint_db(company_role=None, project_role="viewer")
+    _patch_proxy_prisma(monkeypatch, db)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await rag_endpoints.create_rag_collection(
+            data=CavadaLabsRAGCollectionCreateRequest(
+                company_id="company-1",
+                project_id="project-1",
+                name="Support FAQ",
+                scope=CavadaLabsRAGCollectionScope.PROJECT,
+                status=CavadaLabsRAGCollectionStatus.DRAFT,
+            ),
+            http_request=MagicMock(),
+            user_api_key_dict=_internal_user(),
+        )
+
+    assert exc_info.value.status_code == 403
+    db.cavadalabs_ragcollectiontable.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_should_list_rag_collections_by_visible_project_scope(monkeypatch):
+    db = _rag_endpoint_db(company_role=None, project_role="viewer")
+    _patch_proxy_prisma(monkeypatch, db)
+
+    response = await rag_endpoints.list_rag_collections(
+        http_request=MagicMock(),
+        company_id="company-1",
+        project_id=None,
+        status_filter=None,
+        scope_filter=None,
+        take=100,
+        skip=0,
+        user_api_key_dict=_internal_user(),
+    )
+
+    assert response.count == 1
+    where = db.cavadalabs_ragcollectiontable.find_many.call_args.kwargs["where"]
+    assert where == {"project_id": {"in": ["project-1"]}}
 
 
 @pytest.mark.asyncio

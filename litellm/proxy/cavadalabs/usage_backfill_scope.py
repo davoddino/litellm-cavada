@@ -10,15 +10,15 @@ from litellm.proxy.cavadalabs.usage_key_context import (
     _project_key_context_scope,
 )
 from litellm.proxy.cavadalabs.usage_query_filters import (
+    api_key_hash_scope_filters as _api_key_hash_scope_filters,
     metadata_scope_filters as _metadata_scope_filters,
-)
-from litellm.proxy.cavadalabs.usage_query_filters import (
     metadata_scope_pair_filters as _metadata_scope_pair_filters,
-)
-from litellm.proxy.cavadalabs.usage_query_filters import (
     spend_log_repair_where as _spend_log_repair_where,
 )
 from litellm.proxy.cavadalabs.usage_serialization import (
+    _extract_metadata_context,
+    _metadata_dict,
+    _metadata_sources,
     _row_value,
     _str_value,
     _unique_sorted,
@@ -30,6 +30,7 @@ from litellm.proxy.utils import PrismaClient
 class _UsageRepairScope:
     filters: List[Dict[str, Any]]
     key_context_by_api_key: Dict[str, _KeyContext]
+    legacy_key_hashes_missing_metadata: List[str]
     metadata_filters: List[Dict[str, Any]]
     compatibility_filters: List[Dict[str, Any]]
     key_metadata_filters: List[Dict[str, Any]]
@@ -50,13 +51,119 @@ class _UsageDiagnosticBreakdown:
     metadata_spend_logs: int = 0
     compatibility_spend_logs: int = 0
     key_metadata_spend_logs: int = 0
+    legacy_keys_missing_metadata: int = 0
+    legacy_key_spend_logs: int = 0
     unmapped_spend_logs: int = 0
 
 
+_SPEND_LOG_METADATA_SCAN_PAGE_SIZE = 1000
+_API_KEY_HASH_METADATA_KEYS = ("user_api_key_hash", "api_key_hash", "user_api_key")
+
+
+def _api_key_hash_value(value: Any) -> Optional[str]:
+    api_key_hash = _str_value(value)
+    if api_key_hash is None:
+        return None
+    if api_key_hash.startswith("sk-"):
+        return None
+    return api_key_hash
+
+
+def _spend_log_row_api_key_hash(row: Any) -> Optional[str]:
+    for field_name in ("api_key", "user_api_key_hash", "api_key_hash"):
+        api_key_hash = _api_key_hash_value(_row_value(row, field_name))
+        if api_key_hash is not None:
+            return api_key_hash
+
+    metadata = _metadata_dict(_row_value(row, "metadata"))
+    for source in _metadata_sources(metadata):
+        for field_name in _API_KEY_HASH_METADATA_KEYS:
+            api_key_hash = _api_key_hash_value(source.get(field_name))
+            if api_key_hash is not None:
+                return api_key_hash
+    return None
+
+
+def _has_project_company_metadata_conflict(
+    *,
+    row: Any,
+    project_company_by_id: Dict[str, str],
+    key_context_by_api_key: Dict[str, _KeyContext],
+) -> bool:
+    api_key_hash = _spend_log_row_api_key_hash(row)
+    if api_key_hash is not None and api_key_hash in key_context_by_api_key:
+        return False
+
+    metadata_company_id, metadata_project_id = _extract_metadata_context(
+        _row_value(row, "metadata")
+    )
+    if metadata_project_id is None or metadata_company_id is None:
+        return False
+
+    expected_company_id = project_company_by_id.get(metadata_project_id)
+    return (
+        expected_company_id is not None and metadata_company_id != expected_company_id
+    )
+
+
+async def _count_project_company_metadata_conflicts(
+    *,
+    prisma_client: PrismaClient,
+    project_company_by_id: Dict[str, str],
+    key_context_by_api_key: Dict[str, _KeyContext],
+    date_range: Optional[Dict[str, datetime]],
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    api_key: Optional[Union[str, List[str]]] = None,
+    status_filter: Optional[str] = None,
+    min_spend: Optional[float] = None,
+    max_spend: Optional[float] = None,
+) -> int:
+    project_metadata_filters: List[Dict[str, Any]] = []
+    for project_id in sorted(project_company_by_id):
+        project_metadata_filters.extend(
+            _metadata_scope_filters("project_id", project_id)
+        )
+    if not project_metadata_filters:
+        return 0
+
+    where = _spend_log_repair_where(
+        date_range=date_range,
+        filters=project_metadata_filters,
+        model=model,
+        provider=provider,
+        api_key=api_key,
+        status_filter=status_filter,
+        min_spend=min_spend,
+        max_spend=max_spend,
+    )
+    conflicts = 0
+    skip = 0
+    while True:
+        rows = await prisma_client.db.litellm_spendlogs.find_many(
+            where=where,
+            order=[{"startTime": "asc"}],
+            skip=skip,
+            take=_SPEND_LOG_METADATA_SCAN_PAGE_SIZE,
+            select={"api_key": True, "metadata": True},
+        )
+        if not rows:
+            break
+        for row in rows:
+            if _has_project_company_metadata_conflict(
+                row=row,
+                project_company_by_id=project_company_by_id,
+                key_context_by_api_key=key_context_by_api_key,
+            ):
+                conflicts += 1
+        if len(rows) < _SPEND_LOG_METADATA_SCAN_PAGE_SIZE:
+            break
+        skip += len(rows)
+    return conflicts
+
+
 def _api_key_scope_filter(api_key_hashes: List[str]) -> List[Dict[str, Any]]:
-    if not api_key_hashes:
-        return []
-    return [{"api_key": {"in": api_key_hashes}}]
+    return _api_key_hash_scope_filters(api_key_hashes)
 
 
 def _company_spend_log_scope_filter_groups(
@@ -124,10 +231,20 @@ async def _count_attributable_spend_logs(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     api_key: Optional[Union[str, List[str]]] = None,
+    status_filter: Optional[str] = None,
+    min_spend: Optional[float] = None,
+    max_spend: Optional[float] = None,
 ) -> int:
     if not filters:
         return 0
-    if not model and not provider and not api_key:
+    if (
+        not model
+        and not provider
+        and not api_key
+        and not status_filter
+        and min_spend is None
+        and max_spend is None
+    ):
         where: Dict[str, Any] = {"OR": filters}
         if date_range is not None:
             where["startTime"] = date_range
@@ -138,6 +255,9 @@ async def _count_attributable_spend_logs(
             model=model,
             provider=provider,
             api_key=api_key,
+            status_filter=status_filter,
+            min_spend=min_spend,
+            max_spend=max_spend,
         )
     return int(await prisma_client.db.litellm_spendlogs.count(where=where))
 
@@ -150,6 +270,9 @@ async def _count_scope_breakdown(
     model: Optional[str],
     provider: Optional[str],
     api_key: Optional[Union[str, List[str]]],
+    status_filter: Optional[str],
+    min_spend: Optional[float],
+    max_spend: Optional[float],
     unmapped_candidate_filters: Optional[List[Dict[str, Any]]] = None,
     attributable_spend_logs: int,
 ) -> _UsageDiagnosticBreakdown:
@@ -160,6 +283,9 @@ async def _count_scope_breakdown(
         model=model,
         provider=provider,
         api_key=api_key,
+        status_filter=status_filter,
+        min_spend=min_spend,
+        max_spend=max_spend,
     )
     compatibility_spend_logs = await _count_attributable_spend_logs(
         prisma_client=prisma_client,
@@ -168,6 +294,9 @@ async def _count_scope_breakdown(
         model=model,
         provider=provider,
         api_key=api_key,
+        status_filter=status_filter,
+        min_spend=min_spend,
+        max_spend=max_spend,
     )
     key_metadata_spend_logs = await _count_attributable_spend_logs(
         prisma_client=prisma_client,
@@ -176,6 +305,21 @@ async def _count_scope_breakdown(
         model=model,
         provider=provider,
         api_key=api_key,
+        status_filter=status_filter,
+        min_spend=min_spend,
+        max_spend=max_spend,
+    )
+    legacy_key_filters = _api_key_scope_filter(scope.legacy_key_hashes_missing_metadata)
+    legacy_key_spend_logs = await _count_attributable_spend_logs(
+        prisma_client=prisma_client,
+        date_range=date_range,
+        filters=legacy_key_filters,
+        model=model,
+        provider=provider,
+        api_key=api_key,
+        status_filter=status_filter,
+        min_spend=min_spend,
+        max_spend=max_spend,
     )
     unmapped_candidate_spend_logs = 0
     if unmapped_candidate_filters:
@@ -186,11 +330,16 @@ async def _count_scope_breakdown(
             model=model,
             provider=provider,
             api_key=api_key,
+            status_filter=status_filter,
+            min_spend=min_spend,
+            max_spend=max_spend,
         )
     return _UsageDiagnosticBreakdown(
         metadata_spend_logs=metadata_spend_logs,
         compatibility_spend_logs=compatibility_spend_logs,
         key_metadata_spend_logs=key_metadata_spend_logs,
+        legacy_keys_missing_metadata=len(scope.legacy_key_hashes_missing_metadata),
+        legacy_key_spend_logs=legacy_key_spend_logs,
         unmapped_spend_logs=max(
             unmapped_candidate_spend_logs - attributable_spend_logs,
             0,
@@ -240,6 +389,7 @@ async def _company_repair_scope(
     metadata_filters: List[Dict[str, Any]] = []
     compatibility_filters: List[Dict[str, Any]] = []
     key_context_by_api_key: Dict[str, _KeyContext] = {}
+    legacy_key_hashes_missing_metadata: List[str] = []
     project_company_by_id = {
         project_id: company_id
         for company_id, project_ids in project_ids_by_company.items()
@@ -280,12 +430,18 @@ async def _company_repair_scope(
             project_company_by_id=project_company_by_id,
             project_by_litellm_team_id=project_by_litellm_team_id,
         )
-        key_context_by_api_key.update(company_key_context)
+        key_context_by_api_key.update(company_key_context.context_by_token)
+        legacy_key_hashes_missing_metadata.extend(
+            company_key_context.legacy_tokens_missing_metadata
+        )
     key_metadata_filters = _api_key_scope_filter(sorted(key_context_by_api_key))
     filters.extend(key_metadata_filters)
     return _UsageRepairScope(
         filters=filters,
         key_context_by_api_key=key_context_by_api_key,
+        legacy_key_hashes_missing_metadata=_unique_sorted(
+            legacy_key_hashes_missing_metadata
+        ),
         metadata_filters=metadata_filters,
         compatibility_filters=compatibility_filters,
         key_metadata_filters=key_metadata_filters,
@@ -343,6 +499,7 @@ async def _project_repair_scope(
     metadata_filters: List[Dict[str, Any]] = []
     compatibility_filters: List[Dict[str, Any]] = []
     key_context_by_api_key: Dict[str, _KeyContext] = {}
+    legacy_key_hashes_missing_metadata: List[str] = []
     for project_id in entity_ids:
         project = projects_by_id.get(project_id)
         if project is None:
@@ -362,12 +519,18 @@ async def _project_repair_scope(
             project_by_litellm_team_id=project_by_litellm_team_id,
             company_id_by_litellm_org_id=company_id_by_litellm_org_id,
         )
-        key_context_by_api_key.update(project_key_context)
+        key_context_by_api_key.update(project_key_context.context_by_token)
+        legacy_key_hashes_missing_metadata.extend(
+            project_key_context.legacy_tokens_missing_metadata
+        )
     key_metadata_filters = _api_key_scope_filter(sorted(key_context_by_api_key))
     filters.extend(key_metadata_filters)
     return _UsageRepairScope(
         filters=filters,
         key_context_by_api_key=key_context_by_api_key,
+        legacy_key_hashes_missing_metadata=_unique_sorted(
+            legacy_key_hashes_missing_metadata
+        ),
         metadata_filters=metadata_filters,
         compatibility_filters=compatibility_filters,
         key_metadata_filters=key_metadata_filters,

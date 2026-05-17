@@ -16,6 +16,7 @@ interface EditUserModalProps {
   onSubmit: (data: any) => void;
   cavadalabsCompanies?: CavadaLabsCompanyOption[];
   cavadalabsProjects?: CavadaLabsProjectOption[];
+  isCavadaLabsProductContext?: boolean;
 }
 
 const normalizeCavadaLabsSelection = (value: unknown): string[] => {
@@ -36,10 +37,12 @@ const EditUserModal: React.FC<EditUserModalProps> = ({
   onSubmit,
   cavadalabsCompanies = [],
   cavadalabsProjects = [],
+  isCavadaLabsProductContext,
 }) => {
   const [form] = Form.useForm();
   const selectedCompanyIds = Form.useWatch("cavadalabs_company_ids", form);
-  const hasCavadaLabsContext = cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
+  const hasCavadaLabsContext =
+    isCavadaLabsProductContext ?? (cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0);
 
   const initialFormValues = useMemo(() => {
     const companyMemberships = Array.isArray(user?.cavadalabs_company_memberships)
@@ -169,7 +172,11 @@ const EditUserModal: React.FC<EditUserModalProps> = ({
             label="Spend (USD)"
             name="spend"
             tooltip="(float) - Spend of all LLM calls completed by this user"
-            help="Across all keys (including keys with team_id)."
+            help={
+              hasCavadaLabsContext
+                ? "Across all keys, including CavadaLabs Company/Project-scoped keys."
+                : "Across all keys (including keys with team_id)."
+            }
           >
             <InputNumber min={0} step={0.01} />
           </Form.Item>

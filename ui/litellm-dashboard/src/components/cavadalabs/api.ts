@@ -140,7 +140,10 @@ export const getCavadaLabsUsageDiagnostics = async (
     timezone,
     model,
     provider,
+    status,
     apiKey,
+    minSpend,
+    maxSpend,
   }: {
     entityType: CavadaLabsUsageDiagnosticsEntityType;
     entityIds: string[];
@@ -149,7 +152,10 @@ export const getCavadaLabsUsageDiagnostics = async (
     timezone?: number;
     model?: string;
     provider?: string;
+    status?: string;
     apiKey?: string;
+    minSpend?: number;
+    maxSpend?: number;
   },
 ): Promise<CavadaLabsUsageDiagnosticsResponse> => {
   const isCompany = entityType === "company";
@@ -163,7 +169,10 @@ export const getCavadaLabsUsageDiagnostics = async (
       timezone,
       model,
       provider,
+      status,
       api_key: apiKey,
+      min_spend: minSpend,
+      max_spend: maxSpend,
     },
   );
 };
@@ -231,7 +240,10 @@ export const repairCavadaLabsUsage = async (
     timezone,
     model,
     provider,
+    status,
     apiKey,
+    minSpend,
+    maxSpend,
     dryRun,
     batchLimit,
   }: {
@@ -242,7 +254,10 @@ export const repairCavadaLabsUsage = async (
     timezone?: number;
     model?: string;
     provider?: string;
+    status?: string;
     apiKey?: string;
+    minSpend?: number;
+    maxSpend?: number;
     dryRun?: boolean;
     batchLimit?: number;
   },
@@ -258,7 +273,10 @@ export const repairCavadaLabsUsage = async (
       timezone,
       model,
       provider,
+      status,
       api_key: apiKey,
+      min_spend: minSpend,
+      max_spend: maxSpend,
       dry_run: dryRun,
       batch_limit: batchLimit,
     },

@@ -3,23 +3,26 @@ from types import SimpleNamespace
 from unittest.mock import ANY
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from litellm.proxy._types import (
     CavadaLabsCompanyMembershipRequest,
     CavadaLabsProjectMembershipRequest,
     LitellmUserRoles,
     NewUserRequest,
+    ProxyException,
     UpdateUserRequest,
     UserAPIKeyAuth,
 )
 from litellm.proxy.management_endpoints.internal_user_endpoints import (
     _add_user_to_cavadalabs_company_memberships,
     _add_user_to_cavadalabs_project_memberships,
+    _check_user_info_v2_access,
     _resolve_user_list_cavadalabs_scope,
     _update_single_user_helper,
     get_users,
     new_user,
+    user_info_v2,
 )
 
 
@@ -92,6 +95,100 @@ def _user_table_row(**kwargs):
     return row
 
 
+class _FakePrismaDelegate:
+    def __init__(
+        self,
+        *,
+        find_unique_result=None,
+        find_unique_handler=None,
+        find_many_result=None,
+        count_result=None,
+    ):
+        self.find_unique_result = find_unique_result
+        self.find_unique_handler = find_unique_handler
+        self.find_many_result = [] if find_many_result is None else find_many_result
+        self.count_result = count_result
+
+    async def find_unique(self, *, where):
+        if self.find_unique_handler is not None:
+            return self.find_unique_handler(where)
+        return self.find_unique_result
+
+    async def find_many(self, *, where=None):
+        return self.find_many_result
+
+    async def count(self):
+        return self.count_result
+
+
+class _AsyncFunctionRecorder:
+    def __init__(self, return_value=None):
+        self.return_value = return_value
+        self.await_count = 0
+        self.calls = []
+
+    async def __call__(self, *args, **kwargs):
+        self.await_count += 1
+        self.calls.append((args, kwargs))
+        return self.return_value
+
+    def assert_not_awaited(self):
+        assert self.await_count == 0
+
+
+class _AllowingLicenseCheck:
+    def is_over_limit(self, *, total_users):
+        return False
+
+
+async def _noop_duplicate_check(*args, **kwargs):
+    return None
+
+
+def _user_management_prisma_for_cavadalabs_access(
+    *,
+    company_member=None,
+    project_member=None,
+):
+    def _find_company(where):
+        return _company_row(
+            company_id=where["company_id"],
+            litellm_organization_id=None,
+        )
+
+    def _find_project(where):
+        return _project_row(
+            project_id=where["project_id"],
+            company_id="company-1",
+            litellm_team_id=None,
+        )
+
+    return SimpleNamespace(
+        db=SimpleNamespace(
+            litellm_usertable=_FakePrismaDelegate(
+                count_result=5,
+                find_unique_result=SimpleNamespace(user_id="actor-user", teams=[]),
+            ),
+            cavadalabs_companytable=_FakePrismaDelegate(
+                find_unique_handler=_find_company,
+            ),
+            cavadalabs_projecttable=_FakePrismaDelegate(
+                find_unique_handler=_find_project,
+            ),
+            cavadalabs_companymembertable=_FakePrismaDelegate(
+                find_unique_result=company_member,
+                find_many_result=[company_member] if company_member is not None else [],
+            ),
+            cavadalabs_projectmembertable=_FakePrismaDelegate(
+                find_unique_result=project_member,
+                find_many_result=[project_member] if project_member is not None else [],
+            ),
+            litellm_organizationmembership=_FakePrismaDelegate(),
+            litellm_teamtable=_FakePrismaDelegate(),
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_new_user_accepts_cavadalabs_memberships_without_exposing_internal_scope(
     mocker,
@@ -112,6 +209,7 @@ async def test_new_user_accepts_cavadalabs_memberships_without_exposing_internal
     )
     mock_company_memberships = mocker.AsyncMock()
     mock_project_memberships = mocker.AsyncMock()
+    mock_authorize_memberships = mocker.AsyncMock()
     mock_user_created_hook = mocker.AsyncMock()
 
     original_default_params = getattr(litellm, "default_internal_user_params", None)
@@ -138,6 +236,10 @@ async def test_new_user_accepts_cavadalabs_memberships_without_exposing_internal
         mocker.patch(
             "litellm.proxy.management_endpoints.internal_user_endpoints._add_user_to_cavadalabs_project_memberships",
             mock_project_memberships,
+        )
+        mocker.patch(
+            "litellm.proxy.management_endpoints.internal_user_endpoints._authorize_cavadalabs_user_membership_updates",
+            mock_authorize_memberships,
         )
         mocker.patch(
             "litellm.proxy.management_endpoints.internal_user_endpoints.UserManagementEventHooks.async_user_created_hook",
@@ -170,9 +272,126 @@ async def test_new_user_accepts_cavadalabs_memberships_without_exposing_internal
         call_kwargs = mock_generate_key_helper_fn.call_args.kwargs
         assert "cavadalabs_company_memberships" not in call_kwargs
         assert "cavadalabs_project_memberships" not in call_kwargs
+        mock_authorize_memberships.assert_awaited_once()
         mock_company_memberships.assert_awaited_once()
         mock_project_memberships.assert_awaited_once()
         assert response.user_id == "cavada-user"
+    finally:
+        litellm.default_internal_user_params = original_default_params
+
+
+@pytest.mark.asyncio
+async def test_new_user_preauthorizes_cavadalabs_company_membership_before_create(
+    monkeypatch,
+):
+    import litellm
+    from litellm.proxy import proxy_server
+    from litellm.proxy.management_endpoints import (
+        internal_user_endpoints as user_endpoints,
+    )
+
+    fake_prisma_client = _user_management_prisma_for_cavadalabs_access()
+    generate_key_helper_fn = _AsyncFunctionRecorder()
+
+    original_default_params = getattr(litellm, "default_internal_user_params", None)
+    litellm.default_internal_user_params = None
+    try:
+        monkeypatch.setattr(proxy_server, "prisma_client", fake_prisma_client)
+        monkeypatch.setattr(proxy_server, "_license_check", _AllowingLicenseCheck())
+        monkeypatch.setattr(
+            user_endpoints,
+            "_check_duplicate_user_email",
+            _noop_duplicate_check,
+        )
+        monkeypatch.setattr(
+            user_endpoints,
+            "_check_duplicate_user_id",
+            _noop_duplicate_check,
+        )
+        monkeypatch.setattr(
+            user_endpoints,
+            "generate_key_helper_fn",
+            generate_key_helper_fn,
+        )
+
+        with pytest.raises(ProxyException) as exc_info:
+            await new_user(
+                data=NewUserRequest(
+                    user_email="cross-company@example.com",
+                    user_role="internal_user",
+                    cavadalabs_company_memberships=[
+                        CavadaLabsCompanyMembershipRequest(
+                            company_id="company-2",
+                            role="viewer",
+                        )
+                    ],
+                ),
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_id="actor-user",
+                    user_role=LitellmUserRoles.INTERNAL_USER,
+                ),
+            )
+
+        assert exc_info.value.code == "403"
+        generate_key_helper_fn.assert_not_awaited()
+    finally:
+        litellm.default_internal_user_params = original_default_params
+
+
+@pytest.mark.asyncio
+async def test_new_user_preauthorizes_cavadalabs_project_membership_before_create(
+    monkeypatch,
+):
+    import litellm
+    from litellm.proxy import proxy_server
+    from litellm.proxy.management_endpoints import (
+        internal_user_endpoints as user_endpoints,
+    )
+
+    fake_prisma_client = _user_management_prisma_for_cavadalabs_access()
+    generate_key_helper_fn = _AsyncFunctionRecorder()
+
+    original_default_params = getattr(litellm, "default_internal_user_params", None)
+    litellm.default_internal_user_params = None
+    try:
+        monkeypatch.setattr(proxy_server, "prisma_client", fake_prisma_client)
+        monkeypatch.setattr(proxy_server, "_license_check", _AllowingLicenseCheck())
+        monkeypatch.setattr(
+            user_endpoints,
+            "_check_duplicate_user_email",
+            _noop_duplicate_check,
+        )
+        monkeypatch.setattr(
+            user_endpoints,
+            "_check_duplicate_user_id",
+            _noop_duplicate_check,
+        )
+        monkeypatch.setattr(
+            user_endpoints,
+            "generate_key_helper_fn",
+            generate_key_helper_fn,
+        )
+
+        with pytest.raises(ProxyException) as exc_info:
+            await new_user(
+                data=NewUserRequest(
+                    user_email="cross-project@example.com",
+                    user_role="internal_user",
+                    cavadalabs_project_memberships=[
+                        CavadaLabsProjectMembershipRequest(
+                            project_id="project-2",
+                            role="viewer",
+                        )
+                    ],
+                ),
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_id="actor-user",
+                    user_role=LitellmUserRoles.INTERNAL_USER,
+                ),
+            )
+
+        assert exc_info.value.code == "403"
+        generate_key_helper_fn.assert_not_awaited()
     finally:
         litellm.default_internal_user_params = original_default_params
 
@@ -231,6 +450,82 @@ async def test_cavadalabs_company_membership_maps_to_internal_organization_role(
             },
         },
     )
+
+
+@pytest.mark.asyncio
+async def test_cavadalabs_company_admin_can_assign_company_membership(mocker):
+    mock_prisma_client = mocker.MagicMock()
+    mock_prisma_client.db.cavadalabs_companytable.find_unique = mocker.AsyncMock(
+        return_value=_company_row()
+    )
+    mock_prisma_client.db.cavadalabs_companymembertable.find_unique = mocker.AsyncMock(
+        return_value=SimpleNamespace(
+            company_id="company-1",
+            user_id="company-admin",
+            role="company_admin",
+        )
+    )
+    mock_prisma_client.db.cavadalabs_companymembertable.upsert = mocker.AsyncMock()
+    mock_organization_member_add = mocker.AsyncMock()
+    mocker.patch(
+        "litellm.proxy.management_endpoints.organization_endpoints.organization_member_add",
+        mock_organization_member_add,
+    )
+
+    await _add_user_to_cavadalabs_company_memberships(
+        user_id="target-user",
+        memberships=[
+            CavadaLabsCompanyMembershipRequest(
+                company_id="company-1",
+                role="operator",
+            )
+        ],
+        prisma_client=mock_prisma_client,
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="company-admin",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        ),
+    )
+
+    mock_prisma_client.db.cavadalabs_companymembertable.upsert.assert_awaited_once()
+    request = mock_organization_member_add.call_args.kwargs["data"]
+    assert request.organization_id == "org-1"
+    assert request.member[0].role == LitellmUserRoles.INTERNAL_USER
+
+
+@pytest.mark.asyncio
+async def test_cavadalabs_company_viewer_cannot_assign_company_membership(mocker):
+    mock_prisma_client = mocker.MagicMock()
+    mock_prisma_client.db.cavadalabs_companytable.find_unique = mocker.AsyncMock(
+        return_value=_company_row()
+    )
+    mock_prisma_client.db.cavadalabs_companymembertable.find_unique = mocker.AsyncMock(
+        return_value=SimpleNamespace(
+            company_id="company-1",
+            user_id="viewer-user",
+            role="viewer",
+        )
+    )
+    mock_prisma_client.db.cavadalabs_companymembertable.upsert = mocker.AsyncMock()
+
+    with pytest.raises(HTTPException) as exc:
+        await _add_user_to_cavadalabs_company_memberships(
+            user_id="target-user",
+            memberships=[
+                CavadaLabsCompanyMembershipRequest(
+                    company_id="company-1",
+                    role="operator",
+                )
+            ],
+            prisma_client=mock_prisma_client,
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="viewer-user",
+                user_role=LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
+            ),
+        )
+
+    assert exc.value.status_code == 403
+    mock_prisma_client.db.cavadalabs_companymembertable.upsert.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -350,6 +645,91 @@ async def test_cavadalabs_project_membership_maps_to_internal_team_role(mocker):
 
 
 @pytest.mark.asyncio
+async def test_cavadalabs_project_admin_can_assign_project_membership(mocker):
+    mock_prisma_client = mocker.MagicMock()
+    mock_prisma_client.db.cavadalabs_projecttable.find_unique = mocker.AsyncMock(
+        return_value=_project_row()
+    )
+    mock_prisma_client.db.cavadalabs_companytable.find_unique = mocker.AsyncMock(
+        return_value=_company_row()
+    )
+    mock_prisma_client.db.cavadalabs_projectmembertable.find_unique = mocker.AsyncMock(
+        return_value=SimpleNamespace(
+            project_id="project-1",
+            user_id="project-admin",
+            role="project_admin",
+        )
+    )
+    mock_prisma_client.db.cavadalabs_projectmembertable.upsert = mocker.AsyncMock()
+    mock_add_user_to_team = mocker.AsyncMock()
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._add_user_to_team",
+        mock_add_user_to_team,
+    )
+
+    await _add_user_to_cavadalabs_project_memberships(
+        user_id="target-user",
+        user_email="target@example.com",
+        memberships=[
+            CavadaLabsProjectMembershipRequest(
+                project_id="project-1",
+                role="operator",
+            )
+        ],
+        prisma_client=mock_prisma_client,
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="project-admin",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        ),
+    )
+
+    mock_prisma_client.db.cavadalabs_projectmembertable.upsert.assert_awaited_once()
+    mock_add_user_to_team.assert_awaited_once_with(
+        user_id="target-user",
+        team_id="team-1",
+        user_api_key_dict=ANY,
+        user_email="target@example.com",
+        user_role="user",
+    )
+
+
+@pytest.mark.asyncio
+async def test_cavadalabs_project_operator_cannot_assign_project_membership(mocker):
+    mock_prisma_client = mocker.MagicMock()
+    mock_prisma_client.db.cavadalabs_projecttable.find_unique = mocker.AsyncMock(
+        return_value=_project_row()
+    )
+    mock_prisma_client.db.cavadalabs_projectmembertable.find_unique = mocker.AsyncMock(
+        return_value=SimpleNamespace(
+            project_id="project-1",
+            user_id="operator-user",
+            role="operator",
+        )
+    )
+    mock_prisma_client.db.cavadalabs_projectmembertable.upsert = mocker.AsyncMock()
+
+    with pytest.raises(HTTPException) as exc:
+        await _add_user_to_cavadalabs_project_memberships(
+            user_id="target-user",
+            user_email="target@example.com",
+            memberships=[
+                CavadaLabsProjectMembershipRequest(
+                    project_id="project-1",
+                    role="viewer",
+                )
+            ],
+            prisma_client=mock_prisma_client,
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="operator-user",
+                user_role=LitellmUserRoles.INTERNAL_USER,
+            ),
+        )
+
+    assert exc.value.status_code == 403
+    mock_prisma_client.db.cavadalabs_projectmembertable.upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_cavadalabs_project_membership_upserts_native_membership_without_compatibility_mapping(
     mocker,
 ):
@@ -445,6 +825,149 @@ async def test_user_list_cavadalabs_company_scope_uses_native_authorization(
     assert default_cavadalabs_scope_filter is None
     mock_resolve_filters.assert_awaited_once()
     mock_legacy_authorize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_user_info_v2_allows_cavadalabs_company_scope_without_team_admin(
+    mocker,
+):
+    target_user = _user_table_row(user_id="target-user")
+    mock_prisma_client = mocker.MagicMock()
+    mock_prisma_client.db.litellm_usertable.find_first = mocker.AsyncMock(
+        return_value=target_user
+    )
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.visible_company_wide_ids_for_user",
+        mocker.AsyncMock(return_value={"company-1"}),
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.visible_project_ids_for_user",
+        mocker.AsyncMock(return_value=set()),
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.resolve_cavadalabs_user_list_filters",
+        mocker.AsyncMock(return_value=([], [])),
+    )
+
+    result = await _check_user_info_v2_access(
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="company-viewer",
+            user_role=LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
+        ),
+        target_user_id="target-user",
+    )
+
+    assert result is target_user
+    mock_prisma_client.db.litellm_usertable.find_first.assert_awaited_once_with(
+        where={
+            "user_id": "target-user",
+            "AND": [
+                {
+                    "cavadalabs_company_memberships": {
+                        "some": {"company_id": {"in": ["company-1"]}}
+                    }
+                }
+            ],
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_user_info_v2_limits_cavadalabs_project_scope_to_project_membership(
+    mocker,
+):
+    target_user = _user_table_row(user_id="target-user")
+    mock_prisma_client = mocker.MagicMock()
+    mock_prisma_client.db.litellm_usertable.find_first = mocker.AsyncMock(
+        return_value=target_user
+    )
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.visible_company_wide_ids_for_user",
+        mocker.AsyncMock(return_value=set()),
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.visible_project_ids_for_user",
+        mocker.AsyncMock(return_value={"project-1"}),
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.resolve_cavadalabs_user_list_filters",
+        mocker.AsyncMock(return_value=([], ["team-1"])),
+    )
+
+    result = await _check_user_info_v2_access(
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="project-admin",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        ),
+        target_user_id="target-user",
+    )
+
+    assert result is target_user
+    mock_prisma_client.db.litellm_usertable.find_first.assert_awaited_once_with(
+        where={
+            "user_id": "target-user",
+            "AND": [
+                {
+                    "OR": [
+                        {
+                            "cavadalabs_project_memberships": {
+                                "some": {"project_id": {"in": ["project-1"]}}
+                            }
+                        },
+                        {"teams": {"hasSome": ["team-1"]}},
+                    ]
+                }
+            ],
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_user_info_v2_returns_native_cavadalabs_memberships(mocker):
+    mock_prisma_client = mocker.MagicMock()
+    mock_prisma_client.db.litellm_usertable.find_unique = mocker.AsyncMock(
+        return_value=_user_table_row(user_id="target-user")
+    )
+    mock_prisma_client.db.cavadalabs_companymembertable.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                company_id="company-1",
+                user_id="target-user",
+                role="viewer",
+            )
+        ]
+    )
+    mock_prisma_client.db.cavadalabs_projectmembertable.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                project_id="project-1",
+                user_id="target-user",
+                role="project_admin",
+            )
+        ]
+    )
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+
+    response = await user_info_v2(
+        request=Request(scope={"type": "http", "path": "/v2/user/info"}),
+        user_id="target-user",
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="proxy-admin",
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+        ),
+    )
+
+    assert response.cavadalabs_company_memberships == [
+        CavadaLabsCompanyMembershipRequest(company_id="company-1", role="viewer")
+    ]
+    assert response.cavadalabs_project_memberships == [
+        CavadaLabsProjectMembershipRequest(
+            project_id="project-1",
+            role="project_admin",
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -813,7 +1336,12 @@ async def test_update_user_accepts_cavadalabs_membership_only_without_legacy_adm
     mock_prisma_client.update_data = mocker.AsyncMock()
     mock_company_memberships = mocker.AsyncMock()
     mock_project_memberships = mocker.AsyncMock()
+    mock_authorize_memberships = mocker.AsyncMock()
     mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._authorize_cavadalabs_user_membership_updates",
+        mock_authorize_memberships,
+    )
     mocker.patch(
         "litellm.proxy.management_endpoints.internal_user_endpoints._add_user_to_cavadalabs_company_memberships",
         mock_company_memberships,
@@ -846,6 +1374,7 @@ async def test_update_user_accepts_cavadalabs_membership_only_without_legacy_adm
     )
 
     mock_prisma_client.update_data.assert_not_awaited()
+    mock_authorize_memberships.assert_awaited_once()
     mock_company_memberships.assert_awaited_once()
     mock_project_memberships.assert_awaited_once()
     assert response["user_id"] == "target-user"
@@ -861,7 +1390,12 @@ async def test_update_user_rejects_non_admin_user_field_changes_with_cavadalabs_
         return_value=_user_table_row()
     )
     mock_company_memberships = mocker.AsyncMock()
+    mock_authorize_memberships = mocker.AsyncMock()
     mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._authorize_cavadalabs_user_membership_updates",
+        mock_authorize_memberships,
+    )
     mocker.patch(
         "litellm.proxy.management_endpoints.internal_user_endpoints._add_user_to_cavadalabs_company_memberships",
         mock_company_memberships,
@@ -886,6 +1420,7 @@ async def test_update_user_rejects_non_admin_user_field_changes_with_cavadalabs_
         )
 
     assert exc.value.status_code == 403
+    mock_authorize_memberships.assert_not_awaited()
     mock_company_memberships.assert_not_awaited()
 
 
@@ -898,7 +1433,12 @@ async def test_update_user_sends_cavadalabs_memberships_as_native_requests(
         return_value=_user_table_row()
     )
     mock_company_memberships = mocker.AsyncMock()
+    mock_authorize_memberships = mocker.AsyncMock()
     mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._authorize_cavadalabs_user_membership_updates",
+        mock_authorize_memberships,
+    )
     mocker.patch(
         "litellm.proxy.management_endpoints.internal_user_endpoints._add_user_to_cavadalabs_company_memberships",
         mock_company_memberships,
@@ -921,6 +1461,7 @@ async def test_update_user_sends_cavadalabs_memberships_as_native_requests(
     )
 
     memberships = mock_company_memberships.call_args.kwargs["memberships"]
+    mock_authorize_memberships.assert_awaited_once()
     assert isinstance(memberships[0], CavadaLabsCompanyMembershipRequest)
     assert memberships[0].company_id == "company-1"
     assert memberships[0].role == "viewer"

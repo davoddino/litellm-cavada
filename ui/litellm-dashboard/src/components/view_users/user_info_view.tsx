@@ -1,7 +1,21 @@
 import React, { useState } from "react";
 import {
-  Card, Text, Button, Grid, Tab, TabList, TabGroup, TabPanel, TabPanels, Title,
-  Table, TableHead, TableBody, TableRow, TableHeaderCell, TableCell,
+  Card,
+  Text,
+  Button,
+  Grid,
+  Tab,
+  TabList,
+  TabGroup,
+  TabPanel,
+  TabPanels,
+  Title,
+  Table,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableHeaderCell,
+  TableCell,
 } from "@tremor/react";
 import { ArrowLeftIcon, TrashIcon, RefreshIcon, PlusIcon } from "@heroicons/react/outline";
 import {
@@ -27,6 +41,7 @@ import { CopyIcon, CheckIcon } from "lucide-react";
 import NotificationsManager from "../molecules/notifications_manager";
 import { getBudgetDurationLabel } from "../common_components/budget_duration_dropdown";
 import DeleteResourceModal from "../common_components/DeleteResourceModal";
+import type { CavadaLabsCompanyOption, CavadaLabsProjectOption } from "../cavadalabs/keyContext";
 
 interface UserInfoViewProps {
   userId: string;
@@ -37,6 +52,9 @@ interface UserInfoViewProps {
   possibleUIRoles: Record<string, Record<string, string>> | null;
   initialTab?: number; // 0 for Overview, 1 for Details
   startInEditMode?: boolean;
+  cavadalabsCompanies?: CavadaLabsCompanyOption[];
+  cavadalabsProjects?: CavadaLabsProjectOption[];
+  showLiteLLMCompatibilityFields?: boolean;
 }
 
 /** Team info used for display in user detail view */
@@ -54,6 +72,9 @@ export default function UserInfoView({
   possibleUIRoles,
   initialTab = 0,
   startInEditMode = false,
+  cavadalabsCompanies = [],
+  cavadalabsProjects = [],
+  showLiteLLMCompatibilityFields: showLiteLLMCompatibilityFieldsProp,
 }: UserInfoViewProps) {
   const [userData, setUserData] = useState<UserInfoV2Response | null>(null);
   const [teamDetails, setTeamDetails] = useState<TeamDisplayInfo[]>([]);
@@ -77,10 +98,23 @@ export default function UserInfoView({
   const [selectedTeamId, setSelectedTeamId] = useState<string>("");
   const [selectedRole, setSelectedRole] = useState<string>("user");
   const [isLoadingTeams, setIsLoadingTeams] = useState(false);
+  const hasCavadaLabsProductContext = cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
+  const showLiteLLMCompatibilityFields = showLiteLLMCompatibilityFieldsProp ?? !hasCavadaLabsProductContext;
 
   React.useEffect(() => {
     setBaseUrl(getProxyBaseUrl());
   }, []);
+
+  React.useEffect(() => {
+    if (showLiteLLMCompatibilityFields) {
+      return;
+    }
+    setIsAddTeamModalOpen(false);
+    setIsRemoveTeamModalOpen(false);
+    setTeamToRemove(null);
+    setAllTeams([]);
+    setSelectedTeamId("");
+  }, [showLiteLLMCompatibilityFields]);
 
   React.useEffect(() => {
     console.log(`userId: ${userId}, userRole: ${userRole}, accessToken: ${accessToken}`);
@@ -91,7 +125,7 @@ export default function UserInfoView({
         setUserData(data);
 
         // Fetch team details for display (team aliases)
-        if (data.teams && data.teams.length > 0) {
+        if (showLiteLLMCompatibilityFields && data.teams && data.teams.length > 0) {
           try {
             const teamPromises = data.teams.map(async (teamId: string) => {
               try {
@@ -110,6 +144,8 @@ export default function UserInfoView({
             // Fall back to just team IDs
             setTeamDetails(data.teams.map((id: string) => ({ team_id: id, team_alias: null })));
           }
+        } else {
+          setTeamDetails([]);
         }
 
         // Fetch available models
@@ -125,12 +161,12 @@ export default function UserInfoView({
     };
 
     fetchData();
-  }, [accessToken, userId, userRole]);
+  }, [accessToken, showLiteLLMCompatibilityFields, userId, userRole]);
 
   const isProxyAdmin = userRole === "proxy_admin" || userRole === "Admin";
 
   const fetchAllTeams = async () => {
-    if (!accessToken) return;
+    if (!accessToken || !showLiteLLMCompatibilityFields) return;
     setIsLoadingTeams(true);
     try {
       const teams = await teamListCall(accessToken, null);
@@ -138,7 +174,7 @@ export default function UserInfoView({
         (teams || []).map((t: any) => ({
           team_id: t.team_id,
           team_alias: t.team_alias || t.team_id,
-        }))
+        })),
       );
     } catch (error) {
       console.error("Error fetching teams:", error);
@@ -148,6 +184,7 @@ export default function UserInfoView({
   };
 
   const handleOpenAddTeamModal = () => {
+    if (!showLiteLLMCompatibilityFields) return;
     setSelectedTeamId("");
     setSelectedRole("user");
     setIsAddTeamModalOpen(true);
@@ -155,7 +192,7 @@ export default function UserInfoView({
   };
 
   const handleAddTeamSubmit = async () => {
-    if (!accessToken || !selectedTeamId) return;
+    if (!accessToken || !selectedTeamId || !showLiteLLMCompatibilityFields) return;
     setIsAddingTeam(true);
     try {
       const member: Member = {
@@ -190,12 +227,13 @@ export default function UserInfoView({
   };
 
   const handleOpenRemoveTeamModal = (team: TeamDisplayInfo) => {
+    if (!showLiteLLMCompatibilityFields) return;
     setTeamToRemove(team);
     setIsRemoveTeamModalOpen(true);
   };
 
   const handleRemoveTeamConfirm = async () => {
-    if (!accessToken || !teamToRemove) return;
+    if (!accessToken || !teamToRemove || !showLiteLLMCompatibilityFields) return;
     setIsRemovingTeam(true);
     try {
       const member: Member = {
@@ -235,9 +273,23 @@ export default function UserInfoView({
     setTeamToRemove(null);
   };
 
-  const availableTeamsForAdd = allTeams.filter(
-    (t) => !teamDetails.some((td) => td.team_id === t.team_id)
+  const availableTeamsForAdd = allTeams.filter((t) => !teamDetails.some((td) => td.team_id === t.team_id));
+
+  const companyById = React.useMemo(
+    () => new Map(cavadalabsCompanies.map((company) => [company.company_id, company])),
+    [cavadalabsCompanies],
   );
+  const projectById = React.useMemo(
+    () => new Map(cavadalabsProjects.map((project) => [project.project_id, project])),
+    [cavadalabsProjects],
+  );
+  const formatCavadaLabsRole = (role: string): string =>
+    role
+      .split("_")
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ");
+  const companyMemberships = userData?.cavadalabs_company_memberships ?? [];
+  const projectMemberships = userData?.cavadalabs_project_memberships ?? [];
 
   const handleResetPassword = async () => {
     if (!accessToken) {
@@ -398,17 +450,11 @@ export default function UserInfoView({
           { label: "User ID", value: userData.user_id, code: true },
           {
             label: "Global Proxy Role",
-            value:
-              (userData.user_role && possibleUIRoles?.[userData.user_role]?.ui_label) ||
-              userData.user_role ||
-              "-",
+            value: (userData.user_role && possibleUIRoles?.[userData.user_role]?.ui_label) || userData.user_role || "-",
           },
           {
             label: "Total Spend (USD)",
-            value:
-              userData.spend !== null && userData.spend !== undefined
-                ? userData.spend.toFixed(2)
-                : undefined,
+            value: userData.spend !== null && userData.spend !== undefined ? userData.spend.toFixed(2) : undefined,
           },
         ]}
         onCancel={cancelDelete}
@@ -432,82 +478,111 @@ export default function UserInfoView({
                   <Title>${formatNumberWithCommas(userData.spend || 0, 4)}</Title>
                   <Text>
                     of{" "}
-                    {userData.max_budget !== null
-                      ? `$${formatNumberWithCommas(userData.max_budget, 4)}`
-                      : "Unlimited"}
+                    {userData.max_budget !== null ? `$${formatNumberWithCommas(userData.max_budget, 4)}` : "Unlimited"}
                   </Text>
                 </div>
               </Card>
 
-              <Card>
-                <div className="flex justify-between items-center mb-2">
-                  <Text>Teams</Text>
-                  {isProxyAdmin && (
-                    <Button
-                      icon={PlusIcon}
-                      variant="light"
-                      size="xs"
-                      onClick={handleOpenAddTeamModal}
-                    >
-                      Add Team
-                    </Button>
-                  )}
-                </div>
-                <div className="mt-2">
-                  {teamDetails.length > 0 ? (
-                    <div className="max-h-60 overflow-y-auto">
-                    <Table>
-                      <TableHead>
-                        <TableRow>
-                          <TableHeaderCell>Team Name</TableHeaderCell>
-                          {isProxyAdmin && <TableHeaderCell className="text-right">Actions</TableHeaderCell>}
-                        </TableRow>
-                      </TableHead>
-                      <TableBody>
-                        {teamDetails.slice(0, isTeamsExpanded ? teamDetails.length : 20).map((team) => (
-                          <TableRow key={team.team_id}>
-                            <TableCell>{team.team_alias || team.team_id}</TableCell>
-                            {isProxyAdmin && (
-                              <TableCell className="text-right">
-                                <Button
-                                  icon={TrashIcon}
-                                  variant="light"
-                                  size="xs"
-                                  color="red"
-                                  onClick={() => handleOpenRemoveTeamModal(team)}
-                                />
-                              </TableCell>
-                            )}
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                    </div>
-                  ) : (
-                    <Text>No teams</Text>
-                  )}
-                  {!isTeamsExpanded && teamDetails.length > 20 && (
-                    <Button
-                      variant="light"
-                      size="xs"
-                      className="mt-2"
-                      onClick={() => setIsTeamsExpanded(true)}
-                    >
-                      +{teamDetails.length - 20} more
-                    </Button>
-                  )}
-                  {isTeamsExpanded && teamDetails.length > 20 && (
-                    <Button
-                      variant="light"
-                      size="xs"
-                      className="mt-2"
-                      onClick={() => setIsTeamsExpanded(false)}
-                    >
-                      Show Less
-                    </Button>
-                  )}
-                </div>
-              </Card>
+              {showLiteLLMCompatibilityFields ? (
+                <Card>
+                  <div className="flex justify-between items-center mb-2">
+                    <Text>Teams</Text>
+                    {isProxyAdmin && (
+                      <Button icon={PlusIcon} variant="light" size="xs" onClick={handleOpenAddTeamModal}>
+                        Add Team
+                      </Button>
+                    )}
+                  </div>
+                  <div className="mt-2">
+                    {teamDetails.length > 0 ? (
+                      <div className="max-h-60 overflow-y-auto">
+                        <Table>
+                          <TableHead>
+                            <TableRow>
+                              <TableHeaderCell>Team Name</TableHeaderCell>
+                              {isProxyAdmin && <TableHeaderCell className="text-right">Actions</TableHeaderCell>}
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {teamDetails.slice(0, isTeamsExpanded ? teamDetails.length : 20).map((team) => (
+                              <TableRow key={team.team_id}>
+                                <TableCell>{team.team_alias || team.team_id}</TableCell>
+                                {isProxyAdmin && (
+                                  <TableCell className="text-right">
+                                    <Button
+                                      icon={TrashIcon}
+                                      variant="light"
+                                      size="xs"
+                                      color="red"
+                                      onClick={() => handleOpenRemoveTeamModal(team)}
+                                    />
+                                  </TableCell>
+                                )}
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    ) : (
+                      <Text>No teams</Text>
+                    )}
+                    {!isTeamsExpanded && teamDetails.length > 20 && (
+                      <Button variant="light" size="xs" className="mt-2" onClick={() => setIsTeamsExpanded(true)}>
+                        +{teamDetails.length - 20} more
+                      </Button>
+                    )}
+                    {isTeamsExpanded && teamDetails.length > 20 && (
+                      <Button variant="light" size="xs" className="mt-2" onClick={() => setIsTeamsExpanded(false)}>
+                        Show Less
+                      </Button>
+                    )}
+                  </div>
+                </Card>
+              ) : (
+                <Card>
+                  <Text>Company and Project Access</Text>
+                  <div className="mt-2">
+                    {companyMemberships.length > 0 || projectMemberships.length > 0 ? (
+                      <div className="max-h-60 overflow-y-auto">
+                        <Table>
+                          <TableHead>
+                            <TableRow>
+                              <TableHeaderCell>Scope</TableHeaderCell>
+                              <TableHeaderCell>Role</TableHeaderCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {companyMemberships.map((membership) => {
+                              const company = companyById.get(membership.company_id);
+                              return (
+                                <TableRow key={`company-${membership.company_id}`}>
+                                  <TableCell>
+                                    {company?.legal_name || membership.company_id} ({membership.company_id})
+                                  </TableCell>
+                                  <TableCell>{formatCavadaLabsRole(membership.role)}</TableCell>
+                                </TableRow>
+                              );
+                            })}
+                            {projectMemberships.map((membership) => {
+                              const project = projectById.get(membership.project_id);
+                              return (
+                                <TableRow key={`project-${membership.project_id}`}>
+                                  <TableCell>
+                                    {project?.name || membership.project_id} ({membership.project_id})
+                                  </TableCell>
+                                  <TableCell>{formatCavadaLabsRole(membership.role)}</TableCell>
+                                </TableRow>
+                              );
+                            })}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    ) : (
+                      <Text>No Company or Project access</Text>
+                    )}
+                  </div>
+                </Card>
+              )}
 
               <Card>
                 <Text>Personal Models</Text>
@@ -543,6 +618,7 @@ export default function UserInfoView({
                   userRole={userRole}
                   userModels={userModels}
                   possibleUIRoles={possibleUIRoles}
+                  showLiteLLMCompatibilityFields={showLiteLLMCompatibilityFields}
                 />
               ) : (
                 <div className="space-y-4">
@@ -581,20 +657,12 @@ export default function UserInfoView({
 
                   <div>
                     <Text className="font-medium">Created</Text>
-                    <Text>
-                      {userData.created_at
-                        ? new Date(userData.created_at).toLocaleString()
-                        : "Unknown"}
-                    </Text>
+                    <Text>{userData.created_at ? new Date(userData.created_at).toLocaleString() : "Unknown"}</Text>
                   </div>
 
                   <div>
                     <Text className="font-medium">Last Updated</Text>
-                    <Text>
-                      {userData.updated_at
-                        ? new Date(userData.updated_at).toLocaleString()
-                        : "Unknown"}
-                    </Text>
+                    <Text>{userData.updated_at ? new Date(userData.updated_at).toLocaleString() : "Unknown"}</Text>
                   </div>
 
                   <div>
@@ -646,86 +714,84 @@ export default function UserInfoView({
         modalType="resetPassword"
       />
 
-      {/* Delete Team Member Modal */}
-      <DeleteResourceModal
-        isOpen={isRemoveTeamModalOpen}
-        title="Remove from Team"
-        alertMessage="Removing this user from the team will also delete any keys the user created for this team."
-        message="Are you sure you want to remove this user from the team? This action cannot be undone."
-        resourceInformationTitle="Team Membership"
-        resourceInformation={[
-          { label: "Team", value: teamToRemove?.team_alias || teamToRemove?.team_id },
-          { label: "User ID", value: userData?.user_id, code: true },
-          { label: "Email", value: userData?.user_email },
-        ]}
-        onCancel={handleRemoveTeamCancel}
-        onOk={handleRemoveTeamConfirm}
-        confirmLoading={isRemovingTeam}
-      />
+      {showLiteLLMCompatibilityFields && (
+        <>
+          {/* Delete Team Member Modal */}
+          <DeleteResourceModal
+            isOpen={isRemoveTeamModalOpen}
+            title="Remove from Team"
+            alertMessage="Removing this user from the team will also delete any keys the user created for this team."
+            message="Are you sure you want to remove this user from the team? This action cannot be undone."
+            resourceInformationTitle="Team Membership"
+            resourceInformation={[
+              { label: "Team", value: teamToRemove?.team_alias || teamToRemove?.team_id },
+              { label: "User ID", value: userData?.user_id, code: true },
+              { label: "Email", value: userData?.user_email },
+            ]}
+            onCancel={handleRemoveTeamCancel}
+            onOk={handleRemoveTeamConfirm}
+            confirmLoading={isRemovingTeam}
+          />
 
-      {/* Add to Team Modal */}
-      <Modal
-        title="Add User to Team"
-        open={isAddTeamModalOpen}
-        onCancel={() => setIsAddTeamModalOpen(false)}
-        footer={null}
-        width={500}
-        maskClosable={!isAddingTeam}
-      >
-        <Form
-          layout="vertical"
-          onFinish={handleAddTeamSubmit}
-        >
-          <Form.Item label="Team" required>
-            <AntdSelect
-              showSearch
-              value={selectedTeamId || undefined}
-              onChange={setSelectedTeamId}
-              placeholder="Select a team"
-              filterOption={(input, option) => {
-                const team = availableTeamsForAdd.find((t) => t.team_id === option?.value);
-                if (!team) return false;
-                return team.team_alias.toLowerCase().includes(input.toLowerCase());
-              }}
-              loading={isLoadingTeams}
-            >
-              {availableTeamsForAdd.map((team) => (
-                <AntdSelect.Option key={team.team_id} value={team.team_id}>
-                  {team.team_alias}
-                </AntdSelect.Option>
-              ))}
-            </AntdSelect>
-          </Form.Item>
+          {/* Add to Team Modal */}
+          <Modal
+            title="Add User to Team"
+            open={isAddTeamModalOpen}
+            onCancel={() => setIsAddTeamModalOpen(false)}
+            footer={null}
+            width={500}
+            maskClosable={!isAddingTeam}
+          >
+            <Form layout="vertical" onFinish={handleAddTeamSubmit}>
+              <Form.Item label="Team" required>
+                <AntdSelect
+                  showSearch
+                  value={selectedTeamId || undefined}
+                  onChange={setSelectedTeamId}
+                  placeholder="Select a team"
+                  filterOption={(input, option) => {
+                    const team = availableTeamsForAdd.find((t) => t.team_id === option?.value);
+                    if (!team) return false;
+                    return team.team_alias.toLowerCase().includes(input.toLowerCase());
+                  }}
+                  loading={isLoadingTeams}
+                >
+                  {availableTeamsForAdd.map((team) => (
+                    <AntdSelect.Option key={team.team_id} value={team.team_id}>
+                      {team.team_alias}
+                    </AntdSelect.Option>
+                  ))}
+                </AntdSelect>
+              </Form.Item>
 
-          <Form.Item label="Member Role">
-            <AntdSelect value={selectedRole} onChange={setSelectedRole}>
-              <AntdSelect.Option value="user">
-                <Tooltip title="Can view team info, but not manage it">
-                  <span className="font-medium">user</span>
-                  <span className="ml-2 text-gray-500 text-sm">- Can view team info, but not manage it</span>
-                </Tooltip>
-              </AntdSelect.Option>
-              <AntdSelect.Option value="admin">
-                <Tooltip title="Can create team keys, add members, and manage settings">
-                  <span className="font-medium">admin</span>
-                  <span className="ml-2 text-gray-500 text-sm">- Can create team keys, add members, and manage settings</span>
-                </Tooltip>
-              </AntdSelect.Option>
-            </AntdSelect>
-          </Form.Item>
+              <Form.Item label="Member Role">
+                <AntdSelect value={selectedRole} onChange={setSelectedRole}>
+                  <AntdSelect.Option value="user">
+                    <Tooltip title="Can view team info, but not manage it">
+                      <span className="font-medium">user</span>
+                      <span className="ml-2 text-gray-500 text-sm">- Can view team info, but not manage it</span>
+                    </Tooltip>
+                  </AntdSelect.Option>
+                  <AntdSelect.Option value="admin">
+                    <Tooltip title="Can create team keys, add members, and manage settings">
+                      <span className="font-medium">admin</span>
+                      <span className="ml-2 text-gray-500 text-sm">
+                        - Can create team keys, add members, and manage settings
+                      </span>
+                    </Tooltip>
+                  </AntdSelect.Option>
+                </AntdSelect>
+              </Form.Item>
 
-          <div className="text-right mt-4">
-            <AntdButton
-              type="primary"
-              htmlType="submit"
-              loading={isAddingTeam}
-              disabled={!selectedTeamId}
-            >
-              {isAddingTeam ? "Adding..." : "Add to Team"}
-            </AntdButton>
-          </div>
-        </Form>
-      </Modal>
+              <div className="text-right mt-4">
+                <AntdButton type="primary" htmlType="submit" loading={isAddingTeam} disabled={!selectedTeamId}>
+                  {isAddingTeam ? "Adding..." : "Add to Team"}
+                </AntdButton>
+              </div>
+            </Form>
+          </Modal>
+        </>
+      )}
     </div>
   );
 }

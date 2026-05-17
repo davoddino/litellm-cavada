@@ -38,6 +38,18 @@ vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
 }));
 
 vi.mock("./cavadalabs/keyContext", () => ({
+  filterManageableCavadaLabsCompanies: vi.fn((companies) => {
+    if (!companies.some((company: any) => typeof company.cavadalabs_can_manage === "boolean")) {
+      return companies;
+    }
+    return companies.filter((company: any) => company.cavadalabs_can_manage === true);
+  }),
+  filterManageableCavadaLabsProjects: vi.fn((projects) => {
+    if (!projects.some((project: any) => typeof project.cavadalabs_can_manage === "boolean")) {
+      return projects;
+    }
+    return projects.filter((project: any) => project.cavadalabs_can_manage === true);
+  }),
   getCavadaLabsCompanyDisplayName: vi.fn((company) =>
     company.legal_name ? `${company.legal_name} (${company.company_id})` : company.company_id,
   ),
@@ -351,6 +363,52 @@ describe("CreateUserButton", () => {
       expect(screen.queryByRole("combobox", { name: /organization/i })).not.toBeInTheDocument();
     });
 
+    it("should keep Team and Organization hidden when CavadaLabs context has no available Company or Project options", () => {
+      mockUseCavadaLabsKeyContextOptions.mockReturnValue({
+        companies: [],
+        projects: [],
+        isLoading: false,
+        errorDetail: null,
+        contextKnown: true,
+        isCavadaLabsProductContext: true,
+      });
+
+      renderWithProviders(
+        <CreateUserButton
+          {...defaultProps}
+          possibleUIRoles={{ proxy_user: { ui_label: "User", description: "" } }}
+          isEmbedded
+        />,
+      );
+
+      expect(screen.getByRole("combobox", { name: /^company$/i })).toBeInTheDocument();
+      expect(screen.getByRole("combobox", { name: /^project$/i })).toBeInTheDocument();
+      expect(screen.queryByRole("combobox", { name: /^team$/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("combobox", { name: /organization/i })).not.toBeInTheDocument();
+    });
+
+    it("should not flash Team or Organization fields while CavadaLabs context is loading", () => {
+      mockUseCavadaLabsKeyContextOptions.mockReturnValue({
+        companies: [],
+        projects: [],
+        isLoading: true,
+        errorDetail: null,
+        contextKnown: false,
+        isCavadaLabsProductContext: false,
+      });
+
+      renderWithProviders(
+        <CreateUserButton
+          {...defaultProps}
+          possibleUIRoles={{ proxy_user: { ui_label: "User", description: "" } }}
+          isEmbedded
+        />,
+      );
+
+      expect(screen.queryByRole("combobox", { name: /^team$/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("combobox", { name: /organization/i })).not.toBeInTheDocument();
+    });
+
     it("should render Company assignment without exposing Organization in the invite form", async () => {
       mockUseCavadaLabsKeyContextOptions.mockReturnValue({
         companies: [
@@ -379,6 +437,58 @@ describe("CreateUserButton", () => {
       expect(within(dialog).queryByRole("combobox", { name: /^team$/i })).not.toBeInTheDocument();
       expect(within(dialog).queryByRole("combobox", { name: /organization/i })).not.toBeInTheDocument();
       expect(screen.queryByTestId("bulk-create-users")).not.toBeInTheDocument();
+    });
+
+    it("should only offer manageable CavadaLabs membership targets when access flags are available", async () => {
+      mockUseCavadaLabsKeyContextOptions.mockReturnValue({
+        companies: [
+          {
+            company_id: "company-manage",
+            legal_name: "Manageable Company",
+            cavadalabs_can_manage: true,
+          },
+          {
+            company_id: "company-view",
+            legal_name: "Viewer Company",
+            cavadalabs_can_manage: false,
+          },
+        ],
+        projects: [
+          {
+            project_id: "project-manage",
+            company_id: "company-manage",
+            name: "Manageable Project",
+            cavadalabs_can_manage: true,
+          },
+          {
+            project_id: "project-view",
+            company_id: "company-view",
+            name: "Viewer Project",
+            cavadalabs_can_manage: false,
+          },
+        ],
+        isLoading: false,
+      });
+
+      const user = userEvent.setup();
+      renderWithProviders(
+        <CreateUserButton {...defaultProps} possibleUIRoles={{ proxy_user: { ui_label: "User", description: "" } }} />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /\+ invite user/i })).toBeInTheDocument();
+      });
+      await user.click(screen.getByRole("button", { name: /\+ invite user/i }));
+
+      const dialog = screen.getByRole("dialog", { name: /invite user/i });
+      await user.click(within(dialog).getByRole("combobox", { name: /^company$/i }));
+      expect(screen.getByText("Manageable Company (company-manage)")).toBeInTheDocument();
+      expect(screen.queryByText("Viewer Company (company-view)")).not.toBeInTheDocument();
+      await user.click(screen.getByText("Manageable Company (company-manage)"));
+
+      await user.click(within(dialog).getByRole("combobox", { name: /^project$/i }));
+      expect(screen.getByText("Manageable Project (project-manage)")).toBeInTheDocument();
+      expect(screen.queryByText("Viewer Project (project-view)")).not.toBeInTheDocument();
     });
 
     it("should filter Project choices by selected Company and send CavadaLabs memberships", async () => {

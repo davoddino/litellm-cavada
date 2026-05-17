@@ -52,6 +52,7 @@ const buildUserListResponse = (page: number, totalPages: number, userCount = 2):
     user_alias: null,
     user_role: "Internal User",
     spend: 0,
+    models: [],
     max_budget: null,
     key_count: 0,
     created_at: "2024-01-01T00:00:00Z",
@@ -250,7 +251,21 @@ describe("useInfiniteUsers", () => {
       expect(result.current.isSuccess).toBe(true);
     });
 
-    expect(userListCall).toHaveBeenCalledWith("test-access-token", null, 1, 50, null);
+    expect(userListCall).toHaveBeenCalledWith(
+      "test-access-token",
+      null,
+      1,
+      50,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      ["company-1"],
+      ["project-1"],
+    );
   });
 
   it("should not execute query when both accessToken and userRole are invalid", async () => {

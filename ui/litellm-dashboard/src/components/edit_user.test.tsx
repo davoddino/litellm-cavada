@@ -65,6 +65,10 @@ describe("EditUserModal CavadaLabs memberships", () => {
     );
 
     expect(screen.queryByRole("combobox", { name: /organization/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/team_id/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Across all keys, including CavadaLabs Company/Project-scoped keys."),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByRole("combobox", { name: /^company$/i }));
     await user.click(await screen.findByText("ACME (company-1)"));
@@ -136,6 +140,26 @@ describe("EditUserModal CavadaLabs memberships", () => {
 
     expect(screen.getByText("ACME (company-1)")).toBeInTheDocument();
     expect(screen.getByText("Support (project-1)")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: /organization/i })).not.toBeInTheDocument();
+  });
+
+  it("should keep legacy team_id copy hidden when CavadaLabs context has no available membership options", () => {
+    render(
+      <EditUserModal
+        visible
+        possibleUIRoles={null}
+        onCancel={vi.fn()}
+        user={defaultUser}
+        onSubmit={vi.fn()}
+        cavadalabsCompanies={[]}
+        cavadalabsProjects={[]}
+        isCavadaLabsProductContext
+      />,
+    );
+
+    expect(screen.getByRole("combobox", { name: /^company$/i })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /^project$/i })).toBeInTheDocument();
+    expect(screen.queryByText(/team_id/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: /organization/i })).not.toBeInTheDocument();
   });
 });

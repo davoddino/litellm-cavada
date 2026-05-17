@@ -28,6 +28,8 @@ def build_chatbot_token_metadata(
         top_level["cavadalabs_web_token_id"] = web_token_id
 
     next_metadata.update(top_level)
+    next_metadata["cavadalabs_metadata_authenticated"] = True
+    next_metadata["cavadalabs_metadata_source"] = "chatbot_runtime"
     next_metadata["cavadalabs"] = {
         **cavadalabs,
         "company_id": company_id,

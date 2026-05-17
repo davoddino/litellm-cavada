@@ -16,12 +16,15 @@ from litellm.proxy.cavadalabs.usage_query_filters import (
     spend_log_repair_where as _spend_log_repair_where,
 )
 from litellm.proxy.cavadalabs.usage_serialization import (
+    _metadata_dict,
+    _metadata_sources,
     _normalize_entity_ids_list,
     _str_value,
 )
 from litellm.proxy.utils import PrismaClient
 
 _USAGE_LEDGER_REPAIR_BATCH_SIZE = 1000
+_API_KEY_HASH_METADATA_KEYS = ("user_api_key_hash", "api_key_hash", "user_api_key")
 _SPEND_LOG_PAYLOAD_FIELDS = (
     "request_id",
     "call_type",
@@ -77,6 +80,30 @@ def _spend_log_row_to_payload(row: Any) -> Dict[str, Any]:
     return payload
 
 
+def _api_key_hash_value(value: Any) -> Optional[str]:
+    api_key_hash = _str_value(value)
+    if api_key_hash is None:
+        return None
+    if api_key_hash.startswith("sk-"):
+        return None
+    return api_key_hash
+
+
+def _spend_log_payload_api_key_hash(payload: Dict[str, Any]) -> Optional[str]:
+    for field_name in ("api_key", "user_api_key_hash", "api_key_hash"):
+        api_key_hash = _api_key_hash_value(payload.get(field_name))
+        if api_key_hash is not None:
+            return api_key_hash
+
+    metadata = _metadata_dict(payload.get("metadata"))
+    for source in _metadata_sources(metadata):
+        for field_name in _API_KEY_HASH_METADATA_KEYS:
+            api_key_hash = _api_key_hash_value(source.get(field_name))
+            if api_key_hash is not None:
+                return api_key_hash
+    return None
+
+
 async def backfill_cavadalabs_usage_ledger_from_spend_logs(
     *,
     prisma_client: PrismaClient,
@@ -86,6 +113,9 @@ async def backfill_cavadalabs_usage_ledger_from_spend_logs(
     model: Optional[str],
     provider: Optional[str],
     api_key: Optional[Union[str, List[str]]],
+    status_filter: Optional[str] = None,
+    min_spend: Optional[float] = None,
+    max_spend: Optional[float] = None,
     dry_run: bool = False,
     batch_limit: Optional[int] = None,
 ) -> CavadaLabsUsageLedgerBackfillResult:
@@ -154,6 +184,9 @@ async def backfill_cavadalabs_usage_ledger_from_spend_logs(
         model=model,
         provider=provider,
         api_key=api_key,
+        status_filter=status_filter,
+        min_spend=min_spend,
+        max_spend=max_spend,
     )
     try:
         scoped_spend_logs: Optional[int] = int(
@@ -233,7 +266,7 @@ async def backfill_cavadalabs_usage_ledger_from_spend_logs(
         payloads = []
         for row in spend_log_rows:
             payload = _spend_log_row_to_payload(row)
-            api_key_hash = _str_value(payload.get("api_key"))
+            api_key_hash = _spend_log_payload_api_key_hash(payload)
             if api_key_hash in scope.key_context_by_api_key:
                 payload = _set_payload_key_context(
                     payload,
@@ -274,6 +307,9 @@ async def _repair_empty_usage_ledger_from_spend_logs(
     model: Optional[str],
     provider: Optional[str],
     api_key: Optional[Union[str, List[str]]],
+    status_filter: Optional[str] = None,
+    min_spend: Optional[float] = None,
+    max_spend: Optional[float] = None,
 ) -> bool:
     result = await backfill_cavadalabs_usage_ledger_from_spend_logs(
         prisma_client=prisma_client,
@@ -283,6 +319,9 @@ async def _repair_empty_usage_ledger_from_spend_logs(
         model=model,
         provider=provider,
         api_key=api_key,
+        status_filter=status_filter,
+        min_spend=min_spend,
+        max_spend=max_spend,
     )
     return result.repaired
 
@@ -296,6 +335,9 @@ async def _count_scoped_attributable_spend_logs(
     model: Optional[str],
     provider: Optional[str],
     api_key: Optional[Union[str, List[str]]],
+    status_filter: Optional[str] = None,
+    min_spend: Optional[float] = None,
+    max_spend: Optional[float] = None,
 ) -> Optional[int]:
     entity_ids = _normalize_entity_ids_list(entity_id)
     if not entity_ids:
@@ -327,6 +369,9 @@ async def _count_scoped_attributable_spend_logs(
                     model=model,
                     provider=provider,
                     api_key=api_key,
+                    status_filter=status_filter,
+                    min_spend=min_spend,
+                    max_spend=max_spend,
                 )
             )
         )
@@ -347,6 +392,9 @@ async def repair_cavadalabs_usage_ledger_from_spend_logs(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     api_key: Optional[Union[str, List[str]]] = None,
+    status_filter: Optional[str] = None,
+    min_spend: Optional[float] = None,
+    max_spend: Optional[float] = None,
 ) -> bool:
     return await _repair_empty_usage_ledger_from_spend_logs(
         prisma_client=prisma_client,
@@ -356,6 +404,9 @@ async def repair_cavadalabs_usage_ledger_from_spend_logs(
         model=model,
         provider=provider,
         api_key=api_key,
+        status_filter=status_filter,
+        min_spend=min_spend,
+        max_spend=max_spend,
     )
 
 
@@ -369,6 +420,9 @@ async def repair_incomplete_cavadalabs_usage_ledger_from_spend_logs(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     api_key: Optional[Union[str, List[str]]] = None,
+    status_filter: Optional[str] = None,
+    min_spend: Optional[float] = None,
+    max_spend: Optional[float] = None,
 ) -> bool:
     attributable_spend_logs = await _count_scoped_attributable_spend_logs(
         prisma_client=prisma_client,
@@ -378,6 +432,9 @@ async def repair_incomplete_cavadalabs_usage_ledger_from_spend_logs(
         model=model,
         provider=provider,
         api_key=api_key,
+        status_filter=status_filter,
+        min_spend=min_spend,
+        max_spend=max_spend,
     )
     if (
         attributable_spend_logs is None
@@ -393,4 +450,7 @@ async def repair_incomplete_cavadalabs_usage_ledger_from_spend_logs(
         model=model,
         provider=provider,
         api_key=api_key,
+        status_filter=status_filter,
+        min_spend=min_spend,
+        max_spend=max_spend,
     )

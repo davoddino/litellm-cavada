@@ -7,6 +7,9 @@ from typing import Any, Dict, Iterable, List, Optional
 from litellm._logging import verbose_proxy_logger
 from litellm.litellm_core_utils.safe_json_loads import safe_json_loads
 from litellm.proxy.cavadalabs.prisma_json import serialize_prisma_json_fields
+from litellm.proxy.cavadalabs.usage_schema_readiness import (
+    looks_like_missing_schema_exception,
+)
 from litellm.proxy.utils import PrismaClient
 
 
@@ -28,6 +31,8 @@ _FIELD_ALIASES: Dict[str, Iterable[str]] = {
 }
 
 _API_KEY_HASH_METADATA_KEYS = ("user_api_key_hash", "user_api_key", "api_key_hash")
+_AUTHENTICATED_METADATA_MARKER = "cavadalabs_metadata_authenticated"
+_AUTHENTICATED_METADATA_SOURCE = "cavadalabs_metadata_source"
 
 
 @dataclass(frozen=True)
@@ -61,12 +66,27 @@ class CavadaLabsResolvedContext:
 
 
 @dataclass(frozen=True)
+class CavadaLabsLedgerAttributionInputCheck:
+    request_id: Optional[str]
+    company_id: Optional[str]
+    project_id: Optional[str]
+    api_key_hash: Optional[str]
+    team_id: Optional[str]
+    organization_id: Optional[str]
+    can_attempt_attribution: bool
+    missing_inputs: tuple[str, ...]
+    required_lookups: tuple[str, ...]
+    message: str
+
+
+@dataclass(frozen=True)
 class _CompatContextResolver:
     company_id_by_litellm_org_id: Dict[str, str]
     project_by_litellm_team_id: Dict[str, _ProjectMapping]
     project_by_project_id: Dict[str, _ProjectMapping]
     key_context_by_api_key_hash: Dict[str, _KeyContextMapping]
     project_lookup_available: bool = True
+    project_lookup_schema_missing: bool = False
 
 
 def _metadata_dict(raw_metadata: Any) -> Dict[str, Any]:
@@ -87,9 +107,9 @@ def _metadata_sources(metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
     # CavadaLabs billing attribution for a virtual key.
     sources: List[Dict[str, Any]] = [metadata]
     for key in ("cavadalabs", "spend_logs_metadata"):
-        value = metadata.get(key)
-        if isinstance(value, dict):
-            sources.append(value)
+        nested_metadata = _metadata_dict(metadata.get(key))
+        if nested_metadata:
+            sources.append(nested_metadata)
     return sources
 
 
@@ -160,6 +180,52 @@ def _has_top_level_cavadalabs_context(metadata: Dict[str, Any]) -> bool:
     return company_id is not None and project_id is not None
 
 
+def _has_authenticated_direct_cavadalabs_context(metadata: Dict[str, Any]) -> bool:
+    marker = metadata.get(_AUTHENTICATED_METADATA_MARKER)
+    return marker is True and _has_top_level_cavadalabs_context(metadata)
+
+
+def _authenticated_direct_context_source(metadata: Dict[str, Any]) -> Optional[str]:
+    if not _has_authenticated_direct_cavadalabs_context(metadata):
+        return None
+    return _str_value(metadata.get(_AUTHENTICATED_METADATA_SOURCE))
+
+
+def _can_use_direct_context_without_project_lookup(
+    *,
+    compat_context: _CompatContextResolver,
+    direct_metadata: Dict[str, Any],
+) -> bool:
+    return (
+        not compat_context.project_lookup_available
+        and not compat_context.project_lookup_schema_missing
+        and _has_authenticated_direct_cavadalabs_context(direct_metadata)
+    )
+
+
+def _log_unresolved_project_context(
+    *,
+    payload: Dict[str, Any],
+    company_id: Optional[str],
+    project_id: str,
+    project_lookup_available: bool,
+) -> None:
+    if project_lookup_available:
+        verbose_proxy_logger.warning(
+            "CavadaLabs ledger skipped spend log with unresolved Project context: request_id=%s company_id=%s project_id=%s",
+            payload.get("request_id"),
+            company_id,
+            project_id,
+        )
+    else:
+        verbose_proxy_logger.warning(
+            "CavadaLabs ledger skipped spend log because Project context could not be validated: request_id=%s company_id=%s project_id=%s",
+            payload.get("request_id"),
+            company_id,
+            project_id,
+        )
+
+
 def _api_key_hash_value(value: Any) -> Optional[str]:
     api_key_hash = _str_value(value)
     if api_key_hash is None:
@@ -187,6 +253,88 @@ def _api_key_hash_from_payload(
     return None
 
 
+def inspect_cavadalabs_ledger_attribution_inputs(
+    payload: Dict[str, Any],
+) -> CavadaLabsLedgerAttributionInputCheck:
+    """
+    Explain whether a LiteLLM SpendLogs payload has enough CavadaLabs context.
+
+    This is intentionally no-DB: it tells operators if the runtime payload is
+    missing the Company/Project attribution inputs before any Prisma lookup.
+    Database-backed validation still happens in process_spend_logs_cavadalabs_ledger.
+    """
+
+    request_id = _str_value(payload.get("request_id"))
+    metadata = _metadata_dict(payload.get("metadata"))
+    sources = _metadata_sources(metadata)
+    company_id = _extract_metadata_value(sources, "company_id")
+    project_id = _extract_metadata_value(sources, "project_id")
+    api_key_hash = _api_key_hash_from_payload(payload=payload, sources=sources)
+    team_id = _str_value(payload.get("team_id"))
+    organization_id = _str_value(payload.get("organization_id"))
+
+    missing_inputs: List[str] = []
+    if request_id is None:
+        missing_inputs.append("request_id")
+
+    has_company_path = any(
+        value is not None
+        for value in (company_id, project_id, api_key_hash, team_id, organization_id)
+    )
+    has_project_path = any(
+        value is not None for value in (project_id, api_key_hash, team_id)
+    )
+    if not has_company_path:
+        missing_inputs.append(
+            "Company context: cavadalabs_company_id, virtual-key metadata, "
+            "Project mapping, or LiteLLM organization mapping"
+        )
+    if not has_project_path:
+        missing_inputs.append(
+            "Project context: cavadalabs_project_id, virtual-key metadata, "
+            "or LiteLLM team mapping"
+        )
+
+    required_lookups: List[str] = []
+    if api_key_hash is not None and (company_id is None or project_id is None):
+        required_lookups.append("virtual-key CavadaLabs metadata lookup")
+    if project_id is not None:
+        required_lookups.append("CavadaLabs Project validation")
+    if team_id is not None and project_id is None:
+        required_lookups.append("Project litellm_team_id compatibility mapping")
+    if organization_id is not None and company_id is None:
+        required_lookups.append("Company litellm_organization_id compatibility mapping")
+
+    can_attempt_attribution = not missing_inputs
+    if missing_inputs:
+        message = (
+            "CavadaLabs usage cannot be attributed to the request ledger without "
+            + "; ".join(missing_inputs)
+            + "."
+        )
+    elif required_lookups:
+        message = (
+            "CavadaLabs usage has enough runtime context; DB lookup must resolve "
+            + "; ".join(required_lookups)
+            + "."
+        )
+    else:
+        message = "CavadaLabs usage has direct Company/Project runtime context."
+
+    return CavadaLabsLedgerAttributionInputCheck(
+        request_id=request_id,
+        company_id=company_id,
+        project_id=project_id,
+        api_key_hash=api_key_hash,
+        team_id=team_id,
+        organization_id=organization_id,
+        can_attempt_attribution=can_attempt_attribution,
+        missing_inputs=tuple(missing_inputs),
+        required_lookups=tuple(dict.fromkeys(required_lookups)),
+        message=message,
+    )
+
+
 def _resolve_cavadalabs_context(
     payload: Dict[str, Any],
     sources: List[Dict[str, Any]],
@@ -194,9 +342,12 @@ def _resolve_cavadalabs_context(
 ) -> Optional[CavadaLabsResolvedContext]:
     company_id = _extract_metadata_value(sources, "company_id")
     project_id = _extract_metadata_value(sources, "project_id")
+    direct_metadata = sources[0] if sources else {}
     project_company_id: Optional[str] = None
     org_company_id: Optional[str] = None
-    source = "metadata" if company_id is not None or project_id is not None else None
+    source = _authenticated_direct_context_source(direct_metadata) or (
+        "metadata" if company_id is not None or project_id is not None else None
+    )
 
     if compat_context is not None:
         api_key_hash = _api_key_hash_from_payload(payload=payload, sources=sources)
@@ -230,21 +381,18 @@ def _resolve_cavadalabs_context(
             if project_mapping is not None:
                 project_company_id = project_mapping.company_id
                 company_id = company_id or project_mapping.company_id
+            elif _can_use_direct_context_without_project_lookup(
+                compat_context=compat_context,
+                direct_metadata=direct_metadata,
+            ):
+                source = source or "authenticated_metadata"
             else:
-                if compat_context.project_lookup_available:
-                    verbose_proxy_logger.warning(
-                        "CavadaLabs ledger skipped spend log with unresolved Project context: request_id=%s company_id=%s project_id=%s",
-                        payload.get("request_id"),
-                        company_id,
-                        project_id,
-                    )
-                else:
-                    verbose_proxy_logger.warning(
-                        "CavadaLabs ledger skipped spend log because Project context could not be validated: request_id=%s company_id=%s project_id=%s",
-                        payload.get("request_id"),
-                        company_id,
-                        project_id,
-                    )
+                _log_unresolved_project_context(
+                    payload=payload,
+                    company_id=company_id,
+                    project_id=project_id,
+                    project_lookup_available=compat_context.project_lookup_available,
+                )
                 return None
 
         if key_mapping is None and project_id is None:
@@ -568,6 +716,7 @@ def _build_cavadalabs_ledger_row(
             cavadalabs_metadata["policy_id"] = source.get("policy_id")
         if "guardrails" in source:
             cavadalabs_metadata["guardrails"] = source.get("guardrails")
+    cavadalabs_metadata["attribution_source"] = resolved_context.source
 
     return {
         "request_id": request_id,
@@ -604,6 +753,67 @@ def _build_cavadalabs_ledger_row(
     }
 
 
+def _batch_result_count(result: Any) -> Optional[int]:
+    created_count = getattr(result, "count", None)
+    if isinstance(created_count, int):
+        return created_count
+    if isinstance(result, dict) and isinstance(result.get("count"), int):
+        return result["count"]
+    return None
+
+
+def _ledger_update_data(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in row.items()
+        if key not in {"ledger_id", "request_id"}
+    }
+
+
+async def _repair_existing_cavadalabs_ledger_rows(
+    prisma_client: PrismaClient,
+    ledger_rows: List[Dict[str, Any]],
+) -> int:
+    ledger_table = prisma_client.db.cavadalabs_requestledgertable
+    update_many = getattr(ledger_table, "update_many", None)
+    if not callable(update_many):
+        verbose_proxy_logger.warning(
+            "CavadaLabs request ledger repair skipped missing update_many delegate"
+        )
+        return 0
+
+    repaired_count = 0
+    for row in ledger_rows:
+        request_id = row.get("request_id")
+        company_id = row.get("company_id")
+        project_id = row.get("project_id")
+        if not isinstance(request_id, str) or not request_id.strip():
+            continue
+        if not isinstance(company_id, str) or not isinstance(project_id, str):
+            continue
+        try:
+            result = await update_many(
+                where={
+                    "request_id": request_id,
+                    "OR": [
+                        {"company_id": {"not": company_id}},
+                        {"project_id": {"not": project_id}},
+                    ],
+                },
+                data=_ledger_update_data(row),
+            )
+        except Exception as exc:
+            verbose_proxy_logger.warning(
+                "CavadaLabs request ledger duplicate repair skipped request_id=%s: %s",
+                request_id,
+                exc,
+            )
+            continue
+        updated_count = _batch_result_count(result)
+        repaired_count += updated_count or 0
+    return repaired_count
+
+
 async def process_spend_logs_cavadalabs_ledger(
     prisma_client: PrismaClient,
     logs_to_process: List[Dict[str, Any]],
@@ -625,7 +835,7 @@ async def process_spend_logs_cavadalabs_ledger(
         )
     except Exception as exc:
         verbose_proxy_logger.warning(
-            "CavadaLabs compatibility context lookup failed; unvalidated CavadaLabs usage attribution will be skipped: %s",
+            "CavadaLabs compatibility context lookup failed; only authenticated direct CavadaLabs metadata will be attributed: %s",
             exc,
         )
         compat_context = _CompatContextResolver(
@@ -634,6 +844,7 @@ async def process_spend_logs_cavadalabs_ledger(
             project_by_project_id={},
             key_context_by_api_key_hash={},
             project_lookup_available=False,
+            project_lookup_schema_missing=looks_like_missing_schema_exception(exc),
         )
 
     ledger_rows = []
@@ -650,6 +861,14 @@ async def process_spend_logs_cavadalabs_ledger(
             continue
         if row is not None:
             ledger_rows.append(serialize_prisma_json_fields(row))
+        else:
+            attribution_check = inspect_cavadalabs_ledger_attribution_inputs(payload)
+            if attribution_check.missing_inputs:
+                verbose_proxy_logger.debug(
+                    "CavadaLabs ledger skipped spend log input check: request_id=%s missing_inputs=%s",
+                    attribution_check.request_id,
+                    list(attribution_check.missing_inputs),
+                )
 
     if not ledger_rows:
         return 0
@@ -659,11 +878,15 @@ async def process_spend_logs_cavadalabs_ledger(
             data=ledger_rows,
             skip_duplicates=True,
         )
-        created_count = getattr(result, "count", None)
+        created_count = _batch_result_count(result)
         if isinstance(created_count, int):
+            if created_count < len(ledger_rows):
+                repaired_count = await _repair_existing_cavadalabs_ledger_rows(
+                    prisma_client=prisma_client,
+                    ledger_rows=ledger_rows,
+                )
+                return created_count + repaired_count
             return created_count
-        if isinstance(result, dict) and isinstance(result.get("count"), int):
-            return result["count"]
         return len(ledger_rows)
     except Exception as exc:
         verbose_proxy_logger.warning(

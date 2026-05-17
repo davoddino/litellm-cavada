@@ -3,12 +3,14 @@ import AvailableTeamsPanel from "@/components/team/available_teams";
 import TeamInfoView from "@/components/team/TeamInfo";
 import TeamSSOSettings from "@/components/TeamSSOSettings";
 import { isProxyAdminRole } from "@/utils/roles";
+import { buildUiPath } from "@/utils/uiRoutes";
 import {
   InfoCircleOutlined,
   PlusOutlined,
   TeamOutlined,
   ReloadOutlined,
 } from "@ant-design/icons";
+import { useRouter } from "next/navigation";
 import {
   Accordion,
   AccordionBody,
@@ -62,11 +64,14 @@ import {
   fetchMCPAccessGroups,
   getGuardrailsList,
   getPoliciesList,
+  serverRootPath,
   teamDeleteCall,
 } from "./networking";
 import NumericalInput from "./shared/numerical_input";
 import VectorStoreSelector from "./vector_store_management/VectorStoreSelector";
 import SearchToolSelector from "./SearchTools/SearchToolSelector";
+import { useCavadaLabsKeyContextOptions } from "./cavadalabs/keyContext";
+import { resolveCavadaLabsProductContext } from "./cavadalabs/productContext";
 
 interface TeamProps {
   teams: Team[] | null;
@@ -190,7 +195,14 @@ const Teams: React.FC<TeamProps> = ({
   premiumUser = false,
 }) => {
   console.log(`organizations: ${JSON.stringify(organizations)}`);
+  const router = useRouter();
   const { data: organizationsData } = useOrganizations();
+  const cavadalabsContext = useCavadaLabsKeyContextOptions(accessToken);
+  const { companies: cavadalabsCompanies, projects: cavadalabsProjects } = cavadalabsContext;
+  const cavadalabsProductContext = resolveCavadaLabsProductContext(cavadalabsContext);
+  const isCavadaLabsProductContext =
+    cavadalabsProductContext.isCavadaLabsProductContext ||
+    (Boolean(accessToken) && !cavadalabsProductContext.showLiteLLMCompatibilityFields);
   const [isLoading, setIsLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -216,6 +228,11 @@ const Teams: React.FC<TeamProps> = ({
     search?: string;
   } = {}) => {
     if (!accessToken) return;
+    if (isCavadaLabsProductContext) {
+      setIsLoading(false);
+      setFetchError(null);
+      return;
+    }
     const page = opts.page ?? currentPage;
     const size = opts.size ?? pageSize;
     const sortBy = opts.sortBy ?? filters.sort_by;
@@ -249,7 +266,7 @@ const Teams: React.FC<TeamProps> = ({
 
   useEffect(() => {
     fetchTeamsV2();
-  }, [accessToken]);
+  }, [accessToken, isCavadaLabsProductContext]);
 
   const [form] = Form.useForm();
   const [memberForm] = Form.useForm();
@@ -1015,7 +1032,26 @@ const Teams: React.FC<TeamProps> = ({
 
   return (
     <Content style={{ padding: token.paddingLG, paddingInline: token.paddingLG * 2 }}>
-      {selectedTeamId ? (
+      {isCavadaLabsProductContext ? (
+        <Card>
+          <Flex justify="space-between" align="center" gap={16}>
+            <Space direction="vertical" size={0}>
+              <Title level={2} style={{ margin: 0 }}>
+                Projects
+              </Title>
+              <Text type="secondary">
+                CavadaLabs Company and Project membership is managed from the Projects workspace.
+              </Text>
+            </Space>
+            <Button
+              type="primary"
+              onClick={() => router.push(buildUiPath("cavadalabs/projects", serverRootPath))}
+            >
+              Open Projects
+            </Button>
+          </Flex>
+        </Card>
+      ) : selectedTeamId ? (
         <TeamInfoView
           teamId={selectedTeamId}
           onUpdate={(data) => {
@@ -1066,7 +1102,7 @@ const Teams: React.FC<TeamProps> = ({
         </>
       )}
 
-      {canCreateOrManageTeams(userRole, userID, organizations) && (
+      {!isCavadaLabsProductContext && canCreateOrManageTeams(userRole, userID, organizations) && (
             <Modal
               title="Create Team"
               open={isTeamModalVisible}

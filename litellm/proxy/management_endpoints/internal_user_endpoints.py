@@ -31,6 +31,7 @@ from litellm.proxy.cavadalabs.access_control import (
     require_company_access,
     require_project_access,
     resolve_cavadalabs_user_list_filters,
+    visible_company_wide_ids_for_user,
     visible_company_ids_for_user,
     visible_project_ids_for_user,
 )
@@ -162,6 +163,71 @@ def _normalize_cavadalabs_project_memberships(
         )
         for membership in memberships
     ]
+
+
+async def _authorize_cavadalabs_company_membership_updates(
+    *,
+    memberships: Optional[List[CavadaLabsCompanyMembershipRequest]],
+    prisma_client: "PrismaClient",
+    user_api_key_dict: UserAPIKeyAuth,
+) -> None:
+    if memberships is None:
+        return
+    seen_company_ids: set[str] = set()
+    for membership in memberships:
+        if membership.company_id in seen_company_ids:
+            continue
+        seen_company_ids.add(membership.company_id)
+        await require_company_access(
+            prisma_client.db,
+            company_id=membership.company_id,
+            user_api_key_dict=user_api_key_dict,
+            require_admin=True,
+        )
+
+
+async def _authorize_cavadalabs_project_membership_updates(
+    *,
+    memberships: Optional[List[CavadaLabsProjectMembershipRequest]],
+    prisma_client: "PrismaClient",
+    user_api_key_dict: UserAPIKeyAuth,
+) -> None:
+    if memberships is None:
+        return
+    seen_project_ids: set[str] = set()
+    for membership in memberships:
+        if membership.project_id in seen_project_ids:
+            continue
+        seen_project_ids.add(membership.project_id)
+        await require_project_access(
+            prisma_client.db,
+            project_id=membership.project_id,
+            user_api_key_dict=user_api_key_dict,
+            require_admin=True,
+        )
+
+
+async def _authorize_cavadalabs_user_membership_updates(
+    *,
+    cavadalabs_company_memberships: Optional[
+        List[CavadaLabsCompanyMembershipRequest]
+    ],
+    cavadalabs_project_memberships: Optional[
+        List[CavadaLabsProjectMembershipRequest]
+    ],
+    prisma_client: "PrismaClient",
+    user_api_key_dict: UserAPIKeyAuth,
+) -> None:
+    await _authorize_cavadalabs_company_membership_updates(
+        memberships=cavadalabs_company_memberships,
+        prisma_client=prisma_client,
+        user_api_key_dict=user_api_key_dict,
+    )
+    await _authorize_cavadalabs_project_membership_updates(
+        memberships=cavadalabs_project_memberships,
+        prisma_client=prisma_client,
+        user_api_key_dict=user_api_key_dict,
+    )
 
 
 def _has_user_table_update(non_default_values: Dict[str, Any]) -> bool:
@@ -695,6 +761,12 @@ async def new_user(
         cavadalabs_project_memberships = _normalize_cavadalabs_project_memberships(
             data_json.pop("cavadalabs_project_memberships", None)
         )
+        await _authorize_cavadalabs_user_membership_updates(
+            cavadalabs_company_memberships=cavadalabs_company_memberships,
+            cavadalabs_project_memberships=cavadalabs_project_memberships,
+            prisma_client=prisma_client,
+            user_api_key_dict=user_api_key_dict,
+        )
 
         response = await generate_key_helper_fn(request_type="user", **data_json)
         # Admin UI Logic
@@ -1086,7 +1158,8 @@ async def _check_user_info_v2_access(
     Access rules:
     1. Proxy admins / proxy admin viewers can access any user
     2. User can access their own info
-    3. Team admins can access info of users in their teams
+    3. CavadaLabs Company/Project members can access users in their product scope
+    4. Team admins can access info of users in their teams
 
     Raises on unexpected DB errors so they surface as 500s, not silent 404s.
     """
@@ -1109,7 +1182,16 @@ async def _check_user_info_v2_access(
     if user_api_key_dict.user_id == target_user_id:
         return await _fetch_target_user()
 
-    # Rule 3: Team admins can look up users in their teams
+    # Rule 3: CavadaLabs product scope can look up users in the same Company/Project.
+    target_user = await _get_user_info_v2_cavadalabs_scoped_user(
+        prisma_client=prisma_client,
+        user_api_key_dict=user_api_key_dict,
+        target_user_id=target_user_id,
+    )
+    if target_user is not None:
+        return target_user
+
+    # Rule 4: Team admins can look up users in their teams
     if user_api_key_dict.user_id is not None:
         # Get caller's teams
         caller_user = await prisma_client.db.litellm_usertable.find_unique(
@@ -1135,6 +1217,98 @@ async def _check_user_info_v2_access(
                         return target_user
 
     return None
+
+
+def _cavadalabs_membership_row_value(row: Any, field_name: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(field_name)
+    return getattr(row, field_name, None)
+
+
+async def _get_user_info_v2_cavadalabs_scoped_user(
+    *,
+    prisma_client: Any,
+    user_api_key_dict: UserAPIKeyAuth,
+    target_user_id: str,
+) -> Optional["LiteLLM_UserTable"]:
+    if user_api_key_dict.user_id is None:
+        return None
+
+    try:
+        visible_company_ids = await visible_company_wide_ids_for_user(
+            prisma_client.db, user_api_key_dict
+        )
+        visible_project_ids = await visible_project_ids_for_user(
+            prisma_client.db, user_api_key_dict
+        )
+    except HTTPException as exc:
+        if _is_cavadalabs_missing_schema_exception(exc):
+            return None
+        raise
+
+    company_ids = sorted(visible_company_ids or [])
+    project_ids = sorted(visible_project_ids or [])
+    if not company_ids and not project_ids:
+        return None
+
+    organization_ids, team_ids = await resolve_cavadalabs_user_list_filters(
+        prisma_client.db,
+        user_api_key_dict=user_api_key_dict,
+        cavadalabs_company_ids=",".join(company_ids) if company_ids else None,
+        cavadalabs_project_ids=",".join(project_ids) if project_ids else None,
+    )
+    scope_filter = _build_user_list_cavadalabs_scope_filter(
+        cavadalabs_company_ids=company_ids,
+        organization_ids=organization_ids,
+        cavadalabs_project_ids=project_ids,
+        team_ids=team_ids,
+    )
+    if scope_filter is None:
+        return None
+
+    return await prisma_client.db.litellm_usertable.find_first(
+        where={
+            "user_id": target_user_id,
+            "AND": [scope_filter],
+        }
+    )
+
+
+async def _get_user_info_v2_cavadalabs_memberships(
+    db: Any,
+    *,
+    user_id: str,
+) -> Tuple[
+    List[CavadaLabsCompanyMembershipRequest],
+    List[CavadaLabsProjectMembershipRequest],
+]:
+    try:
+        company_rows = await db.cavadalabs_companymembertable.find_many(
+            where={"user_id": user_id}
+        )
+    except (AttributeError, TypeError):
+        company_rows = []
+
+    try:
+        project_rows = await db.cavadalabs_projectmembertable.find_many(
+            where={"user_id": user_id}
+        )
+    except (AttributeError, TypeError):
+        project_rows = []
+
+    company_memberships = [
+        CavadaLabsCompanyMembershipRequest(company_id=company_id, role=role)
+        for row in company_rows
+        if (company_id := _cavadalabs_membership_row_value(row, "company_id"))
+        and (role := _cavadalabs_membership_row_value(row, "role"))
+    ]
+    project_memberships = [
+        CavadaLabsProjectMembershipRequest(project_id=project_id, role=role)
+        for row in project_rows
+        if (project_id := _cavadalabs_membership_row_value(row, "project_id"))
+        and (role := _cavadalabs_membership_row_value(row, "role"))
+    ]
+    return company_memberships, project_memberships
 
 
 @router.get(
@@ -1207,6 +1381,13 @@ async def user_info_v2(
             )
 
         user_data = user_row.model_dump()
+        (
+            cavadalabs_company_memberships,
+            cavadalabs_project_memberships,
+        ) = await _get_user_info_v2_cavadalabs_memberships(
+            prisma_client.db,
+            user_id=user_data.get("user_id", user_id),
+        )
 
         return UserInfoV2Response(
             user_id=user_data.get("user_id", user_id),
@@ -1223,6 +1404,8 @@ async def user_info_v2(
             updated_at=user_data.get("updated_at"),
             sso_user_id=user_data.get("sso_user_id"),
             teams=user_data.get("teams") or [],
+            cavadalabs_company_memberships=cavadalabs_company_memberships,
+            cavadalabs_project_memberships=cavadalabs_project_memberships,
         )
     except Exception as e:
         verbose_proxy_logger.exception(
@@ -1570,6 +1753,12 @@ async def _update_single_user_helper(
         user_api_key_dict=user_api_key_dict,
         has_cavadalabs_membership_update=has_cavadalabs_membership_update,
         has_user_table_update=has_user_table_update,
+    )
+    await _authorize_cavadalabs_user_membership_updates(
+        cavadalabs_company_memberships=cavadalabs_company_memberships,
+        cavadalabs_project_memberships=cavadalabs_project_memberships,
+        prisma_client=prisma_client,
+        user_api_key_dict=user_api_key_dict,
     )
 
     existing_metadata = (

@@ -5,6 +5,7 @@ import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import useTeams from "@/app/(dashboard)/hooks/useTeams";
 import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
 import { useCavadaLabsKeyContextOptions } from "@/components/cavadalabs/keyContext";
+import { resolveCavadaLabsProductContext } from "@/components/cavadalabs/productContext";
 import { isProxyAdminRole } from "@/utils/roles";
 import { useState, useMemo } from "react";
 import { Organization } from "@/components/networking";
@@ -15,8 +16,9 @@ const UsersPage = () => {
 
   const { teams } = useTeams();
   const { data: organizations, isLoading: isOrgsLoading } = useOrganizations();
-  const { companies: cavadalabsCompanies, projects: cavadalabsProjects } = useCavadaLabsKeyContextOptions(accessToken);
-  const hasCavadaLabsProductContext = cavadalabsCompanies.length > 0 || cavadalabsProjects.length > 0;
+  const cavadalabsContext = useCavadaLabsKeyContextOptions(accessToken);
+  const cavadalabsProductContext = resolveCavadaLabsProductContext(cavadalabsContext);
+  const { contextKnown: isCavadaLabsContextKnown, isCavadaLabsProductContext } = cavadalabsProductContext;
 
   // Three states:
   // - undefined: org data still loading (non-proxy-admin) — query should wait
@@ -31,7 +33,8 @@ const UsersPage = () => {
     if (isProxyAdminRole(userRole)) return null;
     // CavadaLabs users are scoped by Company/Project in /user/list. Do not
     // derive product visibility from legacy LiteLLM Organization membership.
-    if (hasCavadaLabsProductContext) return null;
+    if (!isCavadaLabsContextKnown) return undefined;
+    if (isCavadaLabsProductContext) return null;
 
     // Still loading org data — signal "not ready yet"
     if (isOrgsLoading || !organizations) return undefined;
@@ -46,7 +49,7 @@ const UsersPage = () => {
       }));
 
     return adminOrgs.length > 0 ? adminOrgs : null;
-  }, [userId, organizations, userRole, isOrgsLoading, hasCavadaLabsProductContext]);
+  }, [userId, organizations, userRole, isOrgsLoading, isCavadaLabsContextKnown, isCavadaLabsProductContext]);
 
   return (
     <ViewUserDashboard
@@ -58,6 +61,7 @@ const UsersPage = () => {
       teams={teams as any}
       setKeys={setKeys}
       orgAdminOrgIds={orgAdminOrgIds}
+      userListScopeReady={orgAdminOrgIds !== undefined}
     />
   );
 };

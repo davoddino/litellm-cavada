@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.cavadalabs.chatbot_references import (
@@ -22,7 +23,9 @@ from litellm.proxy.cavadalabs.dispatcher_shared import CavadaLabsRuntimeContext
 from litellm.proxy.cavadalabs.model_policy_proxy import (
     apply_cavadalabs_project_model_fallback,
 )
+from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
+    CavadaLabsChatCompletionRequest,
     CavadaLabsChatbotResponse,
     CavadaLabsCompanyResponse,
     CavadaLabsProjectModelPolicyResponse,
@@ -527,3 +530,66 @@ async def test_should_build_lab_key_context_for_company_project_fallback():
 
     assert resolved_model == "model-b"
     assert data["model"] == "model-b"
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"spend_logs_metadata": {"cavadalabs_company_id": "company-spoofed"}},
+        {"cavadalabs": {"company_id": "company-spoofed"}},
+        {"cavadalabs_node_id": "node-spoofed"},
+    ],
+)
+def test_should_reject_browser_chatbot_reserved_runtime_metadata(metadata):
+    with pytest.raises(ValidationError):
+        CavadaLabsChatCompletionRequest(
+            session_id="session-1",
+            messages=[{"role": "user", "content": "ciao"}],
+            metadata=metadata,
+        )
+
+
+def test_should_apply_authenticated_chatbot_context_to_spend_metadata():
+    context = CavadaLabsRuntimeContext(
+        company=CavadaLabsCompanyResponse.model_validate(_company_row().__dict__),
+        project=CavadaLabsProjectResponse.model_validate(_project_row().__dict__),
+        chatbot=CavadaLabsChatbotResponse.model_validate(_chatbot_row().__dict__),
+        web_token=CavadaLabsWebTokenResponse.model_validate(_web_token_row().__dict__),
+        primary_policy=CavadaLabsProjectModelPolicyResponse.model_validate(
+            _policy_row(policy_id="policy-1", model_alias="model-a").__dict__
+        ),
+        fallback_policies=[],
+    )
+    user_api_key_dict = build_chatbot_runtime_user_api_key(
+        context=context,
+        token="clwt-token",
+        payload={"model": "model-a"},
+    )
+    data = {
+        "metadata": {
+            "cavadalabs_company_id": "company-spoofed",
+            "spend_logs_metadata": {
+                "cavadalabs_company_id": "company-spoofed",
+                "custom_dimension": "keep-me",
+            },
+        }
+    }
+
+    LiteLLMProxyRequestSetup.add_user_api_key_auth_to_request_metadata(
+        data=data,
+        user_api_key_dict=user_api_key_dict,
+        _metadata_variable_name="metadata",
+    )
+
+    metadata = data["metadata"]
+    assert metadata["cavadalabs_company_id"] == "company-1"
+    assert metadata["cavadalabs_project_id"] == "project-1"
+    assert metadata["cavadalabs_chatbot_id"] == "chatbot-1"
+    assert metadata["cavadalabs_web_token_id"] == "web-token-1"
+    assert metadata["cavadalabs_metadata_authenticated"] is True
+    assert metadata["cavadalabs_metadata_source"] == "key_metadata"
+    assert metadata["spend_logs_metadata"]["cavadalabs_company_id"] == "company-1"
+    assert metadata["spend_logs_metadata"]["cavadalabs_project_id"] == "project-1"
+    assert metadata["spend_logs_metadata"]["cavadalabs_chatbot_id"] == "chatbot-1"
+    assert metadata["spend_logs_metadata"]["cavadalabs_web_token_id"] == "web-token-1"
+    assert metadata["spend_logs_metadata"]["custom_dimension"] == "keep-me"

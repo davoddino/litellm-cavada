@@ -69,14 +69,26 @@ def _extract_cavadalabs_key_context(
     company_id = _optional_str(metadata.get(CAVADALABS_COMPANY_METADATA_KEY))
     project_id = _optional_str(metadata.get(CAVADALABS_PROJECT_METADATA_KEY))
     if isinstance(cavadalabs_metadata, dict):
-        company_id = company_id or _optional_str(cavadalabs_metadata.get("company_id"))
-        project_id = project_id or _optional_str(cavadalabs_metadata.get("project_id"))
-    if isinstance(spend_logs_metadata, dict):
-        company_id = company_id or _optional_str(
-            spend_logs_metadata.get(CAVADALABS_COMPANY_METADATA_KEY)
+        company_id = (
+            company_id
+            or _optional_str(cavadalabs_metadata.get(CAVADALABS_COMPANY_METADATA_KEY))
+            or _optional_str(cavadalabs_metadata.get("company_id"))
         )
-        project_id = project_id or _optional_str(
-            spend_logs_metadata.get(CAVADALABS_PROJECT_METADATA_KEY)
+        project_id = (
+            project_id
+            or _optional_str(cavadalabs_metadata.get(CAVADALABS_PROJECT_METADATA_KEY))
+            or _optional_str(cavadalabs_metadata.get("project_id"))
+        )
+    if isinstance(spend_logs_metadata, dict):
+        company_id = (
+            company_id
+            or _optional_str(spend_logs_metadata.get(CAVADALABS_COMPANY_METADATA_KEY))
+            or _optional_str(spend_logs_metadata.get("company_id"))
+        )
+        project_id = (
+            project_id
+            or _optional_str(spend_logs_metadata.get(CAVADALABS_PROJECT_METADATA_KEY))
+            or _optional_str(spend_logs_metadata.get("project_id"))
         )
     return company_id, project_id
 

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.cavadalabs.access_control import (
-    require_company_access,
+    require_company_wide_access,
     resolve_cavadalabs_company_usage_scope,
 )
 from litellm.proxy.cavadalabs.billing import CavadaLabsBillingService
@@ -48,7 +48,7 @@ async def generate_billing_report(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> CavadaLabsBillingReportResponse:
     prisma_client = _prisma_client()
-    await require_company_access(
+    await require_company_wide_access(
         prisma_client.db,
         company_id=data.company_id,
         user_api_key_dict=user_api_key_dict,
@@ -77,7 +77,7 @@ async def list_billing_reports(
     prisma_client = _prisma_client()
     company_ids = None
     if company_id is not None:
-        await require_company_access(
+        await require_company_wide_access(
             prisma_client.db,
             company_id=company_id,
             user_api_key_dict=user_api_key_dict,
@@ -111,7 +111,7 @@ async def get_billing_report(
 ) -> CavadaLabsBillingReportResponse:
     prisma_client = _prisma_client()
     report = await CavadaLabsBillingService(prisma_client).get_billing_report(report_id)
-    await require_company_access(
+    await require_company_wide_access(
         prisma_client.db,
         company_id=report.company_id,
         user_api_key_dict=user_api_key_dict,

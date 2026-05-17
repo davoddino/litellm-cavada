@@ -16,6 +16,7 @@ def _usage_diagnostics_status(
     unmapped_spend_logs: int,
     filters_exclude_usage: bool,
     date_range_excludes_usage: bool,
+    legacy_key_spend_logs: int = 0,
 ) -> CavadaLabsUsageDiagnosticsStatus:
     if attributable_spend_logs > 0:
         if ledger_rows > 0 and ledger_rows >= attributable_spend_logs:
@@ -25,7 +26,7 @@ def _usage_diagnostics_status(
         return CavadaLabsUsageDiagnosticsStatus.VISIBLE
     if filters_exclude_usage or date_range_excludes_usage:
         return CavadaLabsUsageDiagnosticsStatus.FILTERS_EXCLUDE_USAGE
-    if missing_mappings or unmapped_spend_logs > 0:
+    if missing_mappings or unmapped_spend_logs > 0 or legacy_key_spend_logs > 0:
         return CavadaLabsUsageDiagnosticsStatus.MISSING_COMPATIBILITY_MAPPING
     return CavadaLabsUsageDiagnosticsStatus.NO_ATTRIBUTABLE_SPEND
 
@@ -48,6 +49,7 @@ def _usage_diagnostics_message(
     status: CavadaLabsUsageDiagnosticsStatus,
     missing_mappings: List[str],
     unmapped_spend_logs: int = 0,
+    legacy_key_spend_logs: int = 0,
     filters_exclude_usage: bool = False,
     date_range_excludes_usage: bool = False,
 ) -> str:
@@ -90,7 +92,7 @@ def _usage_diagnostics_message(
                 "selected date range, but the model/provider/API key filters "
                 "exclude it. Relax the filters before running a scoped repair."
             )
-    if unmapped_spend_logs > 0:
+    if unmapped_spend_logs > 0 or legacy_key_spend_logs > 0:
         return (
             f"{label} SpendLogs were found for the internal compatibility scope, "
             "but some rows are missing enough Company/Project key or project "

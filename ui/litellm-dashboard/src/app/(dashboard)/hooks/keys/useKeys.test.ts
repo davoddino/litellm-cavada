@@ -69,6 +69,7 @@ const mockKeys: KeyResponse[] = [
     organization_id: null,
     created_at: "2024-01-01T00:00:00Z",
     updated_at: "2024-01-01T00:00:00Z",
+    last_active: null,
     team_spend: 0,
     team_alias: "",
     team_tpm_limit: 0,
@@ -125,6 +126,7 @@ const mockKeys: KeyResponse[] = [
     organization_id: null,
     created_at: "2024-01-01T00:00:00Z",
     updated_at: "2024-01-01T00:00:00Z",
+    last_active: null,
     team_spend: 0,
     team_alias: "test-team",
     team_tpm_limit: 1000,
@@ -224,6 +226,14 @@ describe("useKeys", () => {
         },
       },
     );
+  });
+
+  it("should not fetch keys when explicitly disabled", () => {
+    const { result } = renderHook(() => useKeys(1, 10, { enabled: false }), { wrapper });
+
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it("should handle error when keyListCall fails", async () => {

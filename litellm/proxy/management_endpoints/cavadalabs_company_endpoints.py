@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
@@ -123,10 +123,10 @@ async def get_company_daily_activity(
     end_date: Optional[str] = Query(default=None),
     model: Optional[str] = Query(default=None),
     provider: Optional[str] = Query(default=None),
-    status_filter: Optional[str] = Query(default=None, alias="status"),
+    status_filter: Annotated[Optional[str], Query(alias="status")] = None,
     api_key: Optional[str] = Query(default=None),
-    min_spend: Optional[float] = Query(default=None, ge=0),
-    max_spend: Optional[float] = Query(default=None, ge=0),
+    min_spend: Annotated[Optional[float], Query(ge=0)] = None,
+    max_spend: Annotated[Optional[float], Query(ge=0)] = None,
     company_ids: Optional[str] = Query(default=None),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=1000),
@@ -176,7 +176,10 @@ async def get_company_usage_diagnostics(
     company_ids: Optional[str] = Query(default=None),
     model: Optional[str] = Query(default=None),
     provider: Optional[str] = Query(default=None),
+    status_filter: Annotated[Optional[str], Query(alias="status")] = None,
     api_key: Optional[str] = Query(default=None),
+    min_spend: Annotated[Optional[float], Query(ge=0)] = None,
+    max_spend: Annotated[Optional[float], Query(ge=0)] = None,
     timezone: Optional[int] = Query(default=None),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> CavadaLabsUsageDiagnosticsResponse:
@@ -207,6 +210,9 @@ async def get_company_usage_diagnostics(
         model=model,
         provider=provider,
         api_key=api_key,
+        status_filter=status_filter,
+        min_spend=min_spend,
+        max_spend=max_spend,
     )
 
 
@@ -260,6 +266,9 @@ async def repair_company_usage(
         model=data.model,
         provider=data.provider,
         api_key=data.api_key,
+        status_filter=data.status,
+        min_spend=data.min_spend,
+        max_spend=data.max_spend,
         dry_run=data.dry_run,
         batch_limit=data.batch_limit,
     )

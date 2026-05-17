@@ -22,6 +22,8 @@ _CAVADALABS_REQUEST_METADATA_ALIASES: Mapping[str, tuple[str, ...]] = {
     "cavadalabs_provider": ("cavadalabs_provider", "provider"),
     "cavadalabs_model_alias": ("cavadalabs_model_alias", "model_alias"),
 }
+_AUTHENTICATED_METADATA_MARKER = "cavadalabs_metadata_authenticated"
+_AUTHENTICATED_METADATA_SOURCE = "cavadalabs_metadata_source"
 
 
 def merge_cavadalabs_key_metadata_into_request_metadata(
@@ -33,16 +35,37 @@ def merge_cavadalabs_key_metadata_into_request_metadata(
 
     The LiteLLM spend payload only sees request metadata. CavadaLabs web-token
     and chatbot identifiers live on the authenticated key metadata, so they
-    must be mirrored here before logging. User/request-supplied metadata never
-    overrides authenticated values already present on the request metadata.
+    must be mirrored here before logging. Authenticated key metadata is
+    authoritative for CavadaLabs fields; client-supplied metadata must not be
+    able to move usage to another Company/Project.
     """
 
+    applied_context = False
     for canonical_key, aliases in _CAVADALABS_REQUEST_METADATA_ALIASES.items():
-        if _non_empty_str(request_metadata.get(canonical_key)) is not None:
-            continue
         value = _first_metadata_value(key_metadata, aliases)
         if value is not None:
+            applied_context = True
             request_metadata[canonical_key] = value
+            _merge_authenticated_spend_logs_metadata(
+                request_metadata=request_metadata,
+                canonical_key=canonical_key,
+                value=value,
+            )
+    if applied_context:
+        request_metadata[_AUTHENTICATED_METADATA_MARKER] = True
+        request_metadata[_AUTHENTICATED_METADATA_SOURCE] = "key_metadata"
+
+
+def _merge_authenticated_spend_logs_metadata(
+    *,
+    request_metadata: Dict[str, Any],
+    canonical_key: str,
+    value: str,
+) -> None:
+    existing_spend_metadata = request_metadata.get("spend_logs_metadata")
+    spend_logs_metadata = _metadata_dict(existing_spend_metadata)
+    spend_logs_metadata[canonical_key] = value
+    request_metadata["spend_logs_metadata"] = spend_logs_metadata
 
 
 def _first_metadata_value(metadata: Any, aliases: Iterable[str]) -> Optional[str]:
