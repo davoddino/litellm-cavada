@@ -45,6 +45,10 @@ interface TeamDisplayInfo {
   team_alias: string | null;
 }
 
+const getTenantLabels = (names?: string[], ids?: string[]) => {
+  return names && names.length > 0 ? names : ids || [];
+};
+
 export default function UserInfoView({
   userId,
   onClose,
@@ -345,8 +349,12 @@ export default function UserInfoView({
       max_budget: userData.max_budget,
       budget_duration: userData.budget_duration,
       metadata: userData.metadata,
+      company_ids: userData.company_ids,
+      project_ids: userData.project_ids,
     },
   };
+  const companyLabels = getTenantLabels(userData.company_names, userData.company_ids);
+  const projectLabels = getTenantLabels(userData.project_names, userData.project_ids);
 
   return (
     <div className="p-4">
@@ -519,6 +527,28 @@ export default function UserInfoView({
                   )}
                 </div>
               </Card>
+
+              <Card>
+                <Text>Companies</Text>
+                <div className="mt-2">
+                  {companyLabels.length ? (
+                    companyLabels.map((company) => <Text key={company}>{company}</Text>)
+                  ) : (
+                    <Text>No companies</Text>
+                  )}
+                </div>
+              </Card>
+
+              <Card>
+                <Text>Projects</Text>
+                <div className="mt-2">
+                  {projectLabels.length ? (
+                    projectLabels.map((project) => <Text key={project}>{project}</Text>)
+                  ) : (
+                    <Text>No projects</Text>
+                  )}
+                </div>
+              </Card>
             </Grid>
           </TabPanel>
 
@@ -577,6 +607,16 @@ export default function UserInfoView({
                   <div>
                     <Text className="font-medium">Global Proxy Role</Text>
                     <Text>{userData.user_role || "Not Set"}</Text>
+                  </div>
+
+                  <div>
+                    <Text className="font-medium">Companies</Text>
+                    <Text>{companyLabels.join(", ") || "Not Set"}</Text>
+                  </div>
+
+                  <div>
+                    <Text className="font-medium">Projects</Text>
+                    <Text>{projectLabels.join(", ") || "Not Set"}</Text>
                   </div>
 
                   <div>

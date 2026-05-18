@@ -107,6 +107,32 @@ const VectorStoreTable: React.FC<VectorStoreTableProps> = ({ data, onView, onEdi
       },
     },
     {
+      header: "Company",
+      accessorKey: "company_name",
+      cell: ({ row }) => {
+        const vectorStore = row.original;
+        const displayValue = vectorStore.company_name || vectorStore.company_id || "-";
+        return (
+          <Tooltip title={displayValue}>
+            <span className="text-xs">{displayValue}</span>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      header: "Project",
+      accessorKey: "project_name",
+      cell: ({ row }) => {
+        const vectorStore = row.original;
+        const displayValue = vectorStore.project_name || vectorStore.project_id || "-";
+        return (
+          <Tooltip title={displayValue}>
+            <span className="text-xs">{displayValue}</span>
+          </Tooltip>
+        );
+      },
+    },
+    {
       header: "Created At",
       accessorKey: "created_at",
       sortingFn: "datetime",

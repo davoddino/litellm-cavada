@@ -211,7 +211,7 @@ const PolicyTemplates: React.FC<PolicyTemplatesProps> = ({ onUseTemplate, onOpen
           </h2>
           <p className="text-sm text-gray-500 mt-1">
             Start with a pre-configured policy template to quickly set up
-            guardrails for your organization.
+            guardrails for Companies and Projects.
           </p>
         </div>
         <Button

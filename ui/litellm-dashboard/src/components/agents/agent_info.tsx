@@ -10,6 +10,10 @@ import DynamicAgentFormFields, { buildDynamicAgentData } from "./dynamic_agent_f
 import { buildAgentDataFromForm, parseAgentForForm } from "./agent_config";
 import AgentCostView from "./agent_cost_view";
 import { detectAgentType, parseDynamicAgentForForm } from "./agent_type_utils";
+import OrganizationDropdown from "../common_components/OrganizationDropdown";
+import ProjectDropdown from "../common_components/ProjectDropdown";
+import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
+import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
 
 interface AgentInfoViewProps {
   agentId: string;
@@ -29,6 +33,9 @@ const AgentInfoView: React.FC<AgentInfoViewProps> = ({
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [form] = Form.useForm();
+  const selectedCompanyId = Form.useWatch("company_id", form);
+  const { data: companies = [], isLoading: isCompaniesLoading } = useOrganizations();
+  const { data: projects = [], isLoading: isProjectsLoading } = useProjects({ includeNonAdmin: true });
   const [agentTypeMetadata, setAgentTypeMetadata] = useState<AgentCreateInfo[]>([]);
   const [detectedAgentType, setDetectedAgentType] = useState<string>("a2a");
 
@@ -110,6 +117,8 @@ const AgentInfoView: React.FC<AgentInfoViewProps> = ({
       } else {
         updateData = buildAgentDataFromForm(values, agent);
       }
+      updateData.company_id = values.company_id ?? null;
+      updateData.project_id = values.project_id ?? null;
       
       await patchAgentCall(accessToken, agentId, updateData);
       MessageManager.success("Agent updated successfully");
@@ -173,6 +182,8 @@ const AgentInfoView: React.FC<AgentInfoViewProps> = ({
             <Descriptions bordered column={1}>
               <Descriptions.Item label="Agent ID">{agent.agent_id}</Descriptions.Item>
               <Descriptions.Item label="Agent Name">{agent.agent_name}</Descriptions.Item>
+              <Descriptions.Item label="Company">{agent.company_name || agent.company_id || "-"}</Descriptions.Item>
+              <Descriptions.Item label="Project">{agent.project_name || agent.project_id || "-"}</Descriptions.Item>
               <Descriptions.Item label="Display Name">{agent.agent_card_params?.name || "-"}</Descriptions.Item>
               <Descriptions.Item label="Description">{agent.agent_card_params?.description || "-"}</Descriptions.Item>
               <Descriptions.Item label="URL">{agent.agent_card_params?.url || "-"}</Descriptions.Item>
@@ -292,6 +303,22 @@ const AgentInfoView: React.FC<AgentInfoViewProps> = ({
                       <Input value={agent.agent_id} disabled />
                     </Form.Item>
 
+                    <Form.Item label="Company" name="company_id">
+                      <OrganizationDropdown
+                        organizations={companies}
+                        loading={isCompaniesLoading}
+                        onChange={() => form.setFieldValue("project_id", undefined)}
+                      />
+                    </Form.Item>
+
+                    <Form.Item label="Project" name="project_id">
+                      <ProjectDropdown
+                        projects={projects}
+                        companyId={selectedCompanyId}
+                        loading={isProjectsLoading}
+                      />
+                    </Form.Item>
+
                     {detectedAgentType === "a2a" ? (
                       <AgentFormFields showAgentName={true} />
                     ) : selectedAgentTypeInfo ? (
@@ -344,4 +371,3 @@ const AgentInfoView: React.FC<AgentInfoViewProps> = ({
 };
 
 export default AgentInfoView;
-

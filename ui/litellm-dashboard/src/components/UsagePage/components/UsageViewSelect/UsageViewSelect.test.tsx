@@ -75,6 +75,7 @@ vi.mock("@ant-design/icons", async () => {
   return {
     GlobalOutlined: Icon,
     BankOutlined: Icon,
+    ProjectOutlined: Icon,
     TeamOutlined: Icon,
     ShoppingCartOutlined: Icon,
     TagsOutlined: Icon,
@@ -121,5 +122,13 @@ describe("UsageViewSelect", () => {
     render(<UsageViewSelect value="global" onChange={mockOnChange} isAdmin={false} />);
 
     expect(screen.queryByRole("option", { name: "Tag Usage" })).not.toBeInTheDocument();
+  });
+
+  it("should show Company and Project Usage without showing Organization Usage", () => {
+    render(<UsageViewSelect value="global" onChange={mockOnChange} isAdmin={true} />);
+
+    expect(screen.getByRole("option", { name: "Company Usage" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Project Usage" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Organization Usage" })).not.toBeInTheDocument();
   });
 });

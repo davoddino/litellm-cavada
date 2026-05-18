@@ -11,6 +11,8 @@ import CreateVectorStore from "./CreateVectorStore";
 import TestVectorStoreTab from "./TestVectorStoreTab";
 import { isAdminRole } from "@/utils/roles";
 import NotificationsManager from "../molecules/notifications_manager";
+import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
+import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
 
 interface VectorStoreProps {
   accessToken: string | null;
@@ -28,6 +30,8 @@ const VectorStoreManagement: React.FC<VectorStoreProps> = ({ accessToken, userID
   const [selectedVectorStoreId, setSelectedVectorStoreId] = useState<string | null>(null);
   const [editVectorStore, setEditVectorStore] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const { data: companies = [], isLoading: isCompaniesLoading } = useOrganizations();
+  const { data: projects = [], isLoading: isProjectsLoading } = useProjects({ includeNonAdmin: true });
 
   const fetchVectorStores = async () => {
     if (!accessToken) return;
@@ -122,6 +126,9 @@ const VectorStoreManagement: React.FC<VectorStoreProps> = ({ accessToken, userID
         accessToken={accessToken}
         is_admin={isAdminRole(userRole || "")}
         editVectorStore={editVectorStore}
+        organizations={companies}
+        projects={projects}
+        projectsLoading={isProjectsLoading}
       />
     </div>
   ) : (
@@ -155,7 +162,14 @@ const VectorStoreManagement: React.FC<VectorStoreProps> = ({ accessToken, userID
           <TabPanels>
             {/* Tab 1: Create Vector Store */}
             <TabPanel>
-              <CreateVectorStore accessToken={accessToken} onSuccess={handleVectorStoreCreated} />
+              <CreateVectorStore
+                accessToken={accessToken}
+                onSuccess={handleVectorStoreCreated}
+                organizations={companies}
+                organizationsLoading={isCompaniesLoading}
+                projects={projects}
+                projectsLoading={isProjectsLoading}
+              />
             </TabPanel>
 
             {/* Tab 2: Manage Vector Stores */}
@@ -190,6 +204,10 @@ const VectorStoreManagement: React.FC<VectorStoreProps> = ({ accessToken, userID
           onSuccess={handleCreateSuccess}
           accessToken={accessToken}
           credentials={credentials}
+          organizations={companies}
+          organizationsLoading={isCompaniesLoading}
+          projects={projects}
+          projectsLoading={isProjectsLoading}
         />
 
         {/* Delete Confirmation Modal */}

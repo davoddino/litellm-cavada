@@ -69,6 +69,8 @@ model LiteLLM_AgentsTable {
   agent_access_groups String[]       @default([])
   object_permission_id String?
   object_permission LiteLLM_ObjectPermissionTable? @relation(fields: [object_permission_id], references: [object_permission_id])
+  company_id String?
+  project_id String?
   spend      Float    @default(0.0)
   tpm_limit  Int?
   rpm_limit  Int?
@@ -78,6 +80,9 @@ model LiteLLM_AgentsTable {
   created_by String
   updated_at    DateTime               @default(now()) @updatedAt @map("updated_at")
   updated_by String
+
+  @@index([company_id])
+  @@index([project_id])
 }
 
 model LiteLLM_OrganizationTable {
@@ -418,6 +423,8 @@ model LiteLLM_VerificationToken {
 
     // SELECT ... FROM "public"."LiteLLM_VerificationToken" WHERE "public"."LiteLLM_VerificationToken"."team_id" = $1 OFFSET $2
     @@index([team_id])
+    @@index([organization_id])
+    @@index([project_id])
 
     // SELECT ... FROM "public"."LiteLLM_VerificationToken" WHERE (("public"."LiteLLM_VerificationToken"."expires" IS NULL OR "public"."LiteLLM_VerificationToken"."expires" > $1) AND "public"."LiteLLM_VerificationToken"."budget_reset_at" < $2) OFFSET $3
     @@index([budget_reset_at, expires])
@@ -511,6 +518,7 @@ model LiteLLM_DeletedVerificationToken {
     @@index([user_id])
     @@index([team_id])
     @@index([organization_id])
+    @@index([project_id])
     @@index([key_alias])
     @@index([created_at])
 }
@@ -567,12 +575,13 @@ model LiteLLM_SpendLogs {
   custom_llm_provider String?   @default("") // litellm used custom_llm_provider
   api_base            String?   @default("")
   user                String?   @default("")
-  metadata            Json?     @default("{}") // project_id stored here
+  metadata            Json?     @default("{}") // legacy project_id metadata may be stored here
   cache_hit           String?   @default("")
   cache_key           String?   @default("")
   request_tags        Json?     @default("[]")
   team_id             String? 
   organization_id     String?
+  project_id          String?
   end_user            String?
   requester_ip_address String?
   messages            Json?     @default("{}")
@@ -584,6 +593,9 @@ model LiteLLM_SpendLogs {
   proxy_server_request Json?     @default("{}")
   @@index([startTime])
   @@index([startTime, request_id])
+  @@index([api_key, startTime])
+  @@index([project_id, startTime])
+  @@index([organization_id, startTime])
   @@index([end_user])
   @@index([session_id])
 }
@@ -731,6 +743,37 @@ model LiteLLM_DailyOrganizationSpend {
   @@unique([organization_id, date, api_key, model, custom_llm_provider, mcp_namespaced_tool_name, endpoint])
   @@index([date])
   @@index([organization_id, date])
+  @@index([api_key])
+  @@index([model])
+  @@index([mcp_namespaced_tool_name])
+  @@index([endpoint])
+}
+
+// Track daily project spend metrics per model and key
+model LiteLLM_DailyProjectSpend {
+  id                  String   @id @default(uuid())
+  project_id          String
+  date                String
+  api_key             String
+  model               String?
+  model_group         String?
+  custom_llm_provider String?
+  mcp_namespaced_tool_name String?
+  endpoint               String?
+  prompt_tokens       BigInt      @default(0)
+  completion_tokens   BigInt      @default(0)
+  cache_read_input_tokens     BigInt      @default(0)
+  cache_creation_input_tokens BigInt      @default(0)
+  spend               Float    @default(0.0)
+  api_requests        BigInt      @default(0)
+  successful_requests BigInt      @default(0)
+  failed_requests     BigInt      @default(0)
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+
+  @@unique([project_id, date, api_key, model, custom_llm_provider, mcp_namespaced_tool_name, endpoint])
+  @@index([date])
+  @@index([project_id, date])
   @@index([api_key])
   @@index([model])
   @@index([mcp_namespaced_tool_name])
@@ -923,11 +966,13 @@ model LiteLLM_ManagedVectorStoreTable {
   created_at DateTime @default(now())
   created_by String?
   team_id String?
+  project_id String?
   updated_at DateTime @updatedAt
   updated_by String?
 
   @@index([unified_resource_id])
   @@index([team_id, created_at(sort: Desc)])
+  @@index([project_id, created_at(sort: Desc)])
 }
 
 model LiteLLM_ManagedVectorStoresTable {
@@ -941,9 +986,11 @@ model LiteLLM_ManagedVectorStoresTable {
   litellm_credential_name String?
   litellm_params Json?
   team_id String?
+  project_id String?
   user_id String?
   
   @@index([team_id])
+  @@index([project_id])
   @@index([user_id])
 }
 
@@ -954,6 +1001,7 @@ model LiteLLM_GuardrailsTable {
   litellm_params Json
   guardrail_info Json?
   team_id String?
+  project_id String?
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
   // Submission lifecycle. Possible values: pending_review (team-registered, awaiting approval), active (approved), rejected
@@ -963,6 +1011,7 @@ model LiteLLM_GuardrailsTable {
   // submitted_by_user_id and submitted_by_email live in guardrail_info JSON
 
   @@index([status])
+  @@index([project_id])
 }
 
 // Daily guardrail metrics for usage dashboard (one row per guardrail per day)

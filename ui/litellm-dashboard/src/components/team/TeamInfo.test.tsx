@@ -115,6 +115,7 @@ vi.mock("../key_team_helpers/filter_helpers", () => ({
   fetchTeamFilterOptions: vi.fn().mockResolvedValue({
     keyAliases: [],
     organizationIds: [],
+    projectOptions: [],
     userIds: [],
   }),
   fetchAllKeyAliases: vi.fn().mockResolvedValue([]),
@@ -340,6 +341,36 @@ describe("TeamInfoView", () => {
       await waitFor(() => {
         expect(screen.getByRole("tab", { name: "Virtual Keys" })).toBeInTheDocument();
       });
+    });
+
+    it("should display company and projects in team settings", async () => {
+      const user = userEvent.setup({ delay: null });
+      vi.mocked(networking.teamInfoCall).mockResolvedValue(
+        createMockTeamData({
+          organization_id: "company-1",
+          company_id: "company-1",
+          company_name: "Acme Company",
+          project_ids: ["project-1"],
+          project_names: ["Project One"],
+        })
+      );
+
+      renderWithProviders(<TeamInfoView {...defaultProps} />);
+
+      await waitFor(() => {
+        const teamNameElements = screen.queryAllByText("Test Team");
+        expect(teamNameElements.length).toBeGreaterThan(0);
+      });
+
+      await user.click(screen.getByRole("tab", { name: "Settings" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("Company")).toBeInTheDocument();
+      });
+      expect(screen.getByText("Acme Company")).toBeInTheDocument();
+      expect(screen.getByText("Projects")).toBeInTheDocument();
+      expect(screen.getByText("Project One")).toBeInTheDocument();
+      expect(screen.queryByText("Organization")).not.toBeInTheDocument();
     });
 
     it("should display object permissions when present", async () => {

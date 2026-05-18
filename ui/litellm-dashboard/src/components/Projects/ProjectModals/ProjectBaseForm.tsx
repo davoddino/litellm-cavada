@@ -18,14 +18,17 @@ import {
 import type { FormInstance } from "antd";
 import { PlusOutlined, MinusCircleOutlined } from "@ant-design/icons";
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
+import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
 import { useTeams } from "@/app/(dashboard)/hooks/teams/useTeams";
 import { Team } from "../../key_team_helpers/key_list";
 import { fetchTeamModels } from "../../organisms/create_key_button";
 import { getModelDisplayName } from "../../key_team_helpers/fetch_available_models_team_key";
 import { getGuardrailsList } from "@/components/networking";
+import OrganizationDropdown from "../../common_components/OrganizationDropdown";
 
 export interface ProjectFormValues {
   project_alias: string;
+  company_id?: string;
   team_id: string;
   description?: string;
   models: string[];
@@ -40,11 +43,16 @@ interface ProjectBaseFormProps {
   form: FormInstance<ProjectFormValues>;
 }
 
+const getTeamCompanyId = (team: Team): string | undefined => {
+  return team.company_id || team.organization_id || undefined;
+};
+
 export function ProjectBaseForm({
   form,
 }: ProjectBaseFormProps) {
   const { accessToken, userId, userRole } = useAuthorized();
   const { data: teams } = useTeams();
+  const { data: companies, isLoading: isCompaniesLoading } = useOrganizations();
 
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
   const [modelsToPick, setModelsToPick] = useState<string[]>([]);
@@ -68,14 +76,25 @@ export function ProjectBaseForm({
 
   // Sync selectedTeam from form value (needed for edit mode pre-fill)
   const teamIdValue = Form.useWatch("team_id", form);
+  const companyIdValue = Form.useWatch("company_id", form);
+  const filteredTeams = (teams ?? []).filter((team) => {
+    if (!companyIdValue) {
+      return true;
+    }
+    return getTeamCompanyId(team) === companyIdValue;
+  });
+
   useEffect(() => {
     if (teamIdValue && teams) {
       const team = teams.find((t) => t.team_id === teamIdValue) ?? null;
       if (team && team.team_id !== selectedTeam?.team_id) {
         setSelectedTeam(team);
       }
+      if (team && !companyIdValue) {
+        form.setFieldValue("company_id", getTeamCompanyId(team));
+      }
     }
-  }, [teamIdValue, teams, selectedTeam?.team_id]);
+  }, [teamIdValue, teams, selectedTeam?.team_id, companyIdValue, form]);
 
   // Fetch team-scoped models when team selection changes
   useEffect(() => {
@@ -96,7 +115,26 @@ export function ProjectBaseForm({
   const handleTeamChange = (teamId: string) => {
     const team = teams?.find((t) => t.team_id === teamId) ?? null;
     setSelectedTeam(team);
+    const teamCompanyId = team ? getTeamCompanyId(team) : undefined;
+    if (teamCompanyId && teamCompanyId !== form.getFieldValue("company_id")) {
+      form.setFieldValue("company_id", teamCompanyId);
+    }
     form.setFieldValue("models", []);
+  };
+
+  const handleCompanyChange = (companyId?: string) => {
+    form.setFieldValue("company_id", companyId);
+    const selectedTeamId = form.getFieldValue("team_id");
+    const teamStillMatches = teams?.some(
+      (team) =>
+        team.team_id === selectedTeamId &&
+        (!companyId || getTeamCompanyId(team) === companyId),
+    );
+    if (selectedTeamId && !teamStillMatches) {
+      form.setFieldValue("team_id", undefined);
+      form.setFieldValue("models", []);
+      setSelectedTeam(null);
+    }
   };
 
   return (
@@ -135,18 +173,36 @@ export function ProjectBaseForm({
         </Col>
         <Col span={12}>
           <Form.Item
+            name="company_id"
+            label="Company"
+            rules={[{ required: true, message: "Please select a company" }]}
+          >
+            <OrganizationDropdown
+              organizations={companies}
+              loading={isCompaniesLoading}
+              onChange={handleCompanyChange}
+              style={{ width: "100%" }}
+            />
+          </Form.Item>
+        </Col>
+      </Row>
+
+      <Row gutter={24}>
+        <Col span={12}>
+          <Form.Item
             name="team_id"
             label="Team"
             rules={[{ required: true, message: "Please select a team" }]}
           >
             <Select
               showSearch
-              placeholder="Search or select a team"
+              placeholder={companyIdValue ? "Search or select a team" : "Select a company first"}
               onChange={handleTeamChange}
               allowClear
+              disabled={!companyIdValue}
               optionLabelProp="label"
               filterOption={(input, option) => {
-                const team = teams?.find((t) => t.team_id === option?.value);
+                const team = filteredTeams.find((t) => t.team_id === option?.value);
                 if (!team) return false;
                 const search = input.toLowerCase().trim();
                 return (
@@ -155,7 +211,7 @@ export function ProjectBaseForm({
                 );
               }}
             >
-              {teams?.map((team) => (
+              {filteredTeams.map((team) => (
                 <Select.Option
                   key={team.team_id}
                   value={team.team_id}

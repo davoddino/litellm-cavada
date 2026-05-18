@@ -1085,6 +1085,196 @@ class LiteLLMKeyType(str, enum.Enum):
     DEFAULT = "default"  # Uses default allowed routes
 
 
+def _sync_company_id_with_organization_id(data: Any) -> Any:
+    company_id = getattr(data, "company_id", None)
+    organization_id = getattr(data, "organization_id", None)
+
+    if (
+        company_id is not None
+        and organization_id is not None
+        and company_id != organization_id
+    ):
+        raise ValueError(
+            "company_id and organization_id refer to the same tenant and must match when both are provided."
+        )
+
+    if company_id is not None:
+        setattr(data, "organization_id", company_id)
+    elif organization_id is not None:
+        setattr(data, "company_id", organization_id)
+
+    return data
+
+
+def _sync_company_id_dict(values: Dict[str, Any]) -> Dict[str, Any]:
+    company_id = values.get("company_id")
+    organization_id = values.get("organization_id")
+
+    if (
+        company_id is not None
+        and organization_id is not None
+        and company_id != organization_id
+    ):
+        raise ValueError(
+            "company_id and organization_id refer to the same tenant and must match when both are provided."
+        )
+
+    if company_id is None and organization_id is not None:
+        values["company_id"] = organization_id
+    elif company_id is not None and organization_id is None:
+        values["organization_id"] = company_id
+
+    return values
+
+
+def _sync_company_name_dict(values: Dict[str, Any]) -> Dict[str, Any]:
+    company_name = values.get("company_name")
+    organization_alias = values.get("organization_alias")
+
+    if (
+        company_name is not None
+        and organization_alias is not None
+        and company_name != organization_alias
+    ):
+        raise ValueError(
+            "company_name and organization_alias refer to the same tenant name and must match when both are provided."
+        )
+
+    if company_name is None and organization_alias is not None:
+        values["company_name"] = organization_alias
+    elif company_name is not None and organization_alias is None:
+        values["organization_alias"] = company_name
+
+    return values
+
+
+def _optional_id_list(value: Any) -> Optional[List[str]]:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [value]
+    return [str(item) for item in list(value)]
+
+
+def _validate_matching_tenant_lists(
+    left_name: str,
+    left_value: Optional[List[str]],
+    right_name: str,
+    right_value: Optional[List[str]],
+) -> None:
+    if left_value is not None and right_value is not None and left_value != right_value:
+        raise ValueError(
+            f"{left_name} and {right_name} refer to the same tenant list and must match when both are provided."
+        )
+
+
+def _sync_company_ids_with_organizations(values: Dict[str, Any]) -> Dict[str, Any]:
+    company_id = _optional_id_list(values.get("company_id"))
+    company_ids = _optional_id_list(values.get("company_ids"))
+    companies = _optional_id_list(values.get("companies"))
+    organization_id = _optional_id_list(values.get("organization_id"))
+    organization_ids = _optional_id_list(values.get("organization_ids"))
+    organizations = _optional_id_list(values.get("organizations"))
+
+    tenant_sources = [
+        ("company_id", company_id),
+        ("company_ids", company_ids),
+        ("companies", companies),
+        ("organization_id", organization_id),
+        ("organization_ids", organization_ids),
+        ("organizations", organizations),
+    ]
+    for index, (left_name, left_value) in enumerate(tenant_sources):
+        for right_name, right_value in tenant_sources[index + 1 :]:
+            _validate_matching_tenant_lists(
+                left_name=left_name,
+                left_value=left_value,
+                right_name=right_name,
+                right_value=right_value,
+            )
+
+    resolved_company_ids = next(
+        (tenant_ids for _, tenant_ids in tenant_sources if tenant_ids is not None),
+        None,
+    )
+    if resolved_company_ids is None:
+        return values
+
+    values["company_ids"] = resolved_company_ids
+    values["companies"] = resolved_company_ids
+    values["organizations"] = resolved_company_ids
+    values["organization_ids"] = resolved_company_ids
+    if len(resolved_company_ids) == 1:
+        values["company_id"] = resolved_company_ids[0]
+        values["organization_id"] = resolved_company_ids[0]
+
+    return values
+
+
+def _sync_project_ids(values: Dict[str, Any]) -> Dict[str, Any]:
+    project_id = values.get("project_id")
+    project_ids = _optional_id_list(values.get("project_ids"))
+    if project_id is not None:
+        project_id_list = _optional_id_list(project_id)
+        _validate_matching_tenant_lists(
+            left_name="project_id",
+            left_value=project_id_list,
+            right_name="project_ids",
+            right_value=project_ids,
+        )
+        values["project_ids"] = project_id_list
+    elif project_ids is not None:
+        values["project_ids"] = project_ids
+        if len(project_ids) == 1:
+            values["project_id"] = project_ids[0]
+    return values
+
+
+def _internal_company_compat_field() -> Any:
+    return Field(
+        default=None,
+        description=(
+            "Internal/deprecated LiteLLM compatibility alias for company_id. "
+            "Product clients should use company_id."
+        ),
+        json_schema_extra={
+            "deprecated": True,
+            "x-internal": True,
+            "x-compat-alias-for": "company_id",
+        },
+    )
+
+
+def _internal_company_list_compat_field() -> Any:
+    return Field(
+        default=None,
+        description=(
+            "Internal/deprecated LiteLLM compatibility alias for company_ids. "
+            "Product clients should use company_ids."
+        ),
+        json_schema_extra={
+            "deprecated": True,
+            "x-internal": True,
+            "x-compat-alias-for": "company_ids",
+        },
+    )
+
+
+def _internal_company_response_compat_field(alias_for: str) -> Any:
+    return Field(
+        default=None,
+        description=(
+            f"Internal/deprecated LiteLLM compatibility alias for {alias_for}. "
+            f"Product clients should use {alias_for}."
+        ),
+        json_schema_extra={
+            "deprecated": True,
+            "x-internal": True,
+            "x-compat-alias-for": alias_for,
+        },
+    )
+
+
 class GenerateKeyRequest(KeyRequestBase):
     soft_budget: Optional[float] = None
     send_invite_email: Optional[bool] = None
@@ -1099,8 +1289,13 @@ class GenerateKeyRequest(KeyRequestBase):
         default=None,
         description="How often to rotate this key (e.g., '30d', '90d'). Required if auto_rotate=True",
     )
-    organization_id: Optional[str] = None
+    organization_id: Optional[str] = _internal_company_compat_field()
+    company_id: Optional[str] = None
     project_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def normalize_company_id(self) -> "GenerateKeyRequest":
+        return _sync_company_id_with_organization_id(self)
 
 
 class GenerateKeyResponse(KeyRequestBase):
@@ -1109,8 +1304,11 @@ class GenerateKeyResponse(KeyRequestBase):
     expires: Optional[datetime] = None
     user_id: Optional[str] = None
     token_id: Optional[str] = None
-    organization_id: Optional[str] = None
+    organization_id: Optional[str] = _internal_company_compat_field()
+    company_id: Optional[str] = None
+    company_name: Optional[str] = None
     project_id: Optional[str] = None
+    project_name: Optional[str] = None
     litellm_budget_table: Optional[Any] = None
     token: Optional[str] = None
     created_by: Optional[str] = None
@@ -1123,6 +1321,22 @@ class GenerateKeyResponse(KeyRequestBase):
     def set_model_info(cls, values):
         if values.get("token") is not None:
             values.update({"key": values.get("token")})
+
+        company_id = values.get("company_id")
+        organization_id = values.get("organization_id") or values.get("org_id")
+        if (
+            company_id is not None
+            and organization_id is not None
+            and company_id != organization_id
+        ):
+            raise ValueError(
+                "company_id and organization_id refer to the same tenant and must match when both are provided."
+            )
+        if company_id is None and organization_id is not None:
+            values["company_id"] = organization_id
+        elif company_id is not None and values.get("organization_id") is None:
+            values["organization_id"] = company_id
+
         dict_fields = [
             "metadata",
             "aliases",
@@ -1154,7 +1368,13 @@ class UpdateKeyRequest(KeyRequestBase):
     temp_budget_expiry: Optional[datetime] = None
     auto_rotate: Optional[bool] = None
     rotation_interval: Optional[str] = None
-    organization_id: Optional[str] = None
+    organization_id: Optional[str] = _internal_company_compat_field()
+    company_id: Optional[str] = None
+    project_id: Optional[str] = None
+
+    @model_validator(mode="after")
+    def normalize_company_id(self) -> "UpdateKeyRequest":
+        return _sync_company_id_with_organization_id(self)
 
     @model_validator(mode="after")
     def validate_temp_budget(self) -> "UpdateKeyRequest":
@@ -1581,7 +1801,21 @@ class NewUserRequest(GenerateRequestBase):
     )
     send_invite_email: Optional[bool] = None
     sso_user_id: Optional[str] = None
-    organizations: Optional[List[str]] = None
+    organization_id: Optional[str] = _internal_company_compat_field()
+    organization_ids: Optional[List[str]] = _internal_company_list_compat_field()
+    organizations: Optional[List[str]] = _internal_company_list_compat_field()
+    company_id: Optional[str] = None
+    company_ids: Optional[List[str]] = None
+    companies: Optional[List[str]] = None
+    project_id: Optional[str] = None
+    project_ids: Optional[List[str]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_company_ids(cls, values):
+        if not isinstance(values, dict):
+            return values
+        return _sync_project_ids(_sync_company_ids_with_organizations(values))
 
 
 class NewUserResponse(GenerateKeyResponse):
@@ -1600,6 +1834,10 @@ class NewUserResponse(GenerateKeyResponse):
     model_max_budget: Optional[dict] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    company_ids: Optional[List[str]] = None
+    company_names: Optional[List[str]] = None
+    project_ids: Optional[List[str]] = None
+    project_names: Optional[List[str]] = None
 
 
 class UpdateUserRequestNoUserIDorEmail(
@@ -1618,6 +1856,21 @@ class UpdateUserRequestNoUserIDorEmail(
         ]
     ] = None
     max_budget: Optional[float] = None
+    organization_id: Optional[str] = _internal_company_compat_field()
+    organization_ids: Optional[List[str]] = _internal_company_list_compat_field()
+    organizations: Optional[List[str]] = _internal_company_list_compat_field()
+    company_id: Optional[str] = None
+    company_ids: Optional[List[str]] = None
+    companies: Optional[List[str]] = None
+    project_id: Optional[str] = None
+    project_ids: Optional[List[str]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_company_ids(cls, values):
+        if not isinstance(values, dict):
+            return values
+        return _sync_project_ids(_sync_company_ids_with_organizations(values))
 
 
 class UpdateUserRequest(UpdateUserRequestNoUserIDorEmail):
@@ -1788,7 +2041,8 @@ class OrgMember(MemberBase):
 class TeamBase(LiteLLMPydanticObjectBase):
     team_alias: Optional[str] = None
     team_id: Optional[str] = None
-    organization_id: Optional[str] = None
+    organization_id: Optional[str] = _internal_company_compat_field()
+    company_id: Optional[str] = None
     admins: list = []
     members: list = []
     members_with_roles: List[Member] = []
@@ -1812,6 +2066,13 @@ class TeamBase(LiteLLMPydanticObjectBase):
     default_team_member_models: Optional[List[str]] = (
         None  # default allowed_models seeded onto new team members
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_company_id(cls, values):
+        if not isinstance(values, dict):
+            return values
+        return _sync_company_id_dict(values)
 
 
 class NewTeamRequest(TeamBase):
@@ -1862,7 +2123,8 @@ class UpdateTeamRequest(LiteLLMPydanticObjectBase):
 
     team_id: str
     team_alias: Optional[str] = None
-    organization_id: Optional[str] = None
+    company_id: Optional[str] = None
+    organization_id: Optional[str] - internal/deprecated compatibility alias for company_id
     metadata: Optional[dict] = None
     tpm_limit: Optional[int] = None
     rpm_limit: Optional[int] = None
@@ -1876,7 +2138,8 @@ class UpdateTeamRequest(LiteLLMPydanticObjectBase):
 
     team_id: str  # required
     team_alias: Optional[str] = None
-    organization_id: Optional[str] = None
+    organization_id: Optional[str] = _internal_company_compat_field()
+    company_id: Optional[str] = None
     metadata: Optional[dict] = None
     tpm_limit: Optional[int] = None
     rpm_limit: Optional[int] = None
@@ -1911,6 +2174,13 @@ class UpdateTeamRequest(LiteLLMPydanticObjectBase):
     default_team_member_models: Optional[List[str]] = (
         None  # default allowed_models seeded onto new team members
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_company_id(cls, values):
+        if not isinstance(values, dict):
+            return values
+        return _sync_company_id_dict(values)
 
 
 class ResetTeamBudgetRequest(LiteLLMPydanticObjectBase):
@@ -2031,6 +2301,9 @@ class LiteLLM_ObjectPermissionTable(LiteLLMPydanticObjectBase):
 
 class LiteLLM_TeamTable(TeamBase):
     team_id: str  # type: ignore
+    company_name: Optional[str] = None
+    project_ids: Optional[List[str]] = None
+    project_names: Optional[List[str]] = None
     spend: Optional[float] = None
     max_parallel_requests: Optional[int] = None
     budget_duration: Optional[str] = None
@@ -2149,8 +2422,10 @@ class LiteLLM_TeamMemberTable(LiteLLM_BudgetTable):
 
 
 class NewOrganizationRequest(LiteLLM_BudgetTable):
+    company_id: Optional[str] = None
+    company_name: Optional[str] = None
     organization_id: Optional[str] = None
-    organization_alias: str
+    organization_alias: Optional[str] = None
     models: List = []
     budget_id: Optional[str] = None
     metadata: Optional[dict] = None
@@ -2162,6 +2437,21 @@ class NewOrganizationRequest(LiteLLM_BudgetTable):
     #########################################################
     object_permission: Optional[LiteLLM_ObjectPermissionBase] = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_company_fields(cls, values):
+        if not isinstance(values, dict):
+            return values
+        values = _sync_company_id_dict(values)
+        values = _sync_company_name_dict(values)
+        return values
+
+    @model_validator(mode="after")
+    def require_company_name(self) -> "NewOrganizationRequest":
+        if self.organization_alias is None:
+            raise ValueError("company_name is required")
+        return self
+
 
 class OrganizationRequest(LiteLLMPydanticObjectBase):
     organizations: List[str]
@@ -2169,6 +2459,26 @@ class OrganizationRequest(LiteLLMPydanticObjectBase):
 
 class DeleteOrganizationRequest(LiteLLMPydanticObjectBase):
     organization_ids: List[str]  # required
+    company_ids: Optional[List[str]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_company_ids(cls, values):
+        if not isinstance(values, dict):
+            return values
+
+        company_ids = values.get("company_ids")
+        organization_ids = values.get("organization_ids")
+        if company_ids is not None and organization_ids is not None:
+            if list(company_ids) != list(organization_ids):
+                raise ValueError(
+                    "company_ids and organization_ids refer to the same tenant list and must match when both are provided."
+                )
+        elif company_ids is not None:
+            values["organization_ids"] = company_ids
+        elif organization_ids is not None:
+            values["company_ids"] = organization_ids
+        return values
 
 
 class TeamDefaultSettings(LiteLLMPydanticObjectBase):
@@ -2525,6 +2835,7 @@ class LiteLLM_VerificationToken(LiteLLMPydanticObjectBase):
     team_id: Optional[str] = None
     agent_id: Optional[str] = None
     project_id: Optional[str] = None
+    company_id: Optional[str] = None
     max_parallel_requests: Optional[int] = None
     metadata: Dict = {}
     tpm_limit: Optional[int] = None
@@ -2539,7 +2850,7 @@ class LiteLLM_VerificationToken(LiteLLMPydanticObjectBase):
     soft_budget_cooldown: bool = False
     blocked: Optional[bool] = None
     litellm_budget_table: Optional[dict] = None
-    org_id: Optional[str] = None  # org id for a given key
+    org_id: Optional[str] = _internal_company_compat_field()
     created_at: Optional[datetime] = None
     created_by: Optional[str] = None
     updated_at: Optional[datetime] = None
@@ -2604,15 +2915,28 @@ class LiteLLM_VerificationTokenView(LiteLLM_VerificationToken):
     end_user_max_budget: Optional[float] = None
     end_user_model_max_budget: Optional[dict] = None
 
-    # Organization Params
-    organization_alias: Optional[str] = None
-    organization_max_budget: Optional[float] = None
-    organization_tpm_limit: Optional[int] = None
-    organization_rpm_limit: Optional[int] = None
+    # Company compatibility params
+    organization_alias: Optional[str] = _internal_company_response_compat_field(
+        "company_name"
+    )
+    company_name: Optional[str] = None
+    organization_max_budget: Optional[float] = _internal_company_response_compat_field(
+        "company_max_budget"
+    )
+    company_max_budget: Optional[float] = None
+    organization_tpm_limit: Optional[int] = _internal_company_response_compat_field(
+        "company_tpm_limit"
+    )
+    company_tpm_limit: Optional[int] = None
+    organization_rpm_limit: Optional[int] = _internal_company_response_compat_field(
+        "company_rpm_limit"
+    )
+    company_rpm_limit: Optional[int] = None
     organization_metadata: Optional[dict] = None
 
     # Project Params
     project_alias: Optional[str] = None
+    project_name: Optional[str] = None
     project_metadata: Optional[dict] = None
 
     # Time stamps
@@ -2639,7 +2963,32 @@ class LiteLLM_VerificationTokenView(LiteLLM_VerificationToken):
             if key == "end_user_id" and value is not None and isinstance(value, int):
                 kwargs[key] = str(value)
 
-        if kwargs.get("organization_id") is not None:
+        organization_id = kwargs.get("organization_id")
+        org_id = kwargs.get("org_id")
+        company_id = kwargs.get("company_id")
+        for tenant_id in (organization_id, org_id):
+            if (
+                company_id is not None
+                and tenant_id is not None
+                and company_id != tenant_id
+            ):
+                raise ValueError(
+                    "company_id and organization_id refer to the same tenant and must match when both are provided."
+                )
+        resolved_company_id = company_id or organization_id or org_id
+        if resolved_company_id is not None:
+            kwargs["company_id"] = resolved_company_id
+        for legacy_field, company_field in (
+            ("organization_alias", "company_name"),
+            ("organization_max_budget", "company_max_budget"),
+            ("organization_tpm_limit", "company_tpm_limit"),
+            ("organization_rpm_limit", "company_rpm_limit"),
+        ):
+            if kwargs.get(company_field) is None and kwargs.get(legacy_field) is not None:
+                kwargs[company_field] = kwargs[legacy_field]
+        if org_id is None and resolved_company_id is not None:
+            kwargs["org_id"] = resolved_company_id
+        if organization_id is not None:
             kwargs["org_id"] = kwargs.pop("organization_id")
         # Initialize the superclass
         super().__init__(**kwargs)
@@ -2804,6 +3153,10 @@ class UserInfoV2Response(LiteLLMPydanticObjectBase):
     updated_at: Optional[datetime] = None
     sso_user_id: Optional[str] = None
     teams: List[str] = []  # Just team IDs, not full team objects
+    company_ids: List[str] = []
+    company_names: List[str] = []
+    project_ids: List[str] = []
+    project_names: List[str] = []
 
 
 class LiteLLM_Config(LiteLLMPydanticObjectBase):
@@ -2844,6 +3197,8 @@ class LiteLLM_OrganizationMembershipTable(LiteLLMPydanticObjectBase):
 class LiteLLM_OrganizationTableUpdate(LiteLLM_BudgetTable):
     """Represents user-controllable params for a LiteLLM_OrganizationTable record"""
 
+    company_id: Optional[str] = None
+    company_name: Optional[str] = None
     organization_id: Optional[str] = None
     organization_alias: Optional[str] = None
     budget_id: Optional[str] = None
@@ -2858,6 +3213,10 @@ class LiteLLM_OrganizationTableUpdate(LiteLLM_BudgetTable):
     @model_validator(mode="before")
     @classmethod
     def set_model_info(cls, values):
+        if not isinstance(values, dict):
+            return values
+        values = _sync_company_id_dict(values)
+        values = _sync_company_name_dict(values)
         for field in LiteLLM_ManagementEndpoint_MetadataFields:
             if values.get(field) is not None:
                 # add to metadata
@@ -2907,6 +3266,8 @@ class LiteLLM_UserTable(LiteLLMPydanticObjectBase):
 class LiteLLM_OrganizationTable(LiteLLMPydanticObjectBase):
     """Represents user-controllable params for a LiteLLM_OrganizationTable record"""
 
+    company_id: Optional[str] = None
+    company_name: Optional[str] = None
     organization_id: Optional[str] = None
     organization_alias: Optional[str] = None
     budget_id: str
@@ -2923,6 +3284,15 @@ class LiteLLM_OrganizationTable(LiteLLMPydanticObjectBase):
     #########################################################
     object_permission: Optional[LiteLLM_ObjectPermissionTable] = None
     object_permission_id: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_company_fields(cls, values):
+        if not isinstance(values, dict):
+            return values
+        values = _sync_company_id_dict(values)
+        values = _sync_company_name_dict(values)
+        return values
 
 
 class LiteLLM_OrganizationTableWithMembers(LiteLLM_OrganizationTable):
@@ -2959,6 +3329,7 @@ class NewProjectRequest(LiteLLM_BudgetTable):
     """Request model for POST /project/new"""
 
     project_id: Optional[str] = None
+    company_id: Optional[str] = None
     project_alias: Optional[str] = None
     description: Optional[str] = None
     team_id: str
@@ -2994,6 +3365,7 @@ class UpdateProjectRequest(LiteLLM_BudgetTable):
     """Request model for POST /project/update"""
 
     project_id: str
+    company_id: Optional[str] = None
     project_alias: Optional[str] = None
     description: Optional[str] = None
     team_id: Optional[str] = None
@@ -3035,6 +3407,7 @@ class LiteLLM_ProjectTable(LiteLLMPydanticObjectBase):
     """Database model representation for project"""
 
     project_id: str
+    company_id: Optional[str] = None
     project_alias: Optional[str] = None
     description: Optional[str] = None
     team_id: Optional[str] = None
@@ -3076,6 +3449,10 @@ class LiteLLM_UserTableFiltered(BaseModel):  # done to avoid exposing sensitive 
 
 class LiteLLM_UserTableWithKeyCount(LiteLLM_UserTable):
     key_count: int = 0
+    company_ids: List[str] = []
+    company_names: List[str] = []
+    project_ids: List[str] = []
+    project_names: List[str] = []
 
 
 class LiteLLM_EndUserTable(LiteLLMPydanticObjectBase):
@@ -3155,6 +3532,10 @@ class LiteLLM_SpendLogs(LiteLLMPydanticObjectBase):
     cache_hit: Optional[str] = "False"
     cache_key: Optional[str] = None
     request_tags: Optional[Json] = None
+    team_id: Optional[str] = None
+    company_id: Optional[str] = None
+    organization_id: Optional[str] = None
+    project_id: Optional[str] = None
     requester_ip_address: Optional[str] = None
     messages: Optional[Union[str, list, dict]]
     response: Optional[Union[str, list, dict]]
@@ -3519,6 +3900,7 @@ class SpendLogsPayload(TypedDict):
     request_tags: str  # json str
     team_id: Optional[str]
     organization_id: Optional[str]
+    project_id: Optional[str]
     end_user: Optional[str]
     requester_ip_address: Optional[str]
     custom_llm_provider: Optional[str]
@@ -3917,8 +4299,16 @@ class TeamAddMemberResponse(LiteLLM_TeamTable):
 
 class OrganizationAddMemberResponse(LiteLLMPydanticObjectBase):
     organization_id: str
+    company_id: Optional[str] = None
     updated_users: List[LiteLLM_UserTable]
     updated_organization_memberships: List[LiteLLM_OrganizationMembershipTable]
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_company_id(cls, values):
+        if not isinstance(values, dict):
+            return values
+        return _sync_company_id_dict(values)
 
 
 class MemberDeleteRequest(LiteLLMPydanticObjectBase):
@@ -4010,14 +4400,30 @@ class TeamModelDeleteRequest(BaseModel):
 
 # Organization Member Requests
 class OrganizationMemberAddRequest(OrgMemberAddRequest):
+    company_id: Optional[str] = None
     organization_id: str
     max_budget_in_organization: Optional[float] = (
         None  # Users max budget within the organization
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_company_id(cls, values):
+        if not isinstance(values, dict):
+            return values
+        return _sync_company_id_dict(values)
+
 
 class OrganizationMemberDeleteRequest(MemberDeleteRequest):
+    company_id: Optional[str] = None
     organization_id: str
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_company_id(cls, values):
+        if not isinstance(values, dict):
+            return values
+        return _sync_company_id_dict(values)
 
 
 ROLES_WITHIN_ORG = [
@@ -4608,6 +5014,10 @@ class DailyOrganizationSpendTransaction(BaseDailySpendTransaction):
     organization_id: str
 
 
+class DailyProjectSpendTransaction(BaseDailySpendTransaction):
+    project_id: str
+
+
 class DailyUserSpendTransaction(BaseDailySpendTransaction):
     user_id: str
 
@@ -4636,6 +5046,7 @@ class DBSpendUpdateTransactions(TypedDict):
     team_list_transactions: Optional[Dict[str, float]]
     team_member_list_transactions: Optional[Dict[str, float]]
     org_list_transactions: Optional[Dict[str, float]]
+    project_list_transactions: Optional[Dict[str, float]]
     tag_list_transactions: Optional[Dict[str, float]]
     agent_list_transactions: Optional[Dict[str, float]]
 
@@ -4710,7 +5121,11 @@ class LiteLLM_ManagedVectorStoresTable(LiteLLMPydanticObjectBase):
     litellm_credential_name: Optional[str]
     litellm_params: Optional[Dict[str, Any]]
     team_id: Optional[str]
+    project_id: Optional[str] = None
     user_id: Optional[str]
+    company_id: Optional[str] = None
+    company_name: Optional[str] = None
+    project_name: Optional[str] = None
 
 
 class ResponseLiteLLM_ManagedVectorStore(TypedDict, total=False):

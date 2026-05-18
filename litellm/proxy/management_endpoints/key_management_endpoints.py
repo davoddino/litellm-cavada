@@ -58,6 +58,7 @@ from litellm.proxy.management_endpoints.common_utils import (
     _is_user_team_admin,
     _set_object_metadata_field,
     _team_member_has_permission,
+    build_company_project_access_context,
 )
 from litellm.proxy.management_endpoints.model_management_endpoints import (
     _add_model_to_db,
@@ -662,6 +663,7 @@ async def _common_key_generation_helper(  # noqa: PLR0915
     user_api_key_dict: UserAPIKeyAuth,
     litellm_changed_by: Optional[str],
     team_table: Optional[LiteLLM_TeamTableCachedObj],
+    key_management_route: KeyManagementRoutes = KeyManagementRoutes.KEY_GENERATE,
 ) -> GenerateKeyResponse:
     from litellm.proxy.proxy_server import (
         litellm_proxy_admin_name,
@@ -764,6 +766,7 @@ async def _common_key_generation_helper(  # noqa: PLR0915
             delattr(data, field)
 
     data_json = data.model_dump(exclude_unset=True, exclude_none=True)  # type: ignore
+    data_json.pop("company_id", None)
 
     data_json = handle_key_type(data, data_json)
 
@@ -821,6 +824,13 @@ async def _common_key_generation_helper(  # noqa: PLR0915
         object_permission=data_json.get("object_permission"),
         team_obj=team_table,
     )
+    await _validate_key_vector_stores_against_tenant_context(
+        object_permission=data_json.get("object_permission"),
+        data=data,
+        existing_key_row=None,
+        team_obj=team_table,
+        prisma_client=prisma_client,
+    )
 
     data_json = await _set_object_permission(
         data_json=data_json,
@@ -856,9 +866,8 @@ async def _common_key_generation_helper(  # noqa: PLR0915
         from litellm.proxy.proxy_server import prisma_client, user_api_key_cache
 
         if prisma_client:
-            # Mirror the membership rule applied to /key/update: when the
-            # caller specifies an organization_id, require that they are a
-            # member of (or proxy admin over) the target organization.
+            # Company-only keys require company admin; project/team keys may
+            # use the existing team role checks for the backing team.
             _is_proxy_admin = (
                 user_api_key_dict.user_role is not None
                 and user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN.value
@@ -868,6 +877,8 @@ async def _common_key_generation_helper(  # noqa: PLR0915
                     user_api_key_dict=user_api_key_dict,
                     organization_id=data.organization_id,
                     prisma_client=prisma_client,
+                    team_obj=team_table,
+                    route=key_management_route,
                 )
 
             org_table = await get_org_object(
@@ -878,7 +889,7 @@ async def _common_key_generation_helper(  # noqa: PLR0915
             if org_table is None:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Organization not found for organization_id={data.organization_id}",
+                    detail=f"Company not found for company_id={data.organization_id}",
                 )
             await _check_org_key_limits(
                 org_table=org_table,
@@ -893,6 +904,10 @@ async def _common_key_generation_helper(  # noqa: PLR0915
     response["soft_budget"] = (
         data.soft_budget
     )  # include the user-input soft budget in the response
+    response = await _enrich_key_response_tenant_names(
+        _add_company_id_to_key_response_dict(response),
+        prisma_client=prisma_client,
+    )
 
     response = GenerateKeyResponse(**response)
 
@@ -1171,6 +1186,296 @@ async def _check_project_key_limits(
         )
 
 
+def _request_field_was_set(data: BaseModel, field_name: str) -> bool:
+    fields_set = (
+        getattr(data, "model_fields_set", None)
+        or getattr(data, "__fields_set__", None)
+        or set()
+    )
+    return field_name in fields_set
+
+
+async def _get_project_key_context(
+    project_id: str,
+    prisma_client: PrismaClient,
+    user_api_key_cache: UserApiKeyCache,
+) -> Tuple[
+    LiteLLM_ProjectTableCachedObj,
+    LiteLLM_TeamTableCachedObj,
+    str,
+]:
+    project_obj = await get_project_object(
+        project_id=project_id,
+        prisma_client=prisma_client,
+        user_api_key_cache=user_api_key_cache,
+    )
+    if project_obj is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": f"Project not found, project_id={project_id}"},
+        )
+
+    project_team_id = getattr(project_obj, "team_id", None)
+    if project_team_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"Project={project_id} is not assigned to a team and cannot be used for key management."
+            },
+        )
+
+    team_obj = await get_team_object(
+        team_id=project_team_id,
+        prisma_client=prisma_client,
+        user_api_key_cache=user_api_key_cache,
+        check_db_only=True,
+    )
+    if team_obj is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"Project={project_id} references missing team_id={project_team_id}."
+            },
+        )
+
+    company_id = getattr(team_obj, "organization_id", None)
+    if company_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"Project={project_id} belongs to team_id={project_team_id}, but that team is not assigned to a company."
+            },
+        )
+
+    return project_obj, team_obj, company_id
+
+
+async def _apply_project_context_to_key_request(
+    data: Union[GenerateKeyRequest, UpdateKeyRequest],
+    prisma_client: PrismaClient,
+    user_api_key_cache: UserApiKeyCache,
+    existing_key_row: Optional[Any] = None,
+) -> Optional[LiteLLM_TeamTableCachedObj]:
+    project_id_was_set = _request_field_was_set(data, "project_id")
+    incoming_project_id = getattr(data, "project_id", None)
+    if project_id_was_set and incoming_project_id is None:
+        return None
+
+    project_id = incoming_project_id or getattr(existing_key_row, "project_id", None)
+    if project_id is None:
+        return None
+
+    project_obj, team_obj, company_id = await _get_project_key_context(
+        project_id=project_id,
+        prisma_client=prisma_client,
+        user_api_key_cache=user_api_key_cache,
+    )
+    project_team_id = project_obj.team_id
+
+    requested_team_id = getattr(data, "team_id", None)
+    if requested_team_id is not None and requested_team_id != project_team_id:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"project_id={project_id} belongs to team_id={project_team_id}; received team_id={requested_team_id}."
+            },
+        )
+
+    requested_company_id = getattr(data, "company_id", None) or getattr(
+        data, "organization_id", None
+    )
+    if requested_company_id is not None and requested_company_id != company_id:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"project_id={project_id} belongs to company_id={company_id}; received company_id={requested_company_id}."
+            },
+        )
+
+    existing_team_id = getattr(existing_key_row, "team_id", None)
+    existing_company_id = getattr(existing_key_row, "organization_id", None) or getattr(
+        existing_key_row, "company_id", None
+    )
+    should_persist_context = (
+        existing_key_row is None
+        or project_id_was_set
+        or existing_team_id != project_team_id
+        or existing_company_id != company_id
+    )
+
+    if should_persist_context:
+        data.team_id = project_team_id
+        data.organization_id = company_id
+        data.company_id = company_id
+        if incoming_project_id is None:
+            data.project_id = project_id
+
+    return team_obj
+
+
+def _get_object_permission_vector_store_ids(object_permission: Any) -> List[str]:
+    if object_permission is None:
+        return []
+    if hasattr(object_permission, "model_dump"):
+        object_permission = object_permission.model_dump(exclude_none=True)
+    elif hasattr(object_permission, "dict"):
+        object_permission = object_permission.dict(exclude_none=True)
+    elif isinstance(object_permission, str):
+        try:
+            object_permission = json.loads(object_permission)
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(object_permission, dict):
+        return []
+    vector_stores = object_permission.get("vector_stores")
+    if not vector_stores:
+        return []
+    return [str(vector_store_id) for vector_store_id in vector_stores if vector_store_id]
+
+
+def _effective_request_project_id(
+    data: Union[GenerateKeyRequest, UpdateKeyRequest],
+    existing_key_row: Optional[Any],
+) -> Optional[str]:
+    if _request_field_was_set(data, "project_id"):
+        return getattr(data, "project_id", None)
+    return getattr(data, "project_id", None) or _field_from_obj(
+        existing_key_row, "project_id"
+    )
+
+
+def _effective_key_tenant_context(
+    data: Union[GenerateKeyRequest, UpdateKeyRequest],
+    existing_key_row: Optional[Any],
+    team_obj: Optional[LiteLLM_TeamTableCachedObj],
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    project_id = _effective_request_project_id(data, existing_key_row)
+    company_id = (
+        getattr(data, "company_id", None)
+        or getattr(data, "organization_id", None)
+        or _field_from_obj(existing_key_row, "organization_id")
+        or _field_from_obj(existing_key_row, "company_id")
+        or _field_from_obj(team_obj, "organization_id")
+        or _field_from_obj(team_obj, "company_id")
+    )
+    team_id = (
+        getattr(data, "team_id", None)
+        or _field_from_obj(existing_key_row, "team_id")
+        or _field_from_obj(team_obj, "team_id")
+    )
+    return company_id, project_id, team_id
+
+
+def _resolve_vector_store_company_id(
+    vector_store: Any,
+    projects_by_id: Dict[str, Any],
+    teams_by_id: Dict[str, Any],
+) -> Optional[str]:
+    vector_store_company_id = _field_from_obj(vector_store, "company_id")
+    vector_store_project_id = _field_from_obj(vector_store, "project_id")
+    if vector_store_project_id:
+        project = projects_by_id.get(vector_store_project_id)
+        project_team = _field_from_obj(project, "litellm_team_table")
+        vector_store_company_id = (
+            vector_store_company_id
+            or _field_from_obj(project, "company_id")
+            or _field_from_obj(project_team, "organization_id")
+        )
+
+    vector_store_team_id = _field_from_obj(vector_store, "team_id")
+    if vector_store_company_id is None and vector_store_team_id:
+        vector_store_company_id = _field_from_obj(
+            teams_by_id.get(vector_store_team_id), "organization_id"
+        )
+    return vector_store_company_id
+
+
+async def _validate_key_vector_stores_against_tenant_context(
+    *,
+    object_permission: Any,
+    data: Union[GenerateKeyRequest, UpdateKeyRequest],
+    existing_key_row: Optional[Any],
+    team_obj: Optional[LiteLLM_TeamTableCachedObj],
+    prisma_client: Optional[PrismaClient],
+) -> None:
+    vector_store_ids = _get_object_permission_vector_store_ids(object_permission)
+    if not vector_store_ids or prisma_client is None:
+        return
+
+    company_id, project_id, team_id = _effective_key_tenant_context(
+        data=data,
+        existing_key_row=existing_key_row,
+        team_obj=team_obj,
+    )
+    if company_id is None and project_id is None and team_id is None:
+        return
+
+    vector_stores = await prisma_client.db.litellm_managedvectorstorestable.find_many(
+        where={"vector_store_id": {"in": vector_store_ids}}
+    )
+    if not vector_stores:
+        return
+
+    project_ids = _non_empty_ids(
+        [_field_from_obj(vector_store, "project_id") for vector_store in vector_stores]
+    )
+    team_ids = _non_empty_ids(
+        [_field_from_obj(vector_store, "team_id") for vector_store in vector_stores]
+    )
+    projects = (
+        await prisma_client.db.litellm_projecttable.find_many(
+            where={"project_id": {"in": project_ids}},
+            include={"litellm_team_table": True},
+        )
+        if project_ids
+        else []
+    )
+    teams = (
+        await prisma_client.db.litellm_teamtable.find_many(
+            where={"team_id": {"in": team_ids}}
+        )
+        if team_ids
+        else []
+    )
+    projects_by_id = {
+        _field_from_obj(project, "project_id"): project for project in projects
+    }
+    teams_by_id = {_field_from_obj(team, "team_id"): team for team in teams}
+
+    for vector_store in vector_stores:
+        vector_store_id = _field_from_obj(vector_store, "vector_store_id")
+        vector_store_project_id = _field_from_obj(vector_store, "project_id")
+        vector_store_team_id = _field_from_obj(vector_store, "team_id")
+        vector_store_company_id = _resolve_vector_store_company_id(
+            vector_store=vector_store,
+            projects_by_id=projects_by_id,
+            teams_by_id=teams_by_id,
+        )
+
+        if project_id is not None and vector_store_project_id != project_id:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": f"vector_store_id={vector_store_id} does not belong to project_id={project_id}."
+                },
+            )
+        if company_id is not None and vector_store_company_id != company_id:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": f"vector_store_id={vector_store_id} does not belong to company_id={company_id}."
+                },
+            )
+        if project_id is None and company_id is None and team_id is not None:
+            if vector_store_team_id != team_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": f"vector_store_id={vector_store_id} does not belong to team_id={team_id}."
+                    },
+                )
+
+
 def check_org_key_model_specific_limits(
     keys: List[LiteLLM_VerificationToken],
     org_table: LiteLLM_OrganizationTable,
@@ -1233,18 +1538,32 @@ async def _validate_caller_can_assign_key_org(
     user_api_key_dict: UserAPIKeyAuth,
     organization_id: str,
     prisma_client: PrismaClient,
+    team_obj: Optional[LiteLLM_TeamTable] = None,
+    route: Optional[KeyManagementRoutes] = None,
 ) -> None:
     """Reject ``/key/update`` requests that point a key at an organization
-    the caller does not belong to.
+    the caller cannot manage.
 
-    Mirrors the org-membership rule already enforced on ``/key/list`` in
-    ``validate_key_list_check``. Proxy admins are checked at the call site.
+    Company-scoped keys require company admin. Project/team-scoped writes
+    require team admin or an explicit team_member_permissions grant for the
+    route being executed.
     """
     if user_api_key_dict.user_id is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot assign a key to an organization without a user_id on the caller's token",
+            detail="Cannot assign a key to a company without a user_id on the caller's token",
         )
+
+    if (
+        team_obj is not None
+        and team_obj.organization_id == organization_id
+        and _caller_has_team_write_permission(
+            user_api_key_dict=user_api_key_dict,
+            team_obj=team_obj,
+            route=route,
+        )
+    ):
+        return
 
     user_row = await prisma_client.db.litellm_usertable.find_unique(
         where={"user_id": user_api_key_dict.user_id},
@@ -1253,16 +1572,173 @@ async def _validate_caller_can_assign_key_org(
     memberships = (
         getattr(user_row, "organization_memberships", None) if user_row else None
     )
-    member_org_ids = {
+    admin_org_ids = {
         membership.organization_id
         for membership in (memberships or [])
         if membership.organization_id is not None
+        and membership.user_role == LitellmUserRoles.ORG_ADMIN.value
     }
-    if organization_id not in member_org_ids:
+    if organization_id not in admin_org_ids:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Caller is not a member of organization_id={organization_id}",
+            detail=f"Caller is not a company admin for company_id={organization_id}",
         )
+
+
+def _caller_is_team_member(
+    user_api_key_dict: UserAPIKeyAuth,
+    team_obj: LiteLLM_TeamTable,
+) -> bool:
+    if user_api_key_dict.user_id is None:
+        return False
+    return any(
+        member.user_id == user_api_key_dict.user_id
+        for member in (team_obj.members_with_roles or [])
+    )
+
+
+def _caller_has_team_write_permission(
+    user_api_key_dict: UserAPIKeyAuth,
+    team_obj: LiteLLM_TeamTable,
+    route: Optional[KeyManagementRoutes],
+) -> bool:
+    team_member_object = _get_user_in_team(
+        team_table=team_obj, user_id=user_api_key_dict.user_id
+    )
+    if team_member_object is None:
+        return False
+    if team_member_object.role == "admin":
+        return True
+    if route is None:
+        return False
+    try:
+        return bool(
+            TeamMemberPermissionChecks.does_team_member_have_permissions_for_endpoint(
+                team_member_object=team_member_object,
+                team_table=team_obj,
+                route=route,
+            )
+        )
+    except ProxyException:
+        return False
+
+
+async def _caller_is_company_admin_for_key_org(
+    user_api_key_dict: UserAPIKeyAuth,
+    organization_id: Optional[str],
+    prisma_client: Optional[PrismaClient],
+) -> bool:
+    if (
+        organization_id is None
+        or prisma_client is None
+        or user_api_key_dict.user_id is None
+    ):
+        return False
+    user_row = await prisma_client.db.litellm_usertable.find_unique(
+        where={"user_id": user_api_key_dict.user_id},
+        include={"organization_memberships": True},
+    )
+    memberships = (
+        getattr(user_row, "organization_memberships", None) if user_row else None
+    )
+    return any(
+        membership.organization_id == organization_id
+        and membership.user_role == LitellmUserRoles.ORG_ADMIN.value
+        for membership in (memberships or [])
+    )
+
+
+def _key_company_id(key_info: Any) -> Optional[str]:
+    return (
+        getattr(key_info, "organization_id", None)
+        or getattr(key_info, "company_id", None)
+        or getattr(key_info, "org_id", None)
+    )
+
+
+async def _get_key_scope_team(
+    key_info: Any,
+    prisma_client: Optional[PrismaClient],
+    user_api_key_cache: UserApiKeyCache,
+) -> Optional[LiteLLM_TeamTableCachedObj]:
+    team_id = getattr(key_info, "team_id", None)
+    if team_id is not None and prisma_client is not None:
+        return await get_team_object(
+            team_id=team_id,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+            check_db_only=True,
+        )
+    project_id = getattr(key_info, "project_id", None)
+    if project_id is not None and prisma_client is not None:
+        try:
+            _, team_obj, _ = await _get_project_key_context(
+                project_id=project_id,
+                prisma_client=prisma_client,
+                user_api_key_cache=user_api_key_cache,
+            )
+            return team_obj
+        except HTTPException:
+            return None
+    return None
+
+
+async def _caller_has_key_project_or_company_access(
+    *,
+    user_api_key_dict: UserAPIKeyAuth,
+    key_info: Any,
+    prisma_client: Optional[PrismaClient],
+    user_api_key_cache: UserApiKeyCache,
+    route: Optional[KeyManagementRoutes] = None,
+) -> bool:
+    """Authorize access to Company/Project-scoped keys via existing backing data."""
+
+    team_table = await _get_key_scope_team(
+        key_info=key_info,
+        prisma_client=prisma_client,
+        user_api_key_cache=user_api_key_cache,
+    )
+    company_id = _key_company_id(key_info) or getattr(
+        team_table, "organization_id", None
+    )
+
+    if await _caller_is_company_admin_for_key_org(
+        user_api_key_dict=user_api_key_dict,
+        organization_id=company_id,
+        prisma_client=prisma_client,
+    ):
+        return True
+
+    if team_table is None:
+        return False
+
+    if route is not None:
+        return _caller_has_team_write_permission(
+            user_api_key_dict=user_api_key_dict,
+            team_obj=team_table,
+            route=route,
+        )
+
+    return _caller_is_team_member(
+        user_api_key_dict=user_api_key_dict,
+        team_obj=team_table,
+    )
+
+
+def _company_admin_ids_from_user_info(
+    complete_user_info: Optional[LiteLLM_UserTable],
+) -> List[str]:
+    if (
+        complete_user_info is None
+        or complete_user_info.organization_memberships is None
+    ):
+        return []
+    return [
+        membership.organization_id
+        for membership in complete_user_info.organization_memberships
+        if membership.organization_id is not None
+        and membership.user_role == LitellmUserRoles.ORG_ADMIN.value
+    ]
 
 
 async def _check_org_key_limits(
@@ -1338,8 +1814,8 @@ async def generate_key_fn(
     - team_id: Optional[str] - The team id of the key
     - user_id: Optional[str] - The user id of the key
     - agent_id: Optional[str] - The agent id associated with the key.
-    - organization_id: Optional[str] - The organization id of the key. If not set, and team_id is set, the organization id will be the same as the team id. If conflict, an error will be raised.
-    - project_id: Optional[str] - The project id of the key. When set, models and max_budget are validated against the project's limits.
+    - company_id: Optional[str] - The company id of the key.
+    - project_id: Optional[str] - The project id of the key. When set, LiteLLM derives the backing team and company from the project context and validates key limits against the project.
     - budget_id: Optional[str] - The budget id associated with the key. Created by calling `/budget/new`.
     - models: Optional[list] - Model_name's a user is allowed to call. (if empty, key is allowed to call all models)
     - aliases: Optional[dict] - Any alias mappings, on top of anything in the config.yaml model list. - https://docs.litellm.ai/docs/proxy/virtual_keys#managing-auth---upgradedowngrade-models
@@ -1467,7 +1943,14 @@ async def generate_key_fn(
             )
 
         team_table: Optional[LiteLLM_TeamTableCachedObj] = None
-        if data.team_id is not None:
+        if data.project_id is not None:
+            team_table = await _apply_project_context_to_key_request(
+                data=data,
+                prisma_client=prisma_client,
+                user_api_key_cache=user_api_key_cache,
+            )
+
+        if data.team_id is not None and team_table is None:
             try:
                 team_table = await get_team_object(
                     team_id=data.team_id,
@@ -1626,11 +2109,6 @@ async def generate_service_account_key_fn(
         user_api_key_dict=user_api_key_dict,
     )
 
-    await validate_team_id_used_in_service_account_request(
-        team_id=data.team_id,
-        prisma_client=prisma_client,
-    )
-
     verbose_proxy_logger.debug("entered /key/generate")
 
     if user_custom_key_generate is not None:
@@ -1643,7 +2121,19 @@ async def generate_service_account_key_fn(
         if not decision:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=message)
     team_table: Optional[LiteLLM_TeamTableCachedObj] = None
-    if data.team_id is not None:
+    if data.project_id is not None:
+        team_table = await _apply_project_context_to_key_request(
+            data=data,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+        )
+
+    await validate_team_id_used_in_service_account_request(
+        team_id=data.team_id,
+        prisma_client=prisma_client,
+    )
+
+    if data.team_id is not None and team_table is None:
         try:
             team_table = await get_team_object(
                 team_id=data.team_id,
@@ -1665,6 +2155,14 @@ async def generate_service_account_key_fn(
             prisma_client=prisma_client,
         )
 
+    if data.project_id is not None:
+        await _check_project_key_limits(
+            project_id=data.project_id,
+            data=data,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+        )
+
     key_generation_check(
         team_table=team_table,
         user_api_key_dict=user_api_key_dict,
@@ -1679,6 +2177,7 @@ async def generate_service_account_key_fn(
         user_api_key_dict=user_api_key_dict,
         litellm_changed_by=litellm_changed_by,
         team_table=team_table,
+        key_management_route=KeyManagementRoutes.KEY_GENERATE_SERVICE_ACCOUNT,
     )
 
 
@@ -1742,6 +2241,7 @@ async def prepare_key_update_data(
     data_json: dict = data.model_dump(exclude_unset=True)
     data_json.pop("key", None)
     data_json.pop("new_key", None)
+    data_json.pop("company_id", None)
     data_json.pop("grace_period", None)  # Request-only param, not a DB column
     if (
         data.metadata is not None
@@ -1995,13 +2495,22 @@ async def _process_single_key_update(
 
     # Get team object and check team limits if team_id is provided
     team_obj: Optional[LiteLLM_TeamTableCachedObj] = None
-    if update_key_request.team_id is not None:
-        team_obj = await get_team_object(
-            team_id=update_key_request.team_id,
+    if prisma_client is not None:
+        team_obj = await _apply_project_context_to_key_request(
+            data=update_key_request,
             prisma_client=prisma_client,
             user_api_key_cache=user_api_key_cache,
-            check_db_only=True,
+            existing_key_row=existing_key_row,
         )
+
+    if update_key_request.team_id is not None:
+        if team_obj is None:
+            team_obj = await get_team_object(
+                team_id=update_key_request.team_id,
+                prisma_client=prisma_client,
+                user_api_key_cache=user_api_key_cache,
+                check_db_only=True,
+            )
 
         if team_obj is not None and prisma_client is not None:
             await _check_team_key_limits(
@@ -2073,6 +2582,11 @@ async def _process_single_key_update(
         updated_key_info = updated_key_info.model_dump()
     elif hasattr(updated_key_info, "dict"):
         updated_key_info = updated_key_info.dict()
+    updated_key_info = _add_company_id_to_key_response_dict(updated_key_info)
+    updated_key_info = await _enrich_key_response_tenant_names(
+        updated_key_info,
+        prisma_client=prisma_client,
+    )
 
     updated_key_info.pop("token", None)
 
@@ -2208,10 +2722,18 @@ async def _validate_update_key_data(
             ),
         )
 
-    # Check team limits if key has a team_id (from request or existing key)
     team_obj: Optional[LiteLLM_TeamTableCachedObj] = None
+    if prisma_client is not None:
+        team_obj = await _apply_project_context_to_key_request(
+            data=data,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+            existing_key_row=existing_key_row,
+        )
+
+    # Check team limits if key has a team_id (from request or existing key)
     _team_id_to_check = data.team_id or getattr(existing_key_row, "team_id", None)
-    if _team_id_to_check is not None:
+    if _team_id_to_check is not None and team_obj is None:
         team_obj = await get_team_object(
             team_id=_team_id_to_check,
             prisma_client=prisma_client,
@@ -2226,16 +2748,20 @@ async def _validate_update_key_data(
                 detail=f"Team not found for team_id={data.team_id}. Non-admin users cannot set keys to non-existent teams.",
             )
 
-        if team_obj is not None:
-            await _check_team_key_limits(
-                team_table=team_obj,
-                data=data,
-                prisma_client=prisma_client,
-            )
+    if team_obj is not None:
+        await _check_team_key_limits(
+            team_table=team_obj,
+            data=data,
+            prisma_client=prisma_client,
+        )
 
     # Validate key against project limits if project_id is being set
-    _project_id_to_check = getattr(data, "project_id", None) or getattr(
-        existing_key_row, "project_id", None
+    _project_id_to_check = (
+        None
+        if _request_field_was_set(data, "project_id")
+        and getattr(data, "project_id", None) is None
+        else getattr(data, "project_id", None)
+        or getattr(existing_key_row, "project_id", None)
     )
     if _project_id_to_check is not None and (
         data.models is not None or data.max_budget is not None
@@ -2263,6 +2789,8 @@ async def _validate_update_key_data(
             user_api_key_dict=user_api_key_dict,
             organization_id=data.organization_id,
             prisma_client=prisma_client,
+            team_obj=team_obj,
+            route=KeyManagementRoutes.KEY_UPDATE,
         )
 
     # Check org key limits only when throughput-related fields or organization_id change
@@ -2283,7 +2811,7 @@ async def _validate_update_key_data(
         if org_table is None:
             raise HTTPException(
                 status_code=400,
-                detail=f"Organization not found for organization_id={_org_id_to_check}",
+                detail=f"Company not found for company_id={_org_id_to_check}",
             )
         await _check_org_key_limits(
             org_table=org_table,
@@ -2321,6 +2849,13 @@ async def _validate_update_key_data(
             prisma_client=prisma_client,
             user_api_key_cache=user_api_key_cache,
         )
+        await _validate_key_vector_stores_against_tenant_context(
+            object_permission=data.object_permission,
+            data=data,
+            existing_key_row=existing_key_row,
+            team_obj=team_obj,
+            prisma_client=prisma_client,
+        )
 
 
 @router.post(
@@ -2345,7 +2880,8 @@ async def update_key_fn(  # noqa: PLR0915
     - user_id: Optional[str] - User ID associated with key
     - team_id: Optional[str] - Team ID associated with key
     - agent_id: Optional[str] - The agent id associated with the key.
-    - organization_id: Optional[str] - The organization id of the key.
+    - company_id: Optional[str] - The company id of the key.
+    - project_id: Optional[str] - The project id of the key. When set, LiteLLM derives the backing team and company from the project context.
     - budget_id: Optional[str] - The budget id associated with the key. Created by calling `/budget/new`.
     - models: Optional[list] - Model_name's a user is allowed to call
     - tags: Optional[List[str]] - Tags for organizing keys (Enterprise only)
@@ -2355,7 +2891,7 @@ async def update_key_fn(  # noqa: PLR0915
     - max_budget: Optional[float] - Max budget for key
     - model_max_budget: Optional[Dict[str, BudgetConfig]] - Model-specific budgets {"gpt-4": {"budget_limit": 0.0005, "time_period": "30d"}}
     - budget_duration: Optional[str] - Budget reset period ("30d", "1h", etc.)
-    - soft_budget: Optional[float] - [TODO] Soft budget limit (warning vs. hard stop). Will trigger a slack alert when this soft budget is reached.
+    - soft_budget: Optional[float] - Soft budget limit (warning vs. hard stop). Will trigger a slack alert when this soft budget is reached.
     - max_parallel_requests: Optional[int] - Rate limit for parallel requests
     - metadata: Optional[dict] - Metadata for key. Example {"team": "core-infra", "app": "app2"}
     - tpm_limit: Optional[int] - Tokens per minute limit
@@ -2505,7 +3041,19 @@ async def update_key_fn(  # noqa: PLR0915
         if response is None:
             raise ValueError("Failed to update key got response = None")
 
-        return {"key": key, **response["data"]}
+        updated_key_info = response["data"]
+        if hasattr(updated_key_info, "model_dump"):
+            updated_key_info = updated_key_info.model_dump()
+        elif hasattr(updated_key_info, "dict"):
+            updated_key_info = updated_key_info.dict()
+        updated_key_info = _add_company_id_to_key_response_dict(updated_key_info)
+        updated_key_info = await _enrich_key_response_tenant_names(
+            updated_key_info,
+            prisma_client=prisma_client,
+        )
+        updated_key_info.pop("token", None)
+
+        return {"key": key, **updated_key_info}
         # update based on remaining passed in values
     except Exception as e:
         verbose_proxy_logger.exception(
@@ -3178,6 +3726,10 @@ async def info_key_fn_v2(
             except Exception:
                 k_dict = k.dict()
             k_dict.pop("token", None)
+            k_dict = await _enrich_key_response_tenant_names(
+                k_dict,
+                prisma_client=prisma_client,
+            )
             filtered_key_info.append(k_dict)
         return {"key": data.keys, "info": filtered_key_info}
 
@@ -3260,6 +3812,10 @@ async def info_key_fn(
             # if using pydantic v1
             key_info = key_info.dict()
         key_info.pop("token")
+        key_info = await _enrich_key_response_tenant_names(
+            key_info,
+            prisma_client=prisma_client,
+        )
 
         # Attach object_permission if object_permission_id is set
         key_info = await attach_object_permission_to_dict(key_info, prisma_client)
@@ -3618,9 +4174,12 @@ async def _team_key_deletion_check(
     prisma_client: PrismaClient,
     user_api_key_cache: UserApiKeyCache,
 ):
-    is_team_key = _is_team_key(data=key_info)
+    is_project_scoped_key = (
+        getattr(key_info, "team_id", None) is not None
+        or getattr(key_info, "project_id", None) is not None
+    )
 
-    if is_team_key and key_info.team_id is not None:
+    if is_project_scoped_key:
         team_table = await get_team_object(
             team_id=key_info.team_id,
             prisma_client=prisma_client,
@@ -3669,8 +4228,9 @@ async def can_modify_verification_token(
     Rules:
     - Proxy admin can modify any key
     - Internal jobs service account can modify any key (for auto-rotation)
-    - For team keys: only team admin or key owner can modify
-    - For personal keys: only key owner can modify
+    - For team/project keys: team admin, Company admin, explicit /key/delete
+      member permission, or key owner can modify
+    - For company/personal keys: Company admin or key owner can modify
 
     Args:
         key_info: The verification token to check
@@ -3693,38 +4253,42 @@ async def can_modify_verification_token(
     if user_api_key_dict.api_key == LITELLM_INTERNAL_JOBS_SERVICE_ACCOUNT_NAME:
         return True
 
-    # 3. For team keys: only team admin or key owner can modify
+    # 3. For team/project keys: project is backed by team_id, so team admin
+    # is project admin and team.organization_id is Company compatibility.
     if is_team_key and key_info.team_id is not None:
-        # Get team object to check if user is team admin
-        team_table = await get_team_object(
-            team_id=key_info.team_id,
+        if await _caller_has_key_project_or_company_access(
+            user_api_key_dict=user_api_key_dict,
+            key_info=key_info,
             prisma_client=prisma_client,
             user_api_key_cache=user_api_key_cache,
-            check_db_only=True,
-        )
-
-        if team_table is None:
-            return False
-
-        # Check if user is team admin
-        if _is_user_team_admin(
-            user_api_key_dict=user_api_key_dict,
-            team_obj=team_table,
+            route=KeyManagementRoutes.KEY_DELETE,
         ):
             return True
-
-        # Check if the key belongs to the user (they own it)
+        # Preserve self-service delete for owners only while they still have
+        # read access to the Project backing team.
+        has_project_read_access = await _caller_has_key_project_or_company_access(
+            user_api_key_dict=user_api_key_dict,
+            key_info=key_info,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+        )
+        if not has_project_read_access:
+            return False
         if (
             key_info.user_id is not None
             and key_info.user_id == user_api_key_dict.user_id
         ):
             return True
-
-        # Not team admin and doesn't own the key
         return False
 
-    # 4. For personal keys: only key owner can modify
+    # 4. For personal/company keys: key owner or Company admin can modify.
     if key_info.user_id is not None and key_info.user_id == user_api_key_dict.user_id:
+        return True
+    if await _caller_is_company_admin_for_key_org(
+        user_api_key_dict=user_api_key_dict,
+        organization_id=_key_company_id(key_info),
+        prisma_client=prisma_client,
+    ):
         return True
 
     # Default: deny
@@ -3866,6 +4430,7 @@ def _transform_verification_tokens_to_deleted_records(
         org_id_value = record.pop("org_id", None)
         if org_id_value is not None:
             record["organization_id"] = org_id_value
+        record.pop("company_id", None)
 
         for json_field in [
             "aliases",
@@ -3891,6 +4456,130 @@ def _transform_verification_tokens_to_deleted_records(
         records.append(record)
 
     return records
+
+
+def _add_company_id_to_key_response_dict(key_info: Dict[str, Any]) -> Dict[str, Any]:
+    company_id = key_info.get("company_id")
+    organization_id = key_info.get("organization_id") or key_info.get("org_id")
+
+    if (
+        company_id is not None
+        and organization_id is not None
+        and company_id != organization_id
+    ):
+        raise ValueError(
+            "company_id and organization_id refer to the same tenant and must match when both are provided."
+        )
+
+    if company_id is None and organization_id is not None:
+        key_info["company_id"] = organization_id
+        company_id = organization_id
+
+    if key_info.get("company_name") is None:
+        organization_alias = key_info.get("organization_alias")
+        if organization_alias is not None:
+            key_info["company_name"] = organization_alias
+
+    if key_info.get("project_name") is None:
+        project_alias = key_info.get("project_alias")
+        if project_alias is not None:
+            key_info["project_name"] = project_alias
+
+    return key_info
+
+
+def _field_from_obj(row: Any, field_name: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(field_name)
+    return getattr(row, field_name, None)
+
+
+def _non_empty_ids(ids: Any) -> List[str]:
+    return sorted({value for value in ids if isinstance(value, str) and value})
+
+
+async def _get_key_tenant_name_maps(
+    prisma_client: Optional[PrismaClient],
+    company_ids: List[str],
+    project_ids: List[str],
+) -> Tuple[Dict[str, str], Dict[str, str]]:
+    company_names: Dict[str, str] = {}
+    project_names: Dict[str, str] = {}
+
+    if prisma_client is None:
+        return company_names, project_names
+
+    try:
+        if company_ids:
+            company_rows = await prisma_client.db.litellm_organizationtable.find_many(
+                where={"organization_id": {"in": company_ids}}
+            )
+            for company_row in company_rows:
+                company_id = _field_from_obj(company_row, "organization_id")
+                company_name = _field_from_obj(company_row, "organization_alias")
+                if company_id:
+                    company_names[company_id] = company_name or company_id
+
+        if project_ids:
+            project_rows = await prisma_client.db.litellm_projecttable.find_many(
+                where={"project_id": {"in": project_ids}}
+            )
+            for project_row in project_rows:
+                project_id = _field_from_obj(project_row, "project_id")
+                project_name = _field_from_obj(project_row, "project_alias")
+                if project_id:
+                    project_names[project_id] = project_name or project_id
+    except Exception as e:
+        verbose_proxy_logger.debug(
+            "Unable to enrich key tenant names from DB: %s", str(e)
+        )
+
+    return company_names, project_names
+
+
+def _add_key_tenant_names_from_maps(
+    key_info: Dict[str, Any],
+    company_names: Dict[str, str],
+    project_names: Dict[str, str],
+) -> Dict[str, Any]:
+    key_info = _add_company_id_to_key_response_dict(key_info)
+
+    company_id = key_info.get("company_id")
+    if (
+        key_info.get("company_name") is None
+        and isinstance(company_id, str)
+        and company_id in company_names
+    ):
+        key_info["company_name"] = company_names[company_id]
+
+    project_id = key_info.get("project_id")
+    if (
+        key_info.get("project_name") is None
+        and isinstance(project_id, str)
+        and project_id in project_names
+    ):
+        key_info["project_name"] = project_names[project_id]
+
+    return key_info
+
+
+async def _enrich_key_response_tenant_names(
+    key_info: Dict[str, Any],
+    prisma_client: Optional[PrismaClient],
+) -> Dict[str, Any]:
+    key_info = _add_company_id_to_key_response_dict(key_info)
+    company_id = key_info.get("company_id")
+    project_id = key_info.get("project_id")
+    company_names, project_names = await _get_key_tenant_name_maps(
+        prisma_client=prisma_client,
+        company_ids=_non_empty_ids([company_id]),
+        project_ids=_non_empty_ids([project_id]),
+    )
+    return _add_key_tenant_names_from_maps(
+        key_info=key_info,
+        company_names=company_names,
+        project_names=project_names,
+    )
 
 
 async def _save_deleted_verification_token_records(
@@ -4193,9 +4882,9 @@ async def _execute_virtual_key_regeneration(
         user_api_key_dict=user_api_key_dict,
     )
 
-    # Apply the same membership rule used on /key/update: when the caller
+    # Apply the same RBAC rule used on /key/update: when the caller
     # asks to point the regenerated key at a different organization_id,
-    # require they are a member of (or proxy admin over) the target org.
+    # require company admin unless a team/project guard has already allowed it.
     if data is not None and data.organization_id is not None:
         _existing_org_id = getattr(key_in_db, "organization_id", None)
         _is_proxy_admin = (
@@ -4207,6 +4896,7 @@ async def _execute_virtual_key_regeneration(
                 user_api_key_dict=user_api_key_dict,
                 organization_id=data.organization_id,
                 prisma_client=prisma_client,
+                route=KeyManagementRoutes.KEY_UPDATE,
             )
 
     new_token = await get_new_token(data=data)
@@ -4693,7 +5383,6 @@ async def validate_key_list_check(
         )
 
     complete_user_info = LiteLLM_UserTable(**complete_user_info_db_obj.model_dump())
-
     # internal user can only see their own keys
     if user_id:
         if complete_user_info.user_id != user_id:
@@ -4723,9 +5412,9 @@ async def validate_key_list_check(
             ]
         ):
             raise ProxyException(
-                message="You are not authorized to check this organization's keys",
+                message="You are not authorized to check this company's keys",
                 type=ProxyErrorTypes.bad_request_error,
-                param="organization_id",
+                param="company_id",
                 code=status.HTTP_403_FORBIDDEN,
             )
 
@@ -4847,6 +5536,27 @@ async def get_member_team_ids(
     return _get_member_team_ids_from_objects(user_api_key_dict, team_objects)
 
 
+def _resolve_company_id_filter(
+    company_id: Optional[str],
+    organization_id: Optional[str],
+) -> Optional[str]:
+    company_id = company_id if isinstance(company_id, str) else None
+    organization_id = organization_id if isinstance(organization_id, str) else None
+
+    if (
+        company_id is not None
+        and organization_id is not None
+        and company_id != organization_id
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "company_id and organization_id refer to the same tenant and must match when both are provided."
+            },
+        )
+    return company_id or organization_id
+
+
 @router.get(
     "/key/list",
     tags=["key management"],
@@ -4864,8 +5574,11 @@ async def list_keys(
     ),
     team_id: Optional[str] = Query(None, description="Filter keys by team ID"),
     organization_id: Optional[str] = Query(
-        None, description="Filter keys by organization ID"
+        None,
+        description="Internal compatibility filter for company ID. Prefer company_id.",
+        include_in_schema=False,
     ),
+    company_id: Optional[str] = Query(None, description="Filter keys by company ID"),
     key_hash: Optional[str] = Query(None, description="Filter keys by key hash"),
     key_alias: Optional[str] = Query(
         None,
@@ -4895,7 +5608,7 @@ async def list_keys(
     ),
 ) -> KeyListResponseObject:
     """
-    List all keys for a given user / team / organization.
+    List all keys for a given user / team / company / project.
 
     Parameters:
         expand: Optional[List[str]] - Expand related objects (e.g. 'user' to include user information)
@@ -4913,13 +5626,19 @@ async def list_keys(
     Note: When expand=user is specified, full key objects are returned regardless of the return_full_object parameter.
     """
     try:
-        from litellm.proxy.proxy_server import prisma_client
+        from litellm.proxy.proxy_server import prisma_client, user_api_key_cache
 
         verbose_proxy_logger.debug("Entering list_keys function")
 
         if prisma_client is None:
             verbose_proxy_logger.error("Database not connected")
             raise Exception("Database not connected")
+
+        organization_id = _resolve_company_id_filter(
+            company_id=company_id,
+            organization_id=organization_id,
+        )
+        project_id = project_id if isinstance(project_id, str) else None
 
         # Validate status parameter
         if status is not None and status != "deleted":
@@ -4938,6 +5657,10 @@ async def list_keys(
             key_alias=key_alias,
             key_hash=key_hash,
             prisma_client=prisma_client,
+        )
+        company_admin_org_ids = _company_admin_ids_from_user_info(complete_user_info)
+        company_scope_list_allowed = (
+            organization_id is not None and organization_id in company_admin_org_ids
         )
 
         # Fetch team objects once when needed for either admin or member filtering.
@@ -4974,12 +5697,52 @@ async def list_keys(
         else:
             admin_team_ids = None
 
+        project_scope_list_allowed = False
+        if (
+            project_id is not None
+            and complete_user_info is not None
+            and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN.value
+        ):
+            _, project_team_obj, project_company_id = await _get_project_key_context(
+                project_id=project_id,
+                prisma_client=prisma_client,
+                user_api_key_cache=user_api_key_cache,
+            )
+            project_access = build_company_project_access_context(
+                user_api_key_dict=user_api_key_dict,
+                complete_user_info=complete_user_info,
+                project_team_obj=project_team_obj,
+                project_company_id=project_company_id,
+                route_permission=KeyManagementRoutes.KEY_LIST.value,
+            )
+            if not project_access.can_read_project():
+                raise ProxyException(
+                    message="You are not authorized to check this project's keys",
+                    type=ProxyErrorTypes.bad_request_error,
+                    param="project_id",
+                    code=fastapi.status.HTTP_403_FORBIDDEN,
+                )
+            if project_access.can_manage_project():
+                admin_team_ids = list(
+                    set((admin_team_ids or []) + [project_team_obj.team_id])
+                )
+                project_scope_list_allowed = True
+            else:
+                member_team_ids = list(
+                    set((member_team_ids or []) + [project_team_obj.team_id])
+                )
+
         use_substring_matching = user_api_key_dict.user_role in [
             LitellmUserRoles.PROXY_ADMIN.value,
             LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value,
         ]
 
-        if not user_id and not use_substring_matching:
+        if (
+            not user_id
+            and not use_substring_matching
+            and not company_scope_list_allowed
+            and not project_scope_list_allowed
+        ):
             user_id = user_api_key_dict.user_id
 
         response = await _list_key_helper(
@@ -5278,8 +6041,6 @@ def _build_key_filter_conditions(
             user_condition["key_alias"] = key_alias
     if exclude_team_id and isinstance(exclude_team_id, str):
         user_condition["team_id"] = {"not": exclude_team_id}
-    if organization_id and isinstance(organization_id, str):
-        user_condition["organization_id"] = organization_id
     if key_hash and isinstance(key_hash, str):
         user_condition["token"] = key_hash
 
@@ -5341,8 +6102,10 @@ def _build_key_filter_conditions(
     elif len(or_conditions) == 1:
         where.update(or_conditions[0])
 
-    # Apply team_id, project_id and access_group_id as global AND filters so they
-    # narrow results across all visibility conditions (own keys, team keys, etc.)
+    # Apply tenant, team, project and access-group filters globally so they
+    # narrow every visibility branch (own keys, team keys, created-by keys, etc.).
+    if organization_id and isinstance(organization_id, str):
+        where = {"AND": [where, {"organization_id": organization_id}]}
     if team_id and isinstance(team_id, str):
         where = {"AND": [where, {"team_id": team_id}]}
     if project_id:
@@ -5491,6 +6254,21 @@ async def _list_key_helper(
             )
             user_map = {user.user_id: user for user in users}
 
+    company_ids = _non_empty_ids(
+        [
+            getattr(key, "organization_id", None)
+            or getattr(key, "company_id", None)
+            or getattr(key, "org_id", None)
+            for key in keys
+        ]
+    )
+    project_ids = _non_empty_ids([getattr(key, "project_id", None) for key in keys])
+    company_names, project_names = await _get_key_tenant_name_maps(
+        prisma_client=prisma_client,
+        company_ids=company_ids,
+        project_ids=project_ids,
+    )
+
     # Prepare response
     key_list: List[Union[str, UserAPIKeyAuth, LiteLLM_DeletedVerificationToken]] = []
     for key in keys:
@@ -5500,6 +6278,11 @@ async def _list_key_helper(
         except Exception:
             # Fallback for Pydantic v1 compatibility
             key_dict = key.dict()
+        key_dict = _add_key_tenant_names_from_maps(
+            key_info=key_dict,
+            company_names=company_names,
+            project_names=project_names,
+        )
         # Attach object_permission if object_permission_id is set (only for non-deleted keys)
         if not use_deleted_table:
             key_dict = await attach_object_permission_to_dict(key_dict, prisma_client)
@@ -5564,7 +6347,7 @@ async def _check_key_admin_access(
     Allowed callers:
     - Proxy admin
     - Team admin for the key's team
-    - Org admin for the key's team's organization
+    - Company admin for the key's team's company
 
     Raises HTTPException(403) if the caller is not authorized.
     """
@@ -5599,11 +6382,17 @@ async def _check_key_admin_access(
                 user_api_key_dict=user_api_key_dict, team_obj=team_obj
             ):
                 return
+    elif await _caller_is_company_admin_for_key_org(
+        user_api_key_dict=user_api_key_dict,
+        organization_id=getattr(target_key_row, "organization_id", None),
+        prisma_client=prisma_client,
+    ):
+        return
 
     raise HTTPException(
         status_code=403,
         detail={
-            "error": f"Only proxy admins, team admins, or org admins can call {route}. "
+            "error": f"Only proxy admins, team admins, or company admins can call {route}. "
             f"user_role={user_api_key_dict.user_role}, user_id={user_api_key_dict.user_id}"
         },
     )
@@ -5638,7 +6427,7 @@ async def block_key(
     }'
     ```
 
-    Note: This is an admin-only endpoint. Only proxy admins, team admins, or org admins can block keys.
+    Note: This is an admin-only endpoint. Only proxy admins, team admins, or company admins can block keys.
     """
     from litellm.proxy.proxy_server import (
         create_audit_log_for_update,
@@ -5667,7 +6456,7 @@ async def block_key(
     else:
         hashed_token = data.key
 
-    # Admin-only: only proxy admins, team admins, or org admins can block keys
+    # Admin-only: only proxy admins, team admins, or company admins can block keys
     await _check_key_admin_access(
         user_api_key_dict=user_api_key_dict,
         hashed_token=hashed_token,
@@ -5752,7 +6541,7 @@ async def unblock_key(
     }'
     ```
 
-    Note: This is an admin-only endpoint. Only proxy admins, team admins, or org admins can unblock keys.
+    Note: This is an admin-only endpoint. Only proxy admins, team admins, or company admins can unblock keys.
     """
     from litellm.proxy.proxy_server import (
         create_audit_log_for_update,
@@ -5781,7 +6570,7 @@ async def unblock_key(
     else:
         hashed_token = data.key
 
-    # Admin-only: only proxy admins, team admins, or org admins can unblock keys
+    # Admin-only: only proxy admins, team admins, or company admins can unblock keys
     await _check_key_admin_access(
         user_api_key_dict=user_api_key_dict,
         hashed_token=hashed_token,
@@ -5940,12 +6729,34 @@ async def _can_user_query_key_info(
         or user_api_key_dict.user_role == LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY.value
     ):
         return True
-    elif user_api_key_dict.api_key == key:
+    if user_api_key_dict.api_key == key:
         return True
+
+    if (
+        getattr(key_info, "team_id", None) is not None
+        or getattr(key_info, "project_id", None) is not None
+    ):
+        from litellm.proxy.proxy_server import prisma_client, user_api_key_cache
+
+        return await _caller_has_key_project_or_company_access(
+            user_api_key_dict=user_api_key_dict,
+            key_info=key_info,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+        )
+
     # user can query their own key info
-    elif key_info.user_id == user_api_key_dict.user_id:
+    if key_info.user_id == user_api_key_dict.user_id:
         return True
-    elif await TeamMemberPermissionChecks.user_belongs_to_keys_team(
+    from litellm.proxy.proxy_server import prisma_client
+
+    if await _caller_is_company_admin_for_key_org(
+        user_api_key_dict=user_api_key_dict,
+        organization_id=_key_company_id(key_info),
+        prisma_client=prisma_client,
+    ):
+        return True
+    if await TeamMemberPermissionChecks.user_belongs_to_keys_team(
         user_api_key_dict=user_api_key_dict,
         existing_key_row=key_info,
     ):

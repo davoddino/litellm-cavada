@@ -33,7 +33,7 @@ async def new_budget(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
-    Create a new budget object. Can apply this to teams, orgs, end-users, keys.
+    Create a new budget object. Can apply this to Companies, Projects, teams, end-users, and keys.
 
     Parameters:
     - budget_duration: Optional[str] - Budget reset period ("30d", "1h", etc.)

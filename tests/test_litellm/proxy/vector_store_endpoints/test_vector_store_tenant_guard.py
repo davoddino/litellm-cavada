@@ -229,6 +229,95 @@ async def test_rag_ingest_denies_nested_other_team_vector_store():
     mock_aingest.assert_not_called()
 
 
+@pytest.mark.asyncio
+async def test_rag_ingest_persists_company_project_context_for_new_vector_store():
+    from litellm.proxy.rag_endpoints.endpoints import rag_ingest
+
+    project = {
+        "project_id": "project-alpha",
+        "project_alias": "Project Alpha",
+        "team_id": "team-project-alpha",
+        "company_id": "company-alpha",
+        "litellm_team_table": {
+            "team_id": "team-project-alpha",
+            "organization_id": "company-alpha",
+        },
+    }
+    mock_prisma_client = MagicMock()
+    mock_prisma_client.db.litellm_projecttable.find_unique = AsyncMock(
+        return_value=project
+    )
+    mock_prisma_client.db.litellm_managedvectorstorestable.find_unique = AsyncMock(
+        return_value=None
+    )
+
+    ingest_options = {
+        "vector_store": {"custom_llm_provider": "openai"},
+        "litellm_vector_store_params": {
+            "vector_store_name": "Project Alpha KB",
+            "company_id": "company-alpha",
+            "project_id": "project-alpha",
+        },
+    }
+    mock_create_vector_store = AsyncMock()
+    mock_aingest = AsyncMock(
+        return_value={"vector_store_id": "vs_project_alpha", "file_id": "file_1"}
+    )
+
+    with (
+        patch(
+            "litellm.proxy.rag_endpoints.endpoints.parse_rag_ingest_request",
+            new=AsyncMock(
+                return_value=(
+                    ingest_options,
+                    None,
+                    "https://example.com/file.txt",
+                    None,
+                )
+            ),
+        ),
+        patch(
+            "litellm.proxy.proxy_server.add_litellm_data_to_request",
+            new=AsyncMock(return_value={}),
+        ),
+        patch("litellm.proxy.proxy_server.general_settings", {}),
+        patch("litellm.proxy.proxy_server.llm_router", None),
+        patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client),
+        patch("litellm.proxy.proxy_server.proxy_config", None),
+        patch("litellm.proxy.proxy_server.version", "test-version"),
+        patch("litellm.proxy.rag_endpoints.endpoints.litellm.aingest", mock_aingest),
+        patch(
+            "litellm.proxy.vector_store_endpoints.management_endpoints.create_vector_store_in_db",
+            mock_create_vector_store,
+        ),
+    ):
+        await rag_ingest(
+            request=_mock_request(),
+            fastapi_response=Response(),
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="user-alpha",
+                team_id="team-project-alpha",
+            ),
+        )
+
+    provider_ingest_options = mock_aingest.call_args.kwargs["ingest_options"]
+    assert (
+        "company_id"
+        not in provider_ingest_options.get("litellm_vector_store_params", {})
+    )
+    assert (
+        "project_id"
+        not in provider_ingest_options.get("litellm_vector_store_params", {})
+    )
+    assert (
+        provider_ingest_options["litellm_vector_store_params"]["vector_store_name"]
+        == "Project Alpha KB"
+    )
+    create_kwargs = mock_create_vector_store.call_args.kwargs
+    assert create_kwargs["team_id"] == "team-project-alpha"
+    assert create_kwargs["project_id"] == "project-alpha"
+
+
 def test_rag_payload_scan_rejects_excessive_nesting():
     from litellm.constants import DEFAULT_MAX_RECURSE_DEPTH
     from litellm.proxy.rag_endpoints.endpoints import (

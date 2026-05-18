@@ -3,6 +3,7 @@ import copy
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1751,6 +1752,78 @@ def test_add_user_api_key_auth_to_request_metadata():
     # Verify original data is preserved
     assert result["model"] == "gpt-3.5-turbo"
     assert result["messages"] == [{"role": "user", "content": "Hello"}]
+
+
+@pytest.mark.asyncio
+async def test_runtime_request_attribution_uses_company_project_context():
+    from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
+
+    request_mock = MagicMock(spec=Request)
+    request_mock.url.path = "/v1/chat/completions"
+    request_mock.url = MagicMock()
+    request_mock.url.__str__.return_value = "http://localhost/v1/chat/completions"
+    request_mock.method = "POST"
+    request_mock.query_params = {}
+    request_mock.headers = {"Content-Type": "application/json"}
+    request_mock.client = MagicMock()
+    request_mock.client.host = "127.0.0.1"
+
+    data = {
+        "model": "gpt-4",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "metadata": {
+            "user_api_key_org_id": "spoofed-company",
+            "user_api_key_project_id": "spoofed-project",
+        },
+    }
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="hashed-key",
+        company_id="company-123",
+        project_id="project-123",
+        project_alias="Support Project",
+        metadata={},
+        team_metadata={},
+        spend=0.0,
+        max_budget=100.0,
+        model_max_budget={},
+        team_spend=0.0,
+        team_max_budget=200.0,
+    )
+
+    assert user_api_key_dict.org_id == "company-123"
+
+    updated = await add_litellm_data_to_request(
+        data=data,
+        request=request_mock,
+        user_api_key_dict=user_api_key_dict,
+        proxy_config=MagicMock(),
+        general_settings={},
+        version="test-version",
+    )
+
+    metadata = updated["metadata"]
+    assert metadata["user_api_key_org_id"] == "company-123"
+    assert metadata["user_api_key_project_id"] == "project-123"
+    assert metadata["user_api_key_project_alias"] == "Support Project"
+
+    payload = get_logging_payload(
+        kwargs={
+            "model": "gpt-4",
+            "custom_llm_provider": "openai",
+            "litellm_params": {"metadata": metadata},
+        },
+        response_obj={
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        },
+        start_time=datetime.now(timezone.utc),
+        end_time=datetime.now(timezone.utc),
+    )
+
+    assert payload["organization_id"] == "company-123"
+    assert payload["project_id"] == "project-123"
+    payload_metadata = json.loads(payload["metadata"])
+    assert payload_metadata["user_api_key_org_id"] == "company-123"
+    assert payload_metadata["user_api_key_project_id"] == "project-123"
 
 
 @pytest.mark.parametrize(

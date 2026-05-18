@@ -15,6 +15,7 @@ import KeyLifecycleSettings from "../common_components/KeyLifecycleSettings";
 import PassThroughRoutesSelector from "../common_components/PassThroughRoutesSelector";
 import RateLimitTypeFormItem from "../common_components/RateLimitTypeFormItem";
 import OrganizationDropdown from "../common_components/OrganizationDropdown";
+import ProjectDropdown from "../common_components/ProjectDropdown";
 import { extractLoggingSettings, formatMetadataForDisplay, stripTagsFromMetadata } from "../key_info_utils";
 import { BudgetWindowEntry, BudgetWindowsEditor } from "../key_team_helpers/BudgetWindowsEditor";
 import { KeyResponse } from "../key_team_helpers/key_list";
@@ -78,6 +79,13 @@ const getKeyTypeFromRoutes = (allowedRoutes: string[] | null | undefined): strin
   return "default";
 };
 
+const stripLegacyKeyEditTenantAliases = (values: Record<string, any>) => {
+  delete values.org_id;
+  delete values.organization_id;
+  delete values.organization_ids;
+  delete values.organizations;
+};
+
 export function KeyEditView({
   keyData,
   onCancel,
@@ -92,14 +100,16 @@ export function KeyEditView({
   const [form] = Form.useForm();
   const [promptsList, setPromptsList] = useState<string[]>([]);
   const [tagsList, setTagsList] = useState<Record<string, Tag>>({});
-  const team = teams?.find((team) => team.team_id === keyData.team_id);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [disabledCallbacks, setDisabledCallbacks] = useState<string[]>(
     Array.isArray(keyData.metadata?.litellm_disabled_callbacks)
       ? mapInternalToDisplayNames(keyData.metadata.litellm_disabled_callbacks)
       : [],
   );
-  const [selectedOrganizationId, setSelectedOrganizationId] = useState<string | null>(keyData.organization_id || null);
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState<string | null>(
+    keyData.company_id ?? keyData.organization_id ?? keyData.org_id ?? null,
+  );
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(keyData.project_id ?? null);
   const [autoRotationEnabled, setAutoRotationEnabled] = useState<boolean>(keyData.auto_rotate || false);
   const [rotationInterval, setRotationInterval] = useState<string>(keyData.rotation_interval || "");
   const [neverExpire, setNeverExpire] = useState<boolean>(!keyData.expires);
@@ -108,22 +118,41 @@ export function KeyEditView({
     Array.isArray(keyData.budget_limits) ? keyData.budget_limits : [],
   );
   const { data: organizations, isLoading: isOrganizationsLoading } = useOrganizations();
-  const { data: projects } = useProjects();
+  const { data: projects } = useProjects({ includeNonAdmin: true });
   const { data: uiSettingsData } = useUISettings();
   const enableProjectsUI = Boolean(uiSettingsData?.values?.enable_projects_ui);
-  const hasProject = Boolean(keyData.project_id);
-  const projectDisplay = (() => {
-    if (!keyData.project_id) return null;
-    const project = projects?.find((p) => p.project_id === keyData.project_id);
-    return project?.project_alias ? `${project.project_alias} (${keyData.project_id})` : keyData.project_id;
-  })();
+  const hasProject = Boolean(selectedProjectId);
+  const selectedProject = selectedProjectId ? projects?.find((p) => p.project_id === selectedProjectId) : undefined;
+  const selectedProjectTeam = selectedProject?.team_id
+    ? teams?.find((candidateTeam) => candidateTeam.team_id === selectedProject.team_id)
+    : undefined;
+  const projectCompanyId = selectedProject?.company_id ?? selectedProjectTeam?.organization_id;
+  const resolvedCompanyId =
+    enableProjectsUI && hasProject && projectCompanyId
+      ? projectCompanyId
+      : keyData.company_id ?? keyData.organization_id ?? keyData.org_id ?? null;
+  const resolvedTeamId =
+    enableProjectsUI && hasProject && selectedProject?.team_id ? selectedProject.team_id : keyData.team_id;
+  const team = teams?.find((team) => team.team_id === resolvedTeamId);
+  useEffect(() => {
+    if (!enableProjectsUI || !hasProject) return;
+    if (projectCompanyId) {
+      setSelectedOrganizationId(projectCompanyId);
+      form.setFieldValue("company_id", projectCompanyId);
+    }
+    if (selectedProject?.team_id) {
+      form.setFieldValue("team_id", selectedProject.team_id);
+    }
+  }, [enableProjectsUI, hasProject, projectCompanyId, selectedProject?.team_id, form]);
 
   useEffect(() => {
     const fetchModels = async () => {
       if (!userID || !userRole || !accessToken) return;
 
       try {
-        if (keyData.team_id === null) {
+        if (selectedProjectId && selectedProject) {
+          setAvailableModels(selectedProject.models ?? []);
+        } else if (resolvedTeamId === null) {
           // Fetch user models if no team
           const model_available = await modelAvailableCall(accessToken, userID, userRole);
           const available_model_names = model_available["data"].map((element: { id: string }) => element.id);
@@ -150,7 +179,7 @@ export function KeyEditView({
 
     fetchPrompts();
     fetchModels();
-  }, [userID, userRole, accessToken, team, keyData.team_id]);
+  }, [userID, userRole, accessToken, team, resolvedTeamId, selectedProjectId, selectedProject]);
 
   // Sync disabled callbacks with form when component mounts
   useEffect(() => {
@@ -171,6 +200,9 @@ export function KeyEditView({
   // Set initial form values
   const initialValues = {
     ...keyData,
+    company_id: resolvedCompanyId,
+    project_id: selectedProjectId,
+    team_id: resolvedTeamId,
     token: keyData.token || keyData.token_id,
     budget_duration: getBudgetDuration(keyData.budget_duration),
     metadata: formatMetadataForDisplay(stripTagsFromMetadata(keyData.metadata)),
@@ -204,6 +236,9 @@ export function KeyEditView({
   useEffect(() => {
     form.setFieldsValue({
       ...keyData,
+      company_id: resolvedCompanyId,
+      project_id: selectedProjectId,
+      team_id: resolvedTeamId,
       token: keyData.token || keyData.token_id,
       budget_duration: getBudgetDuration(keyData.budget_duration),
       metadata: formatMetadataForDisplay(stripTagsFromMetadata(keyData.metadata)),
@@ -294,6 +329,20 @@ export function KeyEditView({
         (w) => w.budget_duration && w.max_budget !== null && w.max_budget !== undefined,
       );
       values.budget_limits = validWindows.length > 0 ? validWindows : undefined;
+
+      if (selectedProjectId) {
+        values.project_id = selectedProjectId;
+        if (projectCompanyId) {
+          values.company_id = projectCompanyId;
+        }
+        if (selectedProject?.team_id) {
+          values.team_id = selectedProject.team_id;
+        }
+      } else if (keyData.project_id) {
+        values.project_id = null;
+      }
+
+      stripLegacyKeyEditTenantAliases(values);
 
       await onSubmit(values);
     } finally {
@@ -495,6 +544,8 @@ export function KeyEditView({
             }}
             accessToken={accessToken}
             disabled={!canEditGuardrails}
+            companyId={selectedOrganizationId}
+            projectId={selectedProjectId}
           />
         )}
       </Form.Item>
@@ -609,6 +660,8 @@ export function KeyEditView({
           value={form.getFieldValue("vector_stores")}
           accessToken={accessToken || ""}
           placeholder="Select vector stores"
+          companyId={selectedOrganizationId}
+          projectId={selectedProjectId}
         />
       </Form.Item>
 
@@ -657,29 +710,62 @@ export function KeyEditView({
       <Form.Item
         label={
           <span>
-            Organization{" "}
-            <Tooltip title="The organization this key belongs to. Selecting an organization filters the available teams.">
+            Company{" "}
+            <Tooltip title="The company this key belongs to. Selecting a company filters the available teams.">
               <InfoCircleOutlined style={{ marginLeft: "4px" }} />
             </Tooltip>
           </span>
         }
-        name="organization_id"
+        name="company_id"
+        help={enableProjectsUI && hasProject ? "Company is derived from the selected project" : undefined}
       >
         <OrganizationDropdown
           organizations={organizations}
           loading={isOrganizationsLoading}
-          disabled={userRole !== "Admin"}
+          disabled={enableProjectsUI && hasProject}
           onChange={(orgId) => {
             setSelectedOrganizationId(orgId || null);
             form.setFieldValue("team_id", undefined);
+            form.setFieldValue("vector_stores", []);
           }}
         />
       </Form.Item>
 
+      {enableProjectsUI && (
+        <Form.Item label="Project" name="project_id">
+          <ProjectDropdown
+            projects={projects}
+            companyId={selectedOrganizationId}
+            value={selectedProjectId ?? undefined}
+            onChange={(projectId) => {
+              if (!projectId) {
+                setSelectedProjectId(null);
+                form.setFieldValue("project_id", null);
+                form.setFieldValue("vector_stores", []);
+                return;
+              }
+              setSelectedProjectId(projectId);
+              form.setFieldValue("project_id", projectId);
+              const project = projects?.find((p) => p.project_id === projectId);
+              const projectTeam = teams?.find((candidateTeam) => candidateTeam.team_id === project?.team_id);
+              const companyId = project?.company_id ?? projectTeam?.organization_id;
+              if (companyId) {
+                setSelectedOrganizationId(companyId);
+                form.setFieldValue("company_id", companyId);
+              }
+              if (project?.team_id) {
+                form.setFieldValue("team_id", project.team_id);
+              }
+              form.setFieldValue("vector_stores", []);
+            }}
+          />
+        </Form.Item>
+      )}
+
       <Form.Item
         label="Team ID"
         name="team_id"
-        help={enableProjectsUI && hasProject ? "Team is locked because this key belongs to a project" : undefined}
+        help={enableProjectsUI && hasProject ? "Team is derived from the selected project" : undefined}
       >
         <Select
           placeholder="Select team"
@@ -690,11 +776,12 @@ export function KeyEditView({
             const selectedTeam = teams?.find((t) => t.team_id === teamId) || null;
             if (selectedTeam?.organization_id) {
               setSelectedOrganizationId(selectedTeam.organization_id);
-              form.setFieldValue("organization_id", selectedTeam.organization_id);
+              form.setFieldValue("company_id", selectedTeam.organization_id);
             } else if (!teamId) {
               setSelectedOrganizationId(null);
-              form.setFieldValue("organization_id", undefined);
+              form.setFieldValue("company_id", undefined);
             }
+            form.setFieldValue("vector_stores", []);
           }}
           filterOption={(input, option) => {
             const filteredTeams = selectedOrganizationId
@@ -714,11 +801,6 @@ export function KeyEditView({
           )}
         </Select>
       </Form.Item>
-      {enableProjectsUI && hasProject && (
-        <Form.Item label="Project">
-          <Input value={projectDisplay ?? ""} disabled />
-        </Form.Item>
-      )}
       <Form.Item label="Logging Settings" name="logging_settings">
         <EditLoggingSettings
           value={form.getFieldValue("logging_settings")}

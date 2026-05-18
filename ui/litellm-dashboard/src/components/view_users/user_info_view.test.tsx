@@ -105,6 +105,26 @@ describe("UserInfoView", () => {
     });
   });
 
+  it("should display Company and Project memberships with product fallback ids", async () => {
+    mockUserGetInfoV2.mockResolvedValue({
+      ...MOCK_USER_DATA,
+      company_ids: ["company-1"],
+      company_names: [],
+      project_ids: ["project-1"],
+      project_names: [],
+    });
+
+    render(<UserInfoView {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Companies").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("company-1").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("Projects").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("project-1").length).toBeGreaterThan(0);
+    });
+    expect(screen.queryByText(/Organization/)).not.toBeInTheDocument();
+  });
+
   it("should show 'No teams' when user has no teams", async () => {
     mockUserGetInfoV2.mockResolvedValue(MOCK_USER_DATA_NO_TEAMS);
     render(<UserInfoView {...defaultProps} />);

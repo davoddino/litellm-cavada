@@ -1,4 +1,5 @@
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Union
 
 from fastapi import HTTPException, status
 
@@ -119,6 +120,163 @@ def _team_member_has_permission(
         if member.user_id is not None and member.user_id == user_api_key_dict.user_id:
             return True
     return False
+
+
+def _company_admin_ids_from_user_info(
+    complete_user_info: Optional[LiteLLM_UserTable],
+) -> Set[str]:
+    if (
+        complete_user_info is None
+        or complete_user_info.organization_memberships is None
+    ):
+        return set()
+
+    return {
+        membership.organization_id
+        for membership in complete_user_info.organization_memberships
+        if membership.organization_id is not None
+        and membership.user_role == LitellmUserRoles.ORG_ADMIN.value
+    }
+
+
+_COMPANY_READ_MEMBERSHIP_ROLES = {
+    LitellmUserRoles.ORG_ADMIN.value,
+    LitellmUserRoles.INTERNAL_USER.value,
+    LitellmUserRoles.INTERNAL_USER_VIEW_ONLY.value,
+}
+
+
+def _company_member_ids_from_user_info(
+    complete_user_info: Optional[LiteLLM_UserTable],
+) -> Set[str]:
+    if (
+        complete_user_info is None
+        or complete_user_info.organization_memberships is None
+    ):
+        return set()
+
+    return {
+        membership.organization_id
+        for membership in complete_user_info.organization_memberships
+        if membership.organization_id is not None
+        and membership.user_role in _COMPANY_READ_MEMBERSHIP_ROLES
+    }
+
+
+def _caller_is_team_member(
+    user_api_key_dict: UserAPIKeyAuth,
+    team_obj: LiteLLM_TeamTable,
+) -> bool:
+    if user_api_key_dict.user_id is None:
+        return False
+    return any(
+        member.user_id == user_api_key_dict.user_id
+        for member in (team_obj.members_with_roles or [])
+    )
+
+
+def _caller_role_is(
+    user_api_key_dict: UserAPIKeyAuth,
+    role: LitellmUserRoles,
+) -> bool:
+    caller_role = user_api_key_dict.user_role
+    return caller_role == role or caller_role == role.value
+
+
+@dataclass(frozen=True)
+class CompanyProjectAccessContext:
+    """Canonical product tenant authorization decision.
+
+    Company remains backed by LiteLLM organization membership; Project remains
+    backed by the Project's LiteLLM team. Product endpoints should use the
+    Company/Project names and keep organization_id/team_id as persistence
+    compatibility details.
+    """
+
+    has_admin_view: bool
+    is_proxy_admin: bool
+    company_admin_ids: Set[str]
+    company_member_ids: Set[str] = field(default_factory=set)
+    project_company_id: Optional[str] = None
+    project_team_id: Optional[str] = None
+    is_project_member: bool = False
+    is_project_admin: bool = False
+    has_project_route_permission: bool = False
+
+    def can_read_company(self, company_id: Optional[str]) -> bool:
+        if company_id is None:
+            return self.has_admin_view
+        return self.has_admin_view or company_id in self.company_member_ids
+
+    def can_read_project(self) -> bool:
+        return (
+            self.has_admin_view
+            or self.is_company_admin_for_project
+            or self.is_project_member
+        )
+
+    def can_manage_project(self) -> bool:
+        return (
+            self.is_proxy_admin
+            or self.is_company_admin_for_project
+            or self.is_project_admin
+            or self.has_project_route_permission
+        )
+
+    @property
+    def is_company_admin_for_project(self) -> bool:
+        return (
+            self.project_company_id is not None
+            and self.project_company_id in self.company_admin_ids
+        )
+
+
+def build_company_project_access_context(
+    *,
+    user_api_key_dict: UserAPIKeyAuth,
+    complete_user_info: Optional[LiteLLM_UserTable],
+    project_team_obj: Optional[LiteLLM_TeamTable] = None,
+    project_company_id: Optional[str] = None,
+    route_permission: Optional[str] = None,
+) -> CompanyProjectAccessContext:
+    is_proxy_admin = _caller_role_is(user_api_key_dict, LitellmUserRoles.PROXY_ADMIN)
+    is_project_member = (
+        _caller_is_team_member(
+            user_api_key_dict=user_api_key_dict,
+            team_obj=project_team_obj,
+        )
+        if project_team_obj is not None
+        else False
+    )
+    is_project_admin = (
+        _is_user_team_admin(
+            user_api_key_dict=user_api_key_dict,
+            team_obj=project_team_obj,
+        )
+        if project_team_obj is not None
+        else False
+    )
+    has_project_route_permission = (
+        _team_member_has_permission(
+            user_api_key_dict=user_api_key_dict,
+            team_obj=project_team_obj,
+            permission=route_permission,
+        )
+        if project_team_obj is not None and route_permission is not None
+        else False
+    )
+
+    return CompanyProjectAccessContext(
+        has_admin_view=_user_has_admin_view(user_api_key_dict),
+        is_proxy_admin=is_proxy_admin,
+        company_admin_ids=_company_admin_ids_from_user_info(complete_user_info),
+        company_member_ids=_company_member_ids_from_user_info(complete_user_info),
+        project_company_id=project_company_id,
+        project_team_id=getattr(project_team_obj, "team_id", None),
+        is_project_member=is_project_member,
+        is_project_admin=is_project_admin,
+        has_project_route_permission=has_project_route_permission,
+    )
 
 
 async def _user_has_admin_privileges(

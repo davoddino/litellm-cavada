@@ -140,6 +140,8 @@ class AgentRegistry:
                 "agent_name": agent_name,
                 "litellm_params": litellm_params,
                 "agent_card_params": agent_card_params,
+                "company_id": agent.get("company_id"),
+                "project_id": agent.get("project_id"),
                 "created_by": created_by,
                 "updated_by": created_by,
                 "created_at": datetime.now(timezone.utc),
@@ -239,6 +241,10 @@ class AgentRegistry:
                 update_data["agent_card_params"] = safe_dumps(
                     augment_agent.get("agent_card_params")
                 )
+            if "company_id" in agent:
+                update_data["company_id"] = agent.get("company_id")
+            if "project_id" in agent:
+                update_data["project_id"] = agent.get("project_id")
 
             for rate_field in (
                 "tpm_limit",
@@ -340,6 +346,8 @@ class AgentRegistry:
                 "agent_name": agent_name,
                 "litellm_params": litellm_params,
                 "agent_card_params": agent_card_params,
+                "company_id": agent.get("company_id"),
+                "project_id": agent.get("project_id"),
                 "static_headers": static_headers_val_u,
                 "extra_headers": extra_headers_val_u,
                 "updated_by": updated_by,

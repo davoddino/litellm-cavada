@@ -27,7 +27,7 @@ import NotificationsManager from "../molecules/notifications_manager";
 import { useBudgets, useDeleteBudget } from "@/app/(dashboard)/hooks/budgets/useBudgets";
 import BudgetModal from "./budget_modal";
 import EditBudgetModal from "./edit_budget_modal";
-import { CREATE_END_USER_CURL_COMMAND, CHAT_COMPLETIONS_CURL_COMMAND, OPENAI_SDK_PYTHON_CODE } from "./constants";
+import { ASSIGN_BUDGET_CURL_COMMAND, CHAT_COMPLETIONS_CURL_COMMAND, OPENAI_SDK_PYTHON_CODE } from "./constants";
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import { isProxyAdminRole } from "@/utils/roles";
 
@@ -120,7 +120,7 @@ const BudgetPanel: React.FC<BudgetSettingsPageProps> = ({ accessToken }) => {
                 />
               )}
               <Card>
-                <Text>Create a budget to assign to customers.</Text>
+                <Text>Create budget policies for Company, Project, key, team, or user assignments.</Text>
                 <Table>
                   <TableHead>
                     <TableRow>
@@ -181,16 +181,16 @@ const BudgetPanel: React.FC<BudgetSettingsPageProps> = ({ accessToken }) => {
           </TabPanel>
           <TabPanel>
             <div className="mt-6">
-              <Text className="text-base">How to use budget id</Text>
+              <Text className="text-base">Apply a budget policy</Text>
               <TabGroup>
                 <TabList>
-                  <Tab>Assign Budget to Customer</Tab>
+                  <Tab>Assign to Company/Project</Tab>
                   <Tab>Test it (Curl)</Tab>
                   <Tab>Test it (OpenAI SDK)</Tab>
                 </TabList>
                 <TabPanels>
                   <TabPanel>
-                    <SyntaxHighlighter language="bash">{CREATE_END_USER_CURL_COMMAND}</SyntaxHighlighter>
+                    <SyntaxHighlighter language="bash">{ASSIGN_BUDGET_CURL_COMMAND}</SyntaxHighlighter>
                   </TabPanel>
                   <TabPanel>
                     <SyntaxHighlighter language="bash">{CHAT_COMPLETIONS_CURL_COMMAND}</SyntaxHighlighter>

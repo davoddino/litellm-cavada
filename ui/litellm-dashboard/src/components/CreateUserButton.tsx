@@ -1,6 +1,7 @@
 import { InfoCircleOutlined, UserAddOutlined } from "@ant-design/icons";
 import { useQueryClient } from "@tanstack/react-query";
 import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
+import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
 import { Accordion, AccordionBody, AccordionHeader, SelectItem, TextInput } from "@tremor/react";
 import { Alert, Button, Checkbox, Form, Input, Modal, Select, Select as Select2, Space, Tooltip, Typography } from "antd";
 import React, { useEffect, useMemo, useState } from "react";
@@ -16,6 +17,11 @@ import {
   userCreateCall,
 } from "./networking";
 import OnboardingModal, { InvitationLink } from "./onboarding_link";
+import {
+  filterProjectsByCompanyIds,
+  pruneProjectIdsForCompanySelection,
+} from "./common_components/ProjectDropdown";
+import { getCompanyDisplayId, getCompanyDisplayName } from "./common_components/OrganizationDropdown";
 const { Option } = Select;
 const { Text, Link, Title } = Typography;
 // Helper function to generate UUID compatible across all environments
@@ -29,6 +35,14 @@ const generateUUID = (): string => {
     const v = c == "x" ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
+};
+
+const sanitizeCreateUserTenantValues = (values: Record<string, any>) => {
+  const sanitizedValues = { ...values };
+  delete sanitizedValues.organization_id;
+  delete sanitizedValues.organization_ids;
+  delete sanitizedValues.organizations;
+  return sanitizedValues;
 };
 
 interface CreateuserProps {
@@ -66,13 +80,32 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
   const [invitationLinkData, setInvitationLinkData] = useState<InvitationLink | null>(null);
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
   const { data: organizations = [] } = useOrganizations();
+  const { data: projects = [], isLoading: isProjectsLoading } = useProjects({ includeNonAdmin: true });
+  const selectedCompanyIds = Form.useWatch("company_ids", form) || [];
+  const selectedProjectIds = Form.useWatch("project_ids", form) || [];
 
-  // Derive teams from the user's organizations, falling back to the teams prop
+  // Derive teams from the user's companies, falling back to the teams prop.
   const availableTeams = useMemo(() => {
     const orgTeams = organizations.flatMap((org) => org.teams || []);
     if (orgTeams.length > 0) return orgTeams;
     return teams || [];
   }, [organizations, teams]);
+
+  const availableProjects = useMemo(() => {
+    return filterProjectsByCompanyIds(projects, selectedCompanyIds);
+  }, [projects, selectedCompanyIds]);
+
+  useEffect(() => {
+    const nextProjectIds = pruneProjectIdsForCompanySelection({
+      projects,
+      selectedCompanyIds,
+      selectedProjectIds,
+      isLoading: isProjectsLoading,
+    });
+    if (nextProjectIds !== null) {
+      form.setFieldValue("project_ids", nextProjectIds);
+    }
+  }, [form, isProjectsLoading, projects, selectedCompanyIds, selectedProjectIds]);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -111,8 +144,8 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
     user_id: string;
     models?: string[];
     user_role: string;
-    organization_ids?: string[];
-    organizations?: string[];
+    company_ids?: string[];
+    project_ids?: string[];
     send_invite_email?: boolean;
   }) => {
     try {
@@ -120,14 +153,11 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
       if (!isEmbedded) {
         setIsModalVisible(true);
       }
-      if ((!formValues.models || formValues.models.length === 0) && formValues.user_role !== "proxy_admin") {
-        formValues.models = ["no-default-models"];
+      const createPayload = sanitizeCreateUserTenantValues(formValues);
+      if ((!createPayload.models || createPayload.models.length === 0) && createPayload.user_role !== "proxy_admin") {
+        createPayload.models = ["no-default-models"];
       }
-      if (formValues.organization_ids) {
-        formValues.organizations = formValues.organization_ids;
-        delete formValues.organization_ids;
-      }
-      const response = await userCreateCall(accessToken, null, formValues);
+      const response = await userCreateCall(accessToken, null, createPayload);
       await queryClient.invalidateQueries({ queryKey: ["userList"] });
       setApiuser(true);
       const user_id = response.data?.user_id || response.user_id;
@@ -221,6 +251,40 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
           <TeamDropdown />
         </Form.Item>
 
+        <Form.Item
+          label="Company"
+          name="company_ids"
+          help="The user will be added to the selected company/companies."
+        >
+          <Select mode="multiple" placeholder="Select Company" style={{ width: "100%" }}>
+            {organizations.map((org) => (
+              <Option key={getCompanyDisplayId(org)} value={getCompanyDisplayId(org)}>
+                {getCompanyDisplayName(org)} ({getCompanyDisplayId(org)})
+              </Option>
+            ))}
+          </Select>
+        </Form.Item>
+
+        <Form.Item
+          label="Project"
+          name="project_ids"
+          help="The user will be added to each selected project's team."
+        >
+          <Select
+            mode="multiple"
+            placeholder="Select Project"
+            style={{ width: "100%" }}
+            loading={isProjectsLoading}
+            disabled={isProjectsLoading}
+          >
+            {availableProjects.map((project) => (
+              <Option key={project.project_id} value={project.project_id}>
+                {project.project_alias || project.project_id} ({project.project_id})
+              </Option>
+            ))}
+          </Select>
+        </Form.Item>
+
         <Form.Item label="Metadata" name="metadata">
           <Input.TextArea rows={4} placeholder="Enter metadata as JSON" />
         </Form.Item>
@@ -288,7 +352,7 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
             label={
               <span>
                 Global Proxy Role{" "}
-                <Tooltip title="This role is independent of any team/org specific roles. Configure Team / Organization Admins in the Settings">
+                <Tooltip title="This role is independent of any team/company specific roles. Configure Team / Company Admins in Settings">
                   <InfoCircleOutlined />
                 </Tooltip>
               </span>
@@ -319,14 +383,34 @@ export const CreateUserButton: React.FC<CreateuserProps> = ({
           </Form.Item>
 
           <Form.Item
-            label="Organization"
-            name="organization_ids"
-            help="The user will be added to the selected organization(s)."
+            label="Company"
+            name="company_ids"
+            help="The user will be added to the selected company/companies."
           >
-            <Select mode="multiple" placeholder="Select Organization" style={{ width: "100%" }}>
+            <Select mode="multiple" placeholder="Select Company" style={{ width: "100%" }}>
               {organizations.map((org) => (
-                <Option key={org.organization_id} value={org.organization_id}>
-                  {org.organization_alias} ({org.organization_id})
+                <Option key={getCompanyDisplayId(org)} value={getCompanyDisplayId(org)}>
+                  {getCompanyDisplayName(org)} ({getCompanyDisplayId(org)})
+                </Option>
+              ))}
+            </Select>
+          </Form.Item>
+
+          <Form.Item
+            label="Project"
+            name="project_ids"
+            help="The user will be added to each selected project's team."
+          >
+            <Select
+              mode="multiple"
+              placeholder="Select Project"
+              style={{ width: "100%" }}
+              loading={isProjectsLoading}
+              disabled={isProjectsLoading}
+            >
+              {availableProjects.map((project) => (
+                <Option key={project.project_id} value={project.project_id}>
+                  {project.project_alias || project.project_id} ({project.project_id})
                 </Option>
               ))}
             </Select>

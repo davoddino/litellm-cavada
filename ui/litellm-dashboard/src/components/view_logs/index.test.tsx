@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import moment from "moment";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SpendLogsTable, { RequestViewer } from "./index";
-import type { LogEntry } from "./columns";
+import { createColumns, type LogEntry } from "./columns";
 import type { Row } from "@tanstack/react-table";
 import { renderWithProviders } from "../../../tests/test-utils";
 import { uiSpendLogsCall } from "../networking";
@@ -50,10 +50,24 @@ vi.mock("../key_team_helpers/filter_helpers", () => ({
   fetchAllTeams: vi.fn().mockResolvedValue([]),
 }));
 
+vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
+  useOrganizations: vi.fn(() => ({
+    data: [{ organization_id: "company-1", organization_alias: "Acme Company" }],
+  })),
+}));
+
+vi.mock("@/app/(dashboard)/hooks/projects/useProjects", () => ({
+  useProjects: vi.fn(() => ({
+    data: [{ project_id: "project-1", project_alias: "Support Project", company_id: "company-1" }],
+  })),
+}));
+
 const baseLogEntry: LogEntry = {
   request_id: "chatcmpl-test-id",
   api_key: "api-key",
   team_id: "team-id",
+  company_id: "company-1",
+  project_id: "project-1",
   model: "gpt-4",
   model_id: "gpt-4",
   call_type: "chat",
@@ -198,6 +212,40 @@ describe("SpendLogsTable", () => {
     sessionStorage.clear();
   });
 
+  it("should render Company and Project columns in request logs", async () => {
+    renderWithProviders(<SpendLogsTable {...defaultProps} />);
+
+    expect(await screen.findAllByText("Company")).not.toHaveLength(0);
+    expect(screen.getAllByText("Project")).not.toHaveLength(0);
+  });
+
+  it("should display Company and Project names in request log columns", () => {
+    const columns = createColumns();
+    const companyColumn = columns.find((column) => column.id === "company_id");
+    const projectColumn = columns.find((column) => column.id === "project_id");
+    const cellInfo = {
+      row: {
+        original: {
+          ...baseLogEntry,
+          company_name: "Acme Company",
+          project_name: "Support Project",
+        },
+      },
+    };
+
+    const CompanyCell = companyColumn?.cell as (info: unknown) => any;
+    const ProjectCell = projectColumn?.cell as (info: unknown) => any;
+    render(
+      <>
+        {CompanyCell(cellInfo)}
+        {ProjectCell(cellInfo)}
+      </>,
+    );
+
+    expect(screen.getByText("Acme Company")).toBeInTheDocument();
+    expect(screen.getByText("Support Project")).toBeInTheDocument();
+  });
+
   it("should call handleFilterResetFromHook when Reset Filters is clicked", async () => {
     const user = userEvent.setup();
     renderWithProviders(<SpendLogsTable {...defaultProps} />);
@@ -215,7 +263,9 @@ describe("SpendLogsTable", () => {
     renderWithProviders(<SpendLogsTable {...defaultProps} />);
 
     // Open the time range quick select dropdown (button shows current range like "Last 24 Hours")
-    const quickSelectButton = screen.getByRole("button", { name: /Last 24 Hours|Last 15 Minutes|Last Hour|Last 4 Hours|Last 7 Days/i });
+    const quickSelectButton = screen.getByRole("button", {
+      name: /Last 24 Hours|Last 15 Minutes|Last Hour|Last 4 Hours|Last 7 Days/i,
+    });
     await user.click(quickSelectButton);
 
     // Click "Custom Range" to enable custom date selection

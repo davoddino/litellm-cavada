@@ -61,6 +61,10 @@ const mockVectorStores: VectorStore[] = [
     custom_llm_provider: "openai",
     vector_store_name: "My OpenAI Store",
     vector_store_description: "A store for OpenAI vectors",
+    company_id: "company-alpha",
+    company_name: "Acme Labs",
+    project_id: "project-alpha",
+    project_name: "Project Alpha",
     created_at: "2024-01-15T10:30:00Z",
     updated_at: "2024-01-15T11:00:00Z",
     created_by: "user-1",
@@ -71,6 +75,8 @@ const mockVectorStores: VectorStore[] = [
     custom_llm_provider: "azure",
     vector_store_name: undefined, // Test missing name
     vector_store_description: "A store for Azure vectors with a very long description that should show a tooltip",
+    company_id: "company-beta",
+    project_id: "project-beta",
     created_at: "2024-01-10T09:15:00Z",
     updated_at: "2024-01-12T14:20:00Z",
   },
@@ -79,6 +85,10 @@ const mockVectorStores: VectorStore[] = [
     custom_llm_provider: "pg_vector",
     vector_store_name: "PostgreSQL Store",
     vector_store_description: undefined, // Test missing description
+    company_id: "company-gamma",
+    company_name: "Gamma Labs",
+    project_id: "project-gamma",
+    project_name: "Project Gamma",
     created_at: "2024-01-05T08:00:00Z",
     updated_at: "2024-01-08T16:45:00Z",
   },
@@ -128,11 +138,13 @@ describe("VectorStoreTable", () => {
       expect(screen.getByText("Name")).toBeInTheDocument();
       expect(screen.getByText("Description")).toBeInTheDocument();
       expect(screen.getByText("Provider")).toBeInTheDocument();
+      expect(screen.getByText("Company")).toBeInTheDocument();
+      expect(screen.getByText("Project")).toBeInTheDocument();
       expect(screen.getByText("Created At")).toBeInTheDocument();
       expect(screen.getByText("Updated At")).toBeInTheDocument();
-      // Check that we have the expected number of header cells (7 data + 1 actions)
+      // Check that we have the expected number of header cells (9 data + 1 actions)
       const headers = screen.getAllByRole("columnheader");
-      expect(headers).toHaveLength(8);
+      expect(headers).toHaveLength(10);
     });
 
     it("should render all vector store rows", () => {
@@ -239,6 +251,20 @@ describe("VectorStoreTable", () => {
       expect(mockGetProviderLogoAndName).toHaveBeenCalledWith("openai");
       expect(mockGetProviderLogoAndName).toHaveBeenCalledWith("azure");
       expect(mockGetProviderLogoAndName).toHaveBeenCalledWith("pg_vector");
+    });
+  });
+
+  describe("Company And Project Columns", () => {
+    it("should render Company and Project names when available", () => {
+      renderComponent();
+      expect(screen.getByText("Acme Labs")).toBeInTheDocument();
+      expect(screen.getByText("Project Alpha")).toBeInTheDocument();
+    });
+
+    it("should fall back to Company and Project IDs when names are unavailable", () => {
+      renderComponent();
+      expect(screen.getByText("company-beta")).toBeInTheDocument();
+      expect(screen.getByText("project-beta")).toBeInTheDocument();
     });
   });
 
@@ -386,7 +412,7 @@ describe("VectorStoreTable", () => {
     it("should span all columns in empty state", () => {
       renderComponent({ data: [] });
       const emptyCell = screen.getByText("No vector stores found").closest("td");
-      expect(emptyCell).toHaveAttribute("colSpan", "8"); // 7 data columns + 1 actions column
+      expect(emptyCell).toHaveAttribute("colSpan", "10"); // 9 data columns + 1 actions column
     });
   });
 
@@ -403,7 +429,7 @@ describe("VectorStoreTable", () => {
 
       renderComponent({ data: minimalData });
       expect(screen.getByText("minimal")).toBeInTheDocument();
-      expect(screen.getAllByText("-")).toHaveLength(3); // Name, description, and files fallbacks
+      expect(screen.getAllByText("-")).toHaveLength(5); // Name, description, files, Company, and Project fallbacks
     });
 
     it("should handle single vector store", () => {

@@ -12,4 +12,8 @@ export interface UserInfo {
   sso_user_id: string | null;
   budget_duration: string | null;
   metadata?: Record<string, unknown> | null;
+  company_ids?: string[];
+  company_names?: string[];
+  project_ids?: string[];
+  project_names?: string[];
 }

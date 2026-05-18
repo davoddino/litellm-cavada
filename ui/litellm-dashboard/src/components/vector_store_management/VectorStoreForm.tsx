@@ -2,7 +2,10 @@ import React, { useState, useEffect } from "react";
 import { TextInput, Button as TremorButton } from "@tremor/react";
 import { Modal, Form, Select, Tooltip, Input, Alert } from "antd";
 import { InfoCircleOutlined } from "@ant-design/icons";
-import { CredentialItem, vectorStoreCreateCall } from "../networking";
+import { CredentialItem, Organization, vectorStoreCreateCall } from "../networking";
+import { ProjectResponse } from "@/app/(dashboard)/hooks/projects/useProjects";
+import OrganizationDropdown from "../common_components/OrganizationDropdown";
+import ProjectDropdown from "../common_components/ProjectDropdown";
 import {
   VectorStoreProviders,
   vectorStoreProviderLogoMap,
@@ -19,6 +22,10 @@ interface VectorStoreFormProps {
   onSuccess: () => void;
   accessToken: string | null;
   credentials: CredentialItem[];
+  organizations?: Organization[] | null;
+  organizationsLoading?: boolean;
+  projects?: ProjectResponse[] | null;
+  projectsLoading?: boolean;
 }
 
 const VectorStoreForm: React.FC<VectorStoreFormProps> = ({
@@ -27,11 +34,16 @@ const VectorStoreForm: React.FC<VectorStoreFormProps> = ({
   onSuccess,
   accessToken,
   credentials,
+  organizations,
+  organizationsLoading,
+  projects,
+  projectsLoading,
 }) => {
   const [form] = Form.useForm();
   const [metadataJson, setMetadataJson] = useState("{}");
   const [selectedProvider, setSelectedProvider] = useState("bedrock");
   const [modelInfo, setModelInfo] = useState<ModelGroup[]>([]);
+  const selectedCompanyId = Form.useWatch("company_id", form);
 
   useEffect(() => {
     if (!accessToken) return;
@@ -70,6 +82,8 @@ const VectorStoreForm: React.FC<VectorStoreFormProps> = ({
         vector_store_description: formValues.vector_store_description,
         vector_store_metadata: metadata,
         litellm_credential_name: formValues.litellm_credential_name,
+        company_id: formValues.company_id,
+        project_id: formValues.project_id,
       };
 
       // pass all provider fields as litellm params dict
@@ -151,6 +165,26 @@ const VectorStoreForm: React.FC<VectorStoreFormProps> = ({
               );
             })}
           </Select>
+        </Form.Item>
+
+        <Form.Item label="Company" name="company_id" rules={[{ required: true, message: "Please select a Company" }]}>
+          <OrganizationDropdown
+            organizations={organizations}
+            loading={organizationsLoading}
+            onChange={(value) => {
+              form.setFieldsValue({ company_id: value, project_id: undefined });
+            }}
+            style={{ width: "100%" }}
+          />
+        </Form.Item>
+
+        <Form.Item label="Project" name="project_id" rules={[{ required: true, message: "Please select a Project" }]}>
+          <ProjectDropdown
+            projects={projects}
+            companyId={selectedCompanyId}
+            loading={projectsLoading}
+            disabled={!selectedCompanyId}
+          />
         </Form.Item>
 
         {/* PG Vector Setup Instructions */}

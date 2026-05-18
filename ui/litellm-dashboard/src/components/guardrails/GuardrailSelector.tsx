@@ -9,9 +9,19 @@ interface GuardrailSelectorProps {
   className?: string;
   accessToken: string;
   disabled?: boolean;
+  companyId?: string | null;
+  projectId?: string | null;
 }
 
-const GuardrailSelector: React.FC<GuardrailSelectorProps> = ({ onChange, value, className, accessToken, disabled }) => {
+const GuardrailSelector: React.FC<GuardrailSelectorProps> = ({
+  onChange,
+  value,
+  className,
+  accessToken,
+  disabled,
+  companyId,
+  projectId,
+}) => {
   const [guardrails, setGuardrails] = useState<Guardrail[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -21,7 +31,10 @@ const GuardrailSelector: React.FC<GuardrailSelectorProps> = ({ onChange, value, 
 
       setLoading(true);
       try {
-        const response = await getGuardrailsList(accessToken);
+        const guardrailScope = companyId || projectId ? { companyId, projectId } : undefined;
+        const response = guardrailScope
+          ? await getGuardrailsList(accessToken, guardrailScope)
+          : await getGuardrailsList(accessToken);
         console.log("Guardrails response:", response);
         if (response.guardrails) {
           console.log("Guardrails data:", response.guardrails);
@@ -35,7 +48,7 @@ const GuardrailSelector: React.FC<GuardrailSelectorProps> = ({ onChange, value, 
     };
 
     fetchGuardrails();
-  }, [accessToken]);
+  }, [accessToken, companyId, projectId]);
 
   const handleGuardrailChange = (selectedValues: string[]) => {
     console.log("Selected guardrails:", selectedValues);

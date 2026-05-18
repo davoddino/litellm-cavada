@@ -5,9 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchAvailableModelsForTeamOrKey } from "./key_team_helpers/fetch_available_models_team_key";
 import { fetchMCPAccessGroups, getGuardrailsList, teamCreateCall } from "./networking";
 import OldTeams from "./OldTeams";
+import { teamListCall as v2TeamListCall } from "@/app/(dashboard)/hooks/teams/useTeams";
 
 const mockTeamInfoView = vi.fn();
 const mockUseOrganizations = vi.fn();
+const mockUseProjects = vi.fn();
 
 vi.mock("./networking", () => ({
   teamCreateCall: vi.fn(),
@@ -94,6 +96,28 @@ vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
   useOrganizations: () => mockUseOrganizations(),
 }));
 
+vi.mock("@/app/(dashboard)/hooks/projects/useProjects", () => ({
+  useProjects: () => mockUseProjects(),
+}));
+
+vi.mock("./common_components/ProjectDropdown", () => ({
+  default: ({ projects = [], value, onChange }: { projects?: Array<{ project_id: string; project_alias?: string | null }>; value?: string; onChange?: (value?: string) => void }) => (
+    <select
+      aria-label="Project"
+      data-testid="project-filter"
+      value={value || ""}
+      onChange={(event) => onChange?.(event.target.value || undefined)}
+    >
+      <option value="">All Projects</option>
+      {projects.map((project) => (
+        <option key={project.project_id} value={project.project_id}>
+          {project.project_alias || project.project_id}
+        </option>
+      ))}
+    </select>
+  ),
+}));
+
 vi.mock("@/app/(dashboard)/hooks/accessGroups/useAccessGroups", () => ({
   useAccessGroups: vi.fn().mockReturnValue({
     data: [
@@ -130,6 +154,13 @@ const renderWithQueryClient = (component: React.ReactElement) => {
   return render(<QueryClientProvider client={queryClient}>{component}</QueryClientProvider>);
 };
 
+const mockV2TeamListCall = vi.mocked(v2TeamListCall);
+
+beforeEach(() => {
+  mockUseProjects.mockReturnValue({ data: [], isLoading: false });
+  mockV2TeamListCall.mockResolvedValue({ teams: [], total: 0, page: 1, page_size: 10, total_pages: 0 });
+});
+
 describe("OldTeams - handleCreate organization handling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -138,6 +169,7 @@ describe("OldTeams - handleCreate organization handling", () => {
     vi.mocked(fetchMCPAccessGroups).mockResolvedValue([]);
     vi.mocked(getGuardrailsList).mockResolvedValue({ guardrails: [] });
     mockUseOrganizations.mockReturnValue({ data: null });
+    mockUseProjects.mockReturnValue({ data: [], isLoading: false });
   });
 
   it("should not include organization_id when it's an empty string", async () => {
@@ -789,6 +821,7 @@ describe("OldTeams - access_group_ids in team create", () => {
       spend: 0,
     } as any);
     mockUseOrganizations.mockReturnValue({ data: [{ organization_id: "org-1", organization_alias: "Org 1", models: [], members: [] }] });
+    mockUseProjects.mockReturnValue({ data: [], isLoading: false });
   });
 
   it("should pass access_group_ids to teamCreateCall when creating team", async () => {
@@ -838,11 +871,13 @@ describe("OldTeams - access_group_ids in team create", () => {
         "test-token",
         expect.objectContaining({
           team_alias: "Test Team",
+          company_id: "org-1",
           models: ["gpt-4"],
           access_group_ids: ["ag-1", "ag-2"],
         }),
       );
     });
+    expect(vi.mocked(teamCreateCall).mock.calls[0][1]).not.toHaveProperty("organization_id");
   });
 });
 
@@ -895,7 +930,7 @@ describe("OldTeams - organization alias display", () => {
     const mockOrganizations = [
       {
         organization_id: "org-123",
-        organization_alias: "Test Organization",
+        organization_alias: "Test Company",
         budget_id: "budget-1",
         metadata: {},
         models: [],
@@ -942,9 +977,86 @@ describe("OldTeams - organization alias display", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText("Test Organization")).toBeInTheDocument();
+      expect(screen.getByText("Test Company")).toBeInTheDocument();
     });
     expect(screen.queryByText("org-123")).not.toBeInTheDocument();
+  });
+
+  it("should display Project column with project names and no Organization column", async () => {
+    mockUseOrganizations.mockReturnValue({ data: [] });
+
+    renderWithQueryClient(
+      <OldTeams
+        teams={[
+          {
+            team_id: "1",
+            team_alias: "Project Team",
+            organization_id: "company-1",
+            company_id: "company-1",
+            company_name: "Company One",
+            project_ids: ["project-1"],
+            project_names: ["Project One"],
+            models: ["gpt-4"],
+            max_budget: 100,
+            budget_duration: "1d",
+            tpm_limit: 1000,
+            rpm_limit: 1000,
+            created_at: new Date().toISOString(),
+            keys: [],
+            members_with_roles: [],
+            spend: 0,
+          },
+        ]}
+        searchParams={{}}
+        accessToken="test-token"
+        setTeams={vi.fn()}
+        userID="user-123"
+        userRole="Admin"
+        organizations={[]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Projects").length).toBeGreaterThan(0);
+    });
+    expect(screen.getByText("Project One")).toBeInTheDocument();
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+  });
+
+  it("should send project_id when filtering Teams by Project", async () => {
+    mockUseProjects.mockReturnValue({
+      data: [{ project_id: "project-1", project_alias: "Project One", company_id: "company-1" }],
+      isLoading: false,
+    });
+
+    renderWithQueryClient(
+      <OldTeams
+        teams={[]}
+        searchParams={{}}
+        accessToken="test-token"
+        setTeams={vi.fn()}
+        userID="user-123"
+        userRole="Admin"
+        organizations={[]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(mockV2TeamListCall).toHaveBeenCalled();
+    });
+
+    fireEvent.change(screen.getByTestId("project-filter"), { target: { value: "project-1" } });
+
+    await waitFor(() => {
+      expect(mockV2TeamListCall).toHaveBeenLastCalledWith(
+        "test-token",
+        1,
+        10,
+        expect.objectContaining({
+          projectID: "project-1",
+        }),
+      );
+    });
   });
 
   it("should display organization id when alias is not found", async () => {
@@ -1013,7 +1125,7 @@ describe("OldTeams - organization alias display", () => {
     );
 
     await waitFor(() => {
-      // When organization_id is null, the table shows "—" in the Organization column
+      // When organization_id is null, the table shows "-" in the Company column.
       expect(screen.getAllByText("—").length).toBeGreaterThan(0);
     });
   });

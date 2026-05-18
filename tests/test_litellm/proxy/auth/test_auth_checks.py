@@ -34,6 +34,7 @@ from litellm.proxy.auth.auth_checks import (
     ExperimentalUIJWTToken,
     _can_object_call_model,
     _can_object_call_vector_stores,
+    _check_agent_token_tenant_context,
     _check_end_user_budget,
     _check_team_member_budget,
     _get_fuzzy_user_object,
@@ -97,6 +98,82 @@ def invalid_sso_user_defined_values():
         models=["gpt-3.5-turbo"],
         max_budget=100.0,
     )
+
+
+@pytest.mark.asyncio
+async def test_should_allow_agent_key_when_company_project_context_matches(
+    monkeypatch,
+):
+    agent = MagicMock()
+    agent.company_id = "company-1"
+    agent.project_id = "project-1"
+    mock_registry = MagicMock()
+    mock_registry.get_agent_by_id = MagicMock(return_value=agent)
+    monkeypatch.setattr(
+        "litellm.proxy.agent_endpoints.agent_registry.global_agent_registry",
+        mock_registry,
+    )
+
+    await _check_agent_token_tenant_context(
+        valid_token=UserAPIKeyAuth(
+            agent_id="agent-1",
+            organization_id="company-1",
+            project_id="project-1",
+        ),
+        prisma_client=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_should_reject_agent_key_when_company_context_mismatches(monkeypatch):
+    agent = MagicMock()
+    agent.company_id = "company-1"
+    agent.project_id = "project-1"
+    mock_registry = MagicMock()
+    mock_registry.get_agent_by_id = MagicMock(return_value=agent)
+    monkeypatch.setattr(
+        "litellm.proxy.agent_endpoints.agent_registry.global_agent_registry",
+        mock_registry,
+    )
+
+    with pytest.raises(ProxyException) as exc_info:
+        await _check_agent_token_tenant_context(
+            valid_token=UserAPIKeyAuth(
+                agent_id="agent-1",
+                organization_id="company-2",
+                project_id="project-1",
+            ),
+            prisma_client=None,
+        )
+
+    assert str(exc_info.value.code) == str(status.HTTP_403_FORBIDDEN)
+    assert exc_info.value.param == "company_id"
+
+
+@pytest.mark.asyncio
+async def test_should_reject_agent_key_when_project_context_mismatches(monkeypatch):
+    agent = MagicMock()
+    agent.company_id = "company-1"
+    agent.project_id = "project-1"
+    mock_registry = MagicMock()
+    mock_registry.get_agent_by_id = MagicMock(return_value=agent)
+    monkeypatch.setattr(
+        "litellm.proxy.agent_endpoints.agent_registry.global_agent_registry",
+        mock_registry,
+    )
+
+    with pytest.raises(ProxyException) as exc_info:
+        await _check_agent_token_tenant_context(
+            valid_token=UserAPIKeyAuth(
+                agent_id="agent-1",
+                organization_id="company-1",
+                project_id="project-2",
+            ),
+            prisma_client=None,
+        )
+
+    assert str(exc_info.value.code) == str(status.HTTP_403_FORBIDDEN)
+    assert exc_info.value.param == "project_id"
 
 
 def test_get_experimental_ui_login_jwt_auth_token_valid(valid_sso_user_defined_values):

@@ -31,6 +31,7 @@ export interface DeletedKeysResponse {
 }
 
 export interface KeyListCallOptions {
+  companyID?: string | null;
   organizationID?: string | null;
   teamID?: string | null;
   projectID?: string | null;
@@ -59,7 +60,7 @@ const keyListCall = async (
       Object.entries({
         team_id: options.teamID,
         project_id: options.projectID,
-        organization_id: options.organizationID,
+        company_id: options.companyID ?? options.organizationID,
         key_alias: options.selectedKeyAlias,
         key_hash: options.keyHash,
         user_id: options.userID,

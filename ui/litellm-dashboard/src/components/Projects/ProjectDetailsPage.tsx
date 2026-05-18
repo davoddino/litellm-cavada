@@ -1,4 +1,5 @@
 import { useProjectDetails } from "@/app/(dashboard)/hooks/projects/useProjectDetails";
+import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
 import { useTeam } from "@/app/(dashboard)/hooks/teams/useTeams";
 import {
   Button,
@@ -20,6 +21,7 @@ import { BarChart } from "@tremor/react";
 import { ArrowLeftIcon, DollarSignIcon, EditIcon, KeyIcon, UsersIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 import DefaultProxyAdminTag from "../common_components/DefaultProxyAdminTag";
+import { getCompanyDisplayName } from "../common_components/OrganizationDropdown";
 import { EditProjectModal } from "./ProjectModals/EditProjectModal";
 
 const { Title, Text } = Typography;
@@ -43,6 +45,7 @@ interface ProjectDetailProps {
 export function ProjectDetail({ projectId, onBack }: ProjectDetailProps) {
   const { data: project, isLoading } = useProjectDetails(projectId);
   const { data: teamData } = useTeam(project?.team_id ?? undefined);
+  const { data: companies } = useOrganizations();
   // teamInfoCall returns { team_id, team_info: {...}, keys, team_memberships }
   const teamInfo: TeamInfoShape | undefined = ((teamData as unknown as { team_info?: TeamInfoShape })?.team_info ??
     teamData) as TeamInfoShape | undefined;
@@ -54,6 +57,15 @@ export function ProjectDetail({ projectId, onBack }: ProjectDetailProps) {
   const hasLimit = maxBudget != null && maxBudget > 0;
   const spendPercent = hasLimit ? Math.min((spend / maxBudget) * 100, 100) : 0;
   const spendColor = spendPercent >= 90 ? "#f5222d" : spendPercent >= 70 ? "#faad14" : "#52c41a";
+  const companyLabel = useMemo(() => {
+    if (!project?.company_id) return "—";
+    const company = companies?.find(
+      (item) =>
+        item.company_id === project.company_id ||
+        item.organization_id === project.company_id,
+    );
+    return company ? getCompanyDisplayName(company) : project.company_id;
+  }, [companies, project?.company_id]);
 
   const modelSpendData = useMemo(() => {
     const raw = (project?.model_spend ?? {}) as Record<string, number>;
@@ -125,6 +137,7 @@ export function ProjectDetail({ projectId, onBack }: ProjectDetailProps) {
       <Row style={{ marginBottom: 24 }}>
         <Card>
           <Descriptions title="Project Details" column={1}>
+            <Descriptions.Item label="Company">{companyLabel}</Descriptions.Item>
             <Descriptions.Item label="Description">{project.description || "\u2014"}</Descriptions.Item>
             <Descriptions.Item label="Created">
               {new Date(project.created_at).toLocaleString()}

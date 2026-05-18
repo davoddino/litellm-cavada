@@ -12,7 +12,9 @@ const mockDeletedTeam: DeletedTeam = {
   budget_duration: "1m",
   tpm_limit: 5000,
   rpm_limit: 500,
-  organization_id: "org-1",
+  organization_id: "company-1",
+  company_id: "company-1",
+  company_name: "Acme Company",
   created_at: "2024-10-01T10:00:00Z",
   keys: [],
   members_with_roles: [],
@@ -41,4 +43,14 @@ it("should display team information correctly", () => {
   expect(screen.getByText("Test Team")).toBeInTheDocument();
   expect(screen.getByText("team-1")).toBeInTheDocument();
   expect(screen.getByText("Showing 1 team")).toBeInTheDocument();
+});
+
+it("should render deleted team tenant as Company without Organization label", () => {
+  renderWithProviders(
+    <DeletedTeamsTable teams={[mockDeletedTeam]} isLoading={false} isFetching={false} />,
+  );
+
+  expect(screen.getByText("Company")).toBeInTheDocument();
+  expect(screen.getByText("Acme Company")).toBeInTheDocument();
+  expect(screen.queryByText("Organization")).not.toBeInTheDocument();
 });

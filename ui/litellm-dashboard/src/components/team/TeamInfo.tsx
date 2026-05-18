@@ -2,6 +2,7 @@ import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import { organizationKeys, useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
 import { useQueryClient } from "@tanstack/react-query";
 import UserSearchModal from "@/components/common_components/user_search_modal";
+import { getCompanyDisplayId, getCompanyDisplayName } from "@/components/common_components/OrganizationDropdown";
 import {
   getPoliciesList,
   getPolicyInfoWithGuardrails,
@@ -83,6 +84,10 @@ export interface TeamData {
     team_alias: string;
     team_id: string;
     organization_id: string | null;
+    company_id?: string | null;
+    company_name?: string | null;
+    project_ids?: string[];
+    project_names?: string[];
     admins: string[];
     members: string[];
     members_with_roles: Member[];
@@ -154,7 +159,7 @@ const getOrganizationModels = (organization: Organization | null, userModels: st
       // Treat as all-proxy-models (use userModels)
       tempModelsToPick = userModels;
     } else if (organization.models.length > 0) {
-      // Organization has specific models
+      // Company has specific models.
       tempModelsToPick = organization.models;
     } else {
       // Empty array [] is treated as all-proxy-models
@@ -529,8 +534,8 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
           ...(secretManagerSettings !== undefined ? { secret_manager_settings: secretManagerSettings } : {}),
         },
         ...(values.policies?.length > 0 ? { policies: values.policies } : {}),
-        ...(values.organization_id !== info.organization_id
-          ? { organization_id: values.organization_id ?? null }
+        ...(values.company_id !== (info.company_id ?? info.organization_id)
+          ? { company_id: values.company_id ?? null }
           : {}),
       };
 
@@ -970,7 +975,7 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                       secret_manager_settings: info.metadata?.secret_manager_settings
                         ? JSON.stringify(info.metadata.secret_manager_settings, null, 2)
                         : "",
-                      organization_id: info.organization_id,
+                      company_id: info.company_id ?? info.organization_id,
                       vector_stores: info.object_permission?.vector_stores || [],
                       mcp_servers: info.object_permission?.mcp_servers || [],
                       mcp_access_groups: info.object_permission?.mcp_access_groups || [],
@@ -1408,15 +1413,15 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                       </AccordionBody>
                     </Accordion>
 
-                    <Form.Item label="Organization" name="organization_id">
+                    <Form.Item label="Company" name="company_id">
                       <Select
                         allowClear
-                        placeholder="Select an organization"
+                        placeholder="Select a company"
                         showSearch
                         optionFilterProp="label"
                         options={userOrganizations.map((org) => ({
-                          value: org.organization_id,
-                          label: org.organization_alias || org.organization_id,
+                          value: getCompanyDisplayId(org),
+                          label: getCompanyDisplayName(org),
                         }))}
                       />
                     </Form.Item>
@@ -1604,8 +1609,12 @@ const TeamInfoView: React.FC<TeamInfoProps> = ({
                       )}
                     </div>
                     <div>
-                      <Text className="font-medium">Organization ID</Text>
-                      <div>{info.organization_id}</div>
+                      <Text className="font-medium">Company</Text>
+                      <div>{info.company_name ?? info.company_id ?? info.organization_id ?? "Not Set"}</div>
+                    </div>
+                    <div>
+                      <Text className="font-medium">Projects</Text>
+                      <div>{info.project_names?.length ? info.project_names.join(", ") : "No projects"}</div>
                     </div>
                     <div>
                       <Text className="font-medium">Status</Text>

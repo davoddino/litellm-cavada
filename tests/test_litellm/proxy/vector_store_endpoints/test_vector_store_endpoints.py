@@ -16,7 +16,7 @@ import litellm
 from litellm.integrations.vector_store_integrations.vector_store_pre_call_hook import (
     LiteLLM_ManagedVectorStore,
 )
-from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy._types import LiteLLM_ObjectPermissionTable, UserAPIKeyAuth
 from litellm.proxy.vector_store_endpoints.endpoints import (
     _update_request_data_with_litellm_managed_vector_store_registry,
 )
@@ -29,6 +29,7 @@ from litellm.proxy.vector_store_endpoints.management_endpoints import (
     new_vector_store,
 )
 from litellm.proxy.vector_store_endpoints.utils import (
+    can_user_access_vector_store,
     check_vector_store_permission,
     is_allowed_to_call_vector_store_endpoint,
     is_allowed_to_call_vector_store_files_endpoint,
@@ -1861,16 +1862,32 @@ async def test_new_vector_store_auto_resolves_from_router():
 def _stub_user_api_key(
     *,
     team_id=None,
+    company_id=None,
+    project_id=None,
     user_role=None,
     object_permission=None,
     object_permission_id=None,
     team_object_permission_id=None,
 ):
-    user = UserAPIKeyAuth(team_id=team_id, user_role=user_role)
+    user = UserAPIKeyAuth(
+        team_id=team_id,
+        company_id=company_id,
+        project_id=project_id,
+        user_role=user_role,
+    )
     user.object_permission = object_permission
     user.object_permission_id = object_permission_id
     user.team_object_permission_id = team_object_permission_id
     return user
+
+
+def _object_permission_with_vector_store(
+    vector_store_id: str,
+) -> LiteLLM_ObjectPermissionTable:
+    return LiteLLM_ObjectPermissionTable(
+        object_permission_id="perm-1",
+        vector_stores=[vector_store_id],
+    )
 
 
 class TestCheckVectorStoreAccess:
@@ -1878,14 +1895,14 @@ class TestCheckVectorStoreAccess:
 
     @pytest.mark.asyncio
     async def test_access_granted_when_no_team_id(self):
-        """Test that access is granted when vector store has no team_id (legacy behavior)."""
+        """Test that access is granted for legacy vector stores when the key has no tenant scope."""
         vector_store: LiteLLM_ManagedVectorStore = {
             "vector_store_id": "test-store",
             "custom_llm_provider": "openai",
             # No team_id field
         }
 
-        user = _stub_user_api_key(team_id="team-123")
+        user = _stub_user_api_key()
         result = await _check_vector_store_access(vector_store, user)
         assert result is True
 
@@ -1926,6 +1943,48 @@ class TestCheckVectorStoreAccess:
 
         user = _stub_user_api_key(team_id=None)
         result = await _check_vector_store_access(vector_store, user)
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_key_object_permission_allows_matching_project_vector_store(self):
+        vector_store: LiteLLM_ManagedVectorStore = {
+            "vector_store_id": "project-store",
+            "custom_llm_provider": "openai",
+            "team_id": "team-project",
+            "company_id": "company-alpha",
+            "project_id": "project-alpha",
+        }
+        user = _stub_user_api_key(
+            team_id="team-other",
+            company_id="company-alpha",
+            project_id="project-alpha",
+            object_permission=_object_permission_with_vector_store("project-store"),
+        )
+
+        result = await can_user_access_vector_store(vector_store, user)
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_key_object_permission_cannot_bypass_project_mismatch(self):
+        vector_store: LiteLLM_ManagedVectorStore = {
+            "vector_store_id": "other-project-store",
+            "custom_llm_provider": "openai",
+            "team_id": "team-other",
+            "company_id": "company-alpha",
+            "project_id": "project-other",
+        }
+        user = _stub_user_api_key(
+            team_id="team-project",
+            company_id="company-alpha",
+            project_id="project-alpha",
+            object_permission=_object_permission_with_vector_store(
+                "other-project-store"
+            ),
+        )
+
+        result = await can_user_access_vector_store(vector_store, user)
+
         assert result is False
 
 
@@ -2012,6 +2071,233 @@ async def test_create_vector_store_in_db():
     assert create_data["vector_store_description"] == vector_store_description
     assert create_data["team_id"] == team_id
     assert create_data["user_id"] == user_id
+
+
+@pytest.mark.asyncio
+async def test_new_vector_store_maps_company_project_to_backing_team():
+    from litellm.types.vector_stores import LiteLLM_ManagedVectorStore
+
+    mock_prisma_client = MagicMock()
+    project = {
+        "project_id": "project-alpha",
+        "project_alias": "Project Alpha",
+        "team_id": "team-project-alpha",
+        "company_id": "company-alpha",
+        "litellm_team_table": {
+            "team_id": "team-project-alpha",
+            "organization_id": "company-alpha",
+        },
+    }
+    company = {
+        "organization_id": "company-alpha",
+        "organization_alias": "Acme Labs",
+    }
+    mock_prisma_client.db.litellm_projecttable.find_unique = AsyncMock(
+        return_value=project
+    )
+    mock_prisma_client.db.litellm_projecttable.find_many = AsyncMock(
+        return_value=[project]
+    )
+    mock_prisma_client.db.litellm_teamtable.find_many = AsyncMock(
+        return_value=[project["litellm_team_table"]]
+    )
+    mock_prisma_client.db.litellm_organizationtable.find_many = AsyncMock(
+        return_value=[company]
+    )
+    mock_prisma_client.db.litellm_managedvectorstorestable.find_unique = AsyncMock(
+        return_value=None
+    )
+
+    created_data = {}
+
+    async def mock_create(*args, **kwargs):
+        created_data.update(kwargs.get("data", {}))
+        created_row = MagicMock()
+        created_row.model_dump.return_value = {
+            **created_data,
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+        }
+        return created_row
+
+    mock_prisma_client.db.litellm_managedvectorstorestable.create = AsyncMock(
+        side_effect=mock_create
+    )
+
+    vector_store_data: LiteLLM_ManagedVectorStore = {
+        "vector_store_id": "vs_project_alpha",
+        "custom_llm_provider": "openai",
+        "company_id": "company-alpha",
+        "project_id": "project-alpha",
+    }
+
+    with (
+        patch(
+            "litellm.proxy.vector_store_endpoints.management_endpoints.check_feature_access_for_user",
+            new_callable=AsyncMock,
+        ),
+        patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client),
+        patch.object(litellm, "vector_store_registry", None),
+    ):
+        response = await new_vector_store(
+            vector_store=vector_store_data,
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="user-alpha",
+                team_id="team-project-alpha",
+            ),
+        )
+
+    assert created_data["project_id"] == "project-alpha"
+    assert created_data["team_id"] == "team-project-alpha"
+    assert "company_id" not in created_data
+    response_vs = response["vector_store"]
+    assert response_vs["company_id"] == "company-alpha"
+    assert response_vs["company_name"] == "Acme Labs"
+    assert response_vs["project_id"] == "project-alpha"
+    assert response_vs["project_name"] == "Project Alpha"
+
+
+@pytest.mark.asyncio
+async def test_new_vector_store_rejects_project_company_conflict():
+    from litellm.types.vector_stores import LiteLLM_ManagedVectorStore
+
+    mock_prisma_client = MagicMock()
+    mock_prisma_client.db.litellm_projecttable.find_unique = AsyncMock(
+        return_value={
+            "project_id": "project-alpha",
+            "project_alias": "Project Alpha",
+            "team_id": "team-project-alpha",
+            "company_id": "company-alpha",
+            "litellm_team_table": {
+                "team_id": "team-project-alpha",
+                "organization_id": "company-alpha",
+            },
+        }
+    )
+
+    vector_store_data: LiteLLM_ManagedVectorStore = {
+        "vector_store_id": "vs_project_alpha",
+        "custom_llm_provider": "openai",
+        "company_id": "company-other",
+        "project_id": "project-alpha",
+    }
+
+    with (
+        patch(
+            "litellm.proxy.vector_store_endpoints.management_endpoints.check_feature_access_for_user",
+            new_callable=AsyncMock,
+        ),
+        patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client),
+        patch.object(litellm, "vector_store_registry", None),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await new_vector_store(
+                vector_store=vector_store_data,
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_id="user-alpha",
+                    team_id="team-project-alpha",
+                ),
+            )
+
+    assert exc_info.value.status_code == 400
+    assert "company_id=company-alpha" in exc_info.value.detail
+    mock_prisma_client.db.litellm_managedvectorstorestable.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_list_vector_stores_filters_and_returns_company_project_context():
+    from litellm.proxy.vector_store_endpoints.management_endpoints import (
+        list_vector_stores,
+    )
+
+    project_alpha = {
+        "project_id": "project-alpha",
+        "project_alias": "Project Alpha",
+        "team_id": "team-project-alpha",
+        "company_id": "company-alpha",
+        "litellm_team_table": {
+            "team_id": "team-project-alpha",
+            "organization_id": "company-alpha",
+        },
+    }
+    project_beta = {
+        "project_id": "project-beta",
+        "project_alias": "Project Beta",
+        "team_id": "team-project-beta",
+        "company_id": "company-beta",
+        "litellm_team_table": {
+            "team_id": "team-project-beta",
+            "organization_id": "company-beta",
+        },
+    }
+    mock_prisma_client = MagicMock()
+    mock_prisma_client.db.litellm_projecttable.find_unique = AsyncMock(
+        return_value=project_alpha
+    )
+    mock_prisma_client.db.litellm_projecttable.find_many = AsyncMock(
+        return_value=[project_alpha, project_beta]
+    )
+    mock_prisma_client.db.litellm_teamtable.find_many = AsyncMock(
+        return_value=[
+            project_alpha["litellm_team_table"],
+            project_beta["litellm_team_table"],
+        ]
+    )
+    mock_prisma_client.db.litellm_organizationtable.find_many = AsyncMock(
+        return_value=[
+            {
+                "organization_id": "company-alpha",
+                "organization_alias": "Acme Labs",
+            },
+            {
+                "organization_id": "company-beta",
+                "organization_alias": "Beta Labs",
+            },
+        ]
+    )
+
+    vector_stores = [
+        {
+            "vector_store_id": "vs-alpha",
+            "custom_llm_provider": "openai",
+            "team_id": "team-project-alpha",
+            "project_id": "project-alpha",
+        },
+        {
+            "vector_store_id": "vs-beta",
+            "custom_llm_provider": "openai",
+            "team_id": "team-project-alpha",
+            "project_id": "project-beta",
+        },
+    ]
+
+    with (
+        patch(
+            "litellm.proxy.vector_store_endpoints.management_endpoints.check_feature_access_for_user",
+            new_callable=AsyncMock,
+        ),
+        patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client),
+        patch.object(litellm, "vector_store_registry", None),
+        patch(
+            "litellm.proxy.vector_store_endpoints.management_endpoints.VectorStoreRegistry._get_vector_stores_from_db",
+            new=AsyncMock(return_value=vector_stores),
+        ),
+    ):
+        response = await list_vector_stores(
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="user-alpha",
+                team_id="team-project-alpha",
+            ),
+            company_id="company-alpha",
+            project_id="project-alpha",
+        )
+
+    assert response["total_count"] == 1
+    assert response["data"][0]["vector_store_id"] == "vs-alpha"
+    assert response["data"][0]["company_id"] == "company-alpha"
+    assert response["data"][0]["company_name"] == "Acme Labs"
+    assert response["data"][0]["project_id"] == "project-alpha"
+    assert response["data"][0]["project_name"] == "Project Alpha"
 
 
 @pytest.mark.asyncio
@@ -2227,6 +2513,9 @@ class TestUpdateVectorStoreAccessControlAndRedaction:
         mock_prisma_client.db.litellm_managedvectorstorestable.find_unique = AsyncMock(
             return_value=existing_row
         )
+        mock_prisma_client.db.litellm_teamtable.find_unique = AsyncMock(
+            return_value=None
+        )
 
         with (
             patch(
@@ -2324,3 +2613,104 @@ class TestUpdateVectorStoreAccessControlAndRedaction:
         params = response["vector_store"]["litellm_params"]
         assert params["api_key"] == REDACTED_BY_LITELM_STRING
         assert params["api_base"] == "https://api.openai.com/v1"
+
+    @pytest.mark.asyncio
+    async def test_update_maps_company_project_to_backing_team(self):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from litellm.proxy._types import UserAPIKeyAuth
+        from litellm.proxy.vector_store_endpoints.management_endpoints import (
+            update_vector_store,
+        )
+        from litellm.types.vector_stores import VectorStoreUpdateRequest
+
+        existing_row = MagicMock()
+        existing_row.model_dump = MagicMock(
+            return_value={
+                "vector_store_id": "vs-owned",
+                "team_id": "team-old",
+                "litellm_params": {},
+            }
+        )
+        project = {
+            "project_id": "project-alpha",
+            "project_alias": "Project Alpha",
+            "team_id": "team-project-alpha",
+            "company_id": "company-alpha",
+            "litellm_team_table": {
+                "team_id": "team-project-alpha",
+                "organization_id": "company-alpha",
+            },
+        }
+        updated_row = MagicMock()
+        updated_row.model_dump = MagicMock(
+            return_value={
+                "vector_store_id": "vs-owned",
+                "team_id": "team-project-alpha",
+                "project_id": "project-alpha",
+                "vector_store_description": "new desc",
+                "litellm_params": {},
+            }
+        )
+
+        mock_prisma_client = MagicMock()
+        mock_prisma_client.db.litellm_managedvectorstorestable.find_unique = AsyncMock(
+            return_value=existing_row
+        )
+        mock_prisma_client.db.litellm_managedvectorstorestable.update = AsyncMock(
+            return_value=updated_row
+        )
+        mock_prisma_client.db.litellm_projecttable.find_unique = AsyncMock(
+            return_value=project
+        )
+        mock_prisma_client.db.litellm_projecttable.find_many = AsyncMock(
+            return_value=[project]
+        )
+        mock_prisma_client.db.litellm_teamtable.find_many = AsyncMock(
+            return_value=[project["litellm_team_table"]]
+        )
+        mock_prisma_client.db.litellm_organizationtable.find_many = AsyncMock(
+            return_value=[
+                {
+                    "organization_id": "company-alpha",
+                    "organization_alias": "Acme Labs",
+                }
+            ]
+        )
+
+        with (
+            patch(
+                "litellm.proxy.vector_store_endpoints.management_endpoints.check_feature_access_for_user",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "litellm.proxy.vector_store_endpoints.management_endpoints._check_vector_store_access",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client),
+            patch("litellm.vector_store_registry", None),
+        ):
+            response = await update_vector_store(
+                data=VectorStoreUpdateRequest(
+                    vector_store_id="vs-owned",
+                    vector_store_description="new desc",
+                    company_id="company-alpha",
+                    project_id="project-alpha",
+                ),
+                user_api_key_dict=UserAPIKeyAuth(
+                    user_id="owner",
+                    team_id="team-project-alpha",
+                ),
+            )
+
+        update_data = (
+            mock_prisma_client.db.litellm_managedvectorstorestable.update.call_args.kwargs[
+                "data"
+            ]
+        )
+        assert update_data["project_id"] == "project-alpha"
+        assert update_data["team_id"] == "team-project-alpha"
+        assert "company_id" not in update_data
+        assert response["vector_store"]["company_id"] == "company-alpha"
+        assert response["vector_store"]["project_name"] == "Project Alpha"

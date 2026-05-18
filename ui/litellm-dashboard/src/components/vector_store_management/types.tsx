@@ -18,6 +18,11 @@ export interface VectorStore {
   vector_store_name?: string;
   vector_store_description?: string;
   vector_store_metadata?: VectorStoreMetadata;
+  team_id?: string | null;
+  company_id?: string | null;
+  company_name?: string | null;
+  project_id?: string | null;
+  project_name?: string | null;
   created_at: string;
   updated_at: string;
   created_by?: string;
@@ -34,6 +39,8 @@ export interface VectorStoreNewRequest {
   vector_store_name?: string;
   vector_store_description?: string;
   vector_store_metadata?: Record<string, any>;
+  company_id?: string;
+  project_id?: string;
 }
 
 export interface VectorStoreUpdateRequest {
@@ -42,6 +49,8 @@ export interface VectorStoreUpdateRequest {
   vector_store_name?: string;
   vector_store_description?: string;
   vector_store_metadata?: Record<string, any>;
+  company_id?: string;
+  project_id?: string;
 }
 
 export interface VectorStoreDeleteRequest {
@@ -73,6 +82,12 @@ export interface RAGIngestRequest {
     vector_store: {
       custom_llm_provider: string;
       vector_store_id?: string;
+    };
+    litellm_vector_store_params?: {
+      vector_store_name?: string;
+      vector_store_description?: string;
+      company_id?: string;
+      project_id?: string;
     };
   };
 }

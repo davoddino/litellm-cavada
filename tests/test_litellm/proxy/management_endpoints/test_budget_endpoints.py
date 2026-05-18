@@ -72,6 +72,16 @@ async def test_new_budget_success(client_and_mocks):
     mock_table.create.assert_awaited_once()
 
 
+def test_budget_openapi_uses_company_project_assignment_copy():
+    app.openapi_schema = None
+    description = app.openapi()["paths"]["/budget/new"]["post"]["description"]
+
+    assert "Companies" in description
+    assert "Projects" in description
+    assert "orgs" not in description
+    assert "Organization" not in description
+
+
 @pytest.mark.asyncio
 async def test_new_budget_db_not_connected(client_and_mocks, monkeypatch):
     client, mock_prisma, mock_table = client_and_mocks

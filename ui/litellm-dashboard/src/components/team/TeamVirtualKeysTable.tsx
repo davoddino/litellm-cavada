@@ -1,5 +1,3 @@
-// TO-DO: Standardize tables eventually
-
 "use client";
 import { useKeys } from "@/app/(dashboard)/hooks/keys/useKeys";
 import { formatNumberWithCommas } from "@/utils/dataUtils";
@@ -36,6 +34,7 @@ import KeyInfoView from "../templates/key_info_view";
 import { useQuery } from "@tanstack/react-query";
 import { fetchTeamFilterOptions } from "../key_team_helpers/filter_helpers";
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
+import { getCompanyDisplayName } from "../common_components/OrganizationDropdown";
 
 interface TeamVirtualKeysTableProps {
   teamId: string;
@@ -58,7 +57,8 @@ export function TeamVirtualKeysTable({ teamId, teamAlias, organization }: TeamVi
     pageSize: 50,
   });
   const [filters, setFilters] = useState<Record<string, string>>({
-    "Organization ID": "",
+    "Company ID": "",
+    "Project ID": "",
     "Key Alias": "",
     "User ID": "",
     "Sort By": "created_at",
@@ -78,7 +78,8 @@ export function TeamVirtualKeysTable({ teamId, teamAlias, organization }: TeamVi
     refetch,
   } = useKeys(pageIndex + 1, pageSize, {
     teamID: teamId,
-    organizationID: filters["Organization ID"]?.trim() || undefined,
+    companyID: filters["Company ID"]?.trim() || undefined,
+    projectID: filters["Project ID"]?.trim() || undefined,
     selectedKeyAlias: filters["Key Alias"]?.trim() || undefined,
     userID: filters["User ID"]?.trim() || undefined,
     sortBy: sortBy || undefined,
@@ -92,6 +93,7 @@ export function TeamVirtualKeysTable({ teamId, teamAlias, organization }: TeamVi
     if (!orgId) return kList;
     return kList.map((k: KeyResponse) => ({
       ...k,
+      company_id: (k.company_id ?? k.organization_id ?? k.org_id) || orgId,
       organization_id: (k.organization_id ?? k.org_id) || orgId,
     }));
   }, [keys?.keys, organization?.organization_id]);
@@ -109,6 +111,7 @@ export function TeamVirtualKeysTable({ teamId, teamAlias, organization }: TeamVi
       tpm_limit: null,
       rpm_limit: null,
       organization_id: organization?.organization_id || "",
+      company_id: organization?.organization_id || "",
       created_at: "",
       keys: [],
       members_with_roles: [],
@@ -126,6 +129,7 @@ export function TeamVirtualKeysTable({ teamId, teamAlias, organization }: TeamVi
   const teamFilterOptions = teamFilterOptionsQuery.data || {
     keyAliases: [],
     organizationIds: [],
+    projectOptions: [],
     userIds: [],
   };
 
@@ -141,7 +145,8 @@ export function TeamVirtualKeysTable({ teamId, teamAlias, organization }: TeamVi
   const handleFilterChange = useCallback((newFilters: Record<string, string>, skipDebounce = false) => {
     setFilters((prev) => ({
       ...prev,
-      "Organization ID": newFilters["Organization ID"] ?? prev["Organization ID"],
+      "Company ID": newFilters["Company ID"] ?? prev["Company ID"],
+      "Project ID": newFilters["Project ID"] ?? prev["Project ID"],
       "Key Alias": newFilters["Key Alias"] ?? prev["Key Alias"],
       "User ID": newFilters["User ID"] ?? prev["User ID"],
       "Sort By": newFilters["Sort By"] ?? prev["Sort By"] ?? "created_at",
@@ -154,7 +159,8 @@ export function TeamVirtualKeysTable({ teamId, teamAlias, organization }: TeamVi
 
   const handleFilterReset = useCallback(() => {
     setFilters({
-      "Organization ID": "",
+      "Company ID": "",
+      "Project ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
@@ -166,8 +172,8 @@ export function TeamVirtualKeysTable({ teamId, teamAlias, organization }: TeamVi
   const filterOptions: FilterOption[] = useMemo(
     () => [
       {
-        name: "Organization ID",
-        label: "Organization ID",
+        name: "Company ID",
+        label: "Company",
         isSearchable: true,
         searchFn: async (searchText: string) => {
           const { organizationIds } = teamFilterOptions;
@@ -177,6 +183,25 @@ export function TeamVirtualKeysTable({ teamId, teamAlias, organization }: TeamVi
             ? organizationIds.filter((id) => id.toLowerCase().includes(lower))
             : organizationIds;
           return filtered.map((id) => ({ label: id, value: id }));
+        },
+      },
+      {
+        name: "Project ID",
+        label: "Project",
+        isSearchable: true,
+        searchFn: async (searchText: string) => {
+          const projectOptions = teamFilterOptions.projectOptions ?? [];
+          if (!projectOptions.length) return [];
+          const lower = searchText.toLowerCase();
+          const filtered = lower
+            ? projectOptions.filter(
+                (project) => project.id.toLowerCase().includes(lower) || project.label.toLowerCase().includes(lower),
+              )
+            : projectOptions;
+          return filtered.map((project) => ({
+            label: project.label,
+            value: project.id,
+          }));
         },
       },
       {
@@ -271,12 +296,34 @@ export function TeamVirtualKeysTable({ teamId, teamAlias, organization }: TeamVi
         cell: (info) => <span className="font-mono text-xs">{info.getValue() as string}</span>,
       },
       {
-        id: "organization_id",
-        accessorKey: "organization_id",
-        header: "Organization ID",
+        id: "company_id",
+        accessorKey: "company_id",
+        header: "Company",
         size: 140,
         enableSorting: false,
-        cell: (info) => (info.getValue() ? info.renderValue() : "-"),
+        cell: ({ row }) => {
+          const companyId = row.original.company_id ?? row.original.organization_id ?? row.original.org_id;
+          if (!companyId) return "-";
+          const companyName =
+            row.original.company_name ||
+            (organization?.organization_id === companyId || organization?.company_id === companyId
+              ? getCompanyDisplayName(organization)
+              : null);
+          return companyName || companyId;
+        },
+      },
+      {
+        id: "project_id",
+        accessorKey: "project_id",
+        header: "Project",
+        size: 140,
+        enableSorting: false,
+        cell: ({ row }) => {
+          const projectId = row.original.project_id;
+          if (!projectId) return "-";
+          const projectName = row.original.project_name ?? row.original.project_alias;
+          return projectName ? `${projectName} (${projectId})` : projectId;
+        },
       },
       {
         id: "user_email",
@@ -578,7 +625,7 @@ export function TeamVirtualKeysTable({ teamId, teamAlias, organization }: TeamVi
         },
       },
     ],
-    [expandedAccordions],
+    [expandedAccordions, organization],
   );
 
   const handleSortingChange = useCallback(

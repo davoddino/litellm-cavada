@@ -4,6 +4,7 @@ import json
 import os
 import sys
 from datetime import timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -60,7 +61,16 @@ def _filter_logs_by_date_range(logs, where):
     return filtered
 
 
-def make_ui_spend_logs_mock_prisma(mock_spend_logs, filter_fn, team_lookup_fn=None):
+def make_ui_spend_logs_mock_prisma(
+    mock_spend_logs,
+    filter_fn,
+    team_lookup_fn=None,
+    query_capture=None,
+    organization_membership_lookup_fn=None,
+    project_lookup_fn=None,
+    organization_find_many_fn=None,
+    project_find_many_fn=None,
+):
     """
     Create a MockPrismaClient for /spend/logs/ui endpoint tests.
 
@@ -70,6 +80,16 @@ def make_ui_spend_logs_mock_prisma(mock_spend_logs, filter_fn, team_lookup_fn=No
                    returns the filtered list of logs for that query.
         team_lookup_fn: Optional async callable for team RBAC (find_unique).
                         If provided, adds litellm_teamtable to db.
+        query_capture: Optional dict used by contract tests to inspect the
+                       raw SQL and parameters sent to query_raw().
+        organization_membership_lookup_fn: Optional async callable for Company
+                        admin checks (find_unique).
+        project_lookup_fn: Optional async callable for Project ownership checks
+                        (find_unique).
+        organization_find_many_fn: Optional async callable for Company name
+                        enrichment (find_many).
+        project_find_many_fn: Optional async callable for Project name
+                        enrichment (find_many).
     """
     filtered_holder = []
 
@@ -82,17 +102,41 @@ def make_ui_spend_logs_mock_prisma(mock_spend_logs, filter_fn, team_lookup_fn=No
             return len(filtered)
 
         async def query_raw(self, sql_query, *params):
+            if query_capture is not None:
+                query_capture["sql"] = sql_query
+                query_capture["params"] = params
             page_size = params[-2] if len(params) >= 2 else 50
             skip = params[-1] if len(params) >= 1 else 0
             return filtered_holder[skip : skip + page_size]
+
+    class MockLookupTable:
+        def __init__(self, find_unique_fn=None, find_many_fn=None):
+            if find_unique_fn is not None:
+                self.find_unique = find_unique_fn
+            if find_many_fn is not None:
+                self.find_many = find_many_fn
 
     class MockPrismaClient:
         def __init__(self):
             self.db = MockDB()
             self.db.litellm_spendlogs = self.db
             if team_lookup_fn is not None:
-                self.db.litellm_teamtable = self
-                self.find_unique = team_lookup_fn
+                self.db.litellm_teamtable = MockLookupTable(
+                    find_unique_fn=team_lookup_fn
+                )
+            if organization_membership_lookup_fn is not None:
+                self.db.litellm_organizationmembership = MockLookupTable(
+                    find_unique_fn=organization_membership_lookup_fn
+                )
+            if organization_find_many_fn is not None:
+                self.db.litellm_organizationtable = MockLookupTable(
+                    find_many_fn=organization_find_many_fn
+                )
+            if project_lookup_fn is not None or project_find_many_fn is not None:
+                self.db.litellm_projecttable = MockLookupTable(
+                    find_unique_fn=project_lookup_fn,
+                    find_many_fn=project_find_many_fn,
+                )
 
     return MockPrismaClient()
 
@@ -349,6 +393,7 @@ ignored_keys = [
     "endTime",
     "request_duration_ms",
     "organization_id",
+    "project_id",
     "metadata.model_map_information",
     "metadata.usage_object",
     "metadata.cold_storage_object_key",
@@ -402,6 +447,29 @@ def add_anthropic_api_key_to_env(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-1234567890")
 
 
+def _openapi_query_parameter_names(client: TestClient, path: str) -> set[str]:
+    app.openapi_schema = None
+    response = client.get("/openapi.json")
+    assert response.status_code == 200
+    parameters = response.json()["paths"][path]["get"].get("parameters", [])
+    return {parameter["name"] for parameter in parameters}
+
+
+def test_usage_openapi_exposes_company_project_filters_not_organization_aliases(
+    client,
+):
+    spend_log_params = _openapi_query_parameter_names(client, "/spend/logs/v2")
+    assert {"company_id", "project_id"}.issubset(spend_log_params)
+    assert "organization_id" not in spend_log_params
+
+    company_activity_params = _openapi_query_parameter_names(
+        client, "/company/daily/activity"
+    )
+    assert {"company_id", "company_ids"}.issubset(company_activity_params)
+    assert "organization_ids" not in company_activity_params
+    assert "exclude_organization_ids" not in company_activity_params
+
+
 @pytest.fixture
 def disable_budget_sync(monkeypatch):
     """Disable periodic sync during tests"""
@@ -452,6 +520,8 @@ async def test_ui_view_spend_logs_with_user_id(client, monkeypatch):
             "api_key": "sk-test-key",
             "user": "test_user_1",
             "team_id": "team1",
+            "organization_id": "company-123",
+            "project_id": "project-123",
             "spend": 0.05,
             "startTime": datetime.datetime.now(timezone.utc).isoformat(),
             "model": "gpt-3.5-turbo",
@@ -1216,6 +1286,931 @@ async def test_ui_view_spend_logs_team_admin_can_view_team_spend(client, monkeyp
         assert data["data"][0]["team_id"] == "team_admin_team"
     finally:
         app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+
+@pytest.mark.asyncio
+async def test_ui_view_spend_logs_with_company_and_project_filters(client, monkeypatch):
+    mock_spend_logs = [
+        {
+            "id": "log1",
+            "request_id": "req-company-project",
+            "api_key": "sk-test-key",
+            "user": "test_user_1",
+            "team_id": "team1",
+            "organization_id": "company-123",
+            "project_id": "project-123",
+            "spend": 0.05,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-3.5-turbo",
+        },
+        {
+            "id": "log2",
+            "request_id": "req-other-project",
+            "api_key": "sk-test-key",
+            "user": "test_user_2",
+            "team_id": "team2",
+            "organization_id": "company-999",
+            "project_id": "project-999",
+            "spend": 0.10,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-4",
+        },
+    ]
+
+    def filter_by_company_and_project(where):
+        result = mock_spend_logs
+        if where.get("organization_id") == "company-123":
+            result = [
+                log for log in result if log.get("organization_id") == "company-123"
+            ]
+        if where.get("project_id") == "project-123":
+            result = [log for log in result if log.get("project_id") == "project-123"]
+        return result
+
+    async def organization_find_many(where):
+        assert where == {"organization_id": {"in": ["company-123"]}}
+        organization = MagicMock()
+        organization.organization_id = "company-123"
+        organization.organization_alias = "Acme Company"
+        return [organization]
+
+    async def project_find_many(where):
+        assert where == {"project_id": {"in": ["project-123"]}}
+        project = MagicMock()
+        project.project_id = "project-123"
+        project.project_alias = "Support Project"
+        return [project]
+
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.prisma_client",
+        make_ui_spend_logs_mock_prisma(
+            mock_spend_logs,
+            filter_by_company_and_project,
+            organization_find_many_fn=organization_find_many,
+            project_find_many_fn=project_find_many,
+        ),
+    )
+    monkeypatch.setattr(
+        "litellm.proxy.spend_tracking.spend_management_endpoints._is_admin_view_safe",
+        lambda user_api_key_dict: True,
+    )
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        user_role=LitellmUserRoles.PROXY_ADMIN, user_id="admin_user"
+    )
+
+    try:
+        start_date, end_date = _default_date_range()
+        response = client.get(
+            "/spend/logs/ui",
+            params={
+                "company_id": "company-123",
+                "project_id": "project-123",
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+            headers={"Authorization": "Bearer sk-test"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 1
+        assert body["data"][0]["request_id"] == "req-company-project"
+        assert body["data"][0]["company_id"] == "company-123"
+        assert body["data"][0]["company_name"] == "Acme Company"
+        assert body["data"][0]["organization_id"] == "company-123"
+        assert body["data"][0]["project_id"] == "project-123"
+        assert body["data"][0]["project_name"] == "Support Project"
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+
+@pytest.mark.asyncio
+async def test_ui_view_spend_logs_company_project_filters_apply_to_raw_sql(
+    client, monkeypatch
+):
+    mock_spend_logs = [
+        {
+            "id": "log1",
+            "request_id": "req-company-project",
+            "api_key": "sk-test-key",
+            "user": "test_user_1",
+            "team_id": "team1",
+            "organization_id": "company-123",
+            "project_id": "project-123",
+            "spend": 0.05,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-3.5-turbo",
+        },
+        {
+            "id": "log2",
+            "request_id": "req-other-project",
+            "api_key": "sk-test-key",
+            "user": "test_user_2",
+            "team_id": "team2",
+            "organization_id": "company-999",
+            "project_id": "project-999",
+            "spend": 0.10,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-4",
+        },
+    ]
+    query_capture = {}
+
+    def filter_by_effective_scope(where):
+        result = mock_spend_logs
+        if where.get("organization_id"):
+            result = [
+                log
+                for log in result
+                if log.get("organization_id") == where["organization_id"]
+            ]
+        if where.get("project_id"):
+            result = [
+                log for log in result if log.get("project_id") == where["project_id"]
+            ]
+        return result
+
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.prisma_client",
+        make_ui_spend_logs_mock_prisma(
+            mock_spend_logs,
+            filter_by_effective_scope,
+            query_capture=query_capture,
+        ),
+    )
+    monkeypatch.setattr(
+        "litellm.proxy.spend_tracking.spend_management_endpoints._is_admin_view_safe",
+        lambda user_api_key_dict: True,
+    )
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        user_role=LitellmUserRoles.PROXY_ADMIN, user_id="admin_user"
+    )
+
+    try:
+        start_date, end_date = _default_date_range()
+        response = client.get(
+            "/spend/logs/ui",
+            params={
+                "company_id": "company-123",
+                "project_id": "project-123",
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+            headers={"Authorization": "Bearer sk-test"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 1
+        assert body["data"][0]["request_id"] == "req-company-project"
+        assert body["data"][0]["company_id"] == "company-123"
+        assert body["data"][0]["project_id"] == "project-123"
+
+        sql = query_capture["sql"]
+        params = query_capture["params"]
+        assert "organization_id = $" in sql
+        assert "project_id = $" in sql
+        assert "company-123" in params
+        assert "project-123" in params
+        assert "company-999" not in params
+        assert "project-999" not in params
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+
+def _matches_mock_where(row, where):
+    for field, condition in where.items():
+        value = getattr(row, field, None)
+        if isinstance(condition, dict):
+            if "in" in condition and value not in condition["in"]:
+                return False
+            if "equals" in condition and value != condition["equals"]:
+                return False
+            continue
+        if value != condition:
+            return False
+    return True
+
+
+class _InMemoryDailySpendTable:
+    def __init__(self, records):
+        self.records = records
+        self.last_where = None
+
+    def _filtered(self, where):
+        result = []
+        date_range = where.get("date", {})
+        for record in self.records:
+            date_value = getattr(record, "date")
+            if "gte" in date_range and date_value < date_range["gte"]:
+                continue
+            if "lte" in date_range and date_value > date_range["lte"]:
+                continue
+            non_date_where = {k: v for k, v in where.items() if k != "date"}
+            if _matches_mock_where(record, non_date_where):
+                result.append(record)
+        return result
+
+    async def count(self, where):
+        self.last_where = where
+        return len(self._filtered(where))
+
+    async def find_many(self, where, skip=0, take=10, **kwargs):
+        self.last_where = where
+        return self._filtered(where)[skip : skip + take]
+
+
+def _daily_usage_record(entity_field, entity_id):
+    return SimpleNamespace(
+        **{
+            entity_field: entity_id,
+            "date": "2026-05-18",
+            "api_key": "runtime-key-hash",
+            "model": "gpt-4",
+            "model_group": "gpt-4",
+            "custom_llm_provider": "openai",
+            "mcp_namespaced_tool_name": None,
+            "endpoint": "/chat/completions",
+            "spend": 0.25,
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "api_requests": 1,
+            "successful_requests": 1,
+            "failed_requests": 0,
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_virtual_key_company_project_usage_is_visible_in_logs_and_daily_activity(
+    client, monkeypatch
+):
+    from enterprise.litellm_enterprise.proxy.management_endpoints import (
+        project_endpoints,
+    )
+    from litellm.proxy.management_endpoints import organization_endpoints
+
+    team = _SpendLogAuthTeamRow("team-123", "company-123")
+    project = SimpleNamespace(
+        project_id="project-123",
+        project_alias="Support Project",
+        team_id=team.team_id,
+        company_id="company-123",
+        litellm_team_table=team,
+    )
+    company = SimpleNamespace(
+        organization_id="company-123",
+        organization_alias="Acme Company",
+    )
+    virtual_key = SimpleNamespace(
+        token="runtime-key-hash",
+        key_alias="Runtime Project Key",
+        team_id=team.team_id,
+    )
+    mock_spend_logs = [
+        {
+            "id": "log1",
+            "request_id": "req-company-project-runtime",
+            "api_key": "runtime-key-hash",
+            "user": "runtime-user",
+            "team_id": team.team_id,
+            "organization_id": "company-123",
+            "project_id": "project-123",
+            "spend": 0.25,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-4",
+        },
+        {
+            "id": "log2",
+            "request_id": "req-other-company-project",
+            "api_key": "runtime-key-hash",
+            "user": "runtime-user",
+            "team_id": "team-999",
+            "organization_id": "company-999",
+            "project_id": "project-999",
+            "spend": 0.10,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-4",
+        },
+    ]
+
+    def filter_by_company_project_and_key(where):
+        result = mock_spend_logs
+        for field in ("organization_id", "project_id", "api_key"):
+            if where.get(field):
+                result = [log for log in result if log.get(field) == where[field]]
+        return result
+
+    async def organization_find_many(where):
+        return [company] if _matches_mock_where(company, where) else []
+
+    async def project_find_many(where, include=None):
+        return [project] if _matches_mock_where(project, where) else []
+
+    async def team_find_many(where):
+        return [team] if _matches_mock_where(team, where) else []
+
+    prisma_client = make_ui_spend_logs_mock_prisma(
+        mock_spend_logs,
+        filter_by_company_project_and_key,
+        organization_find_many_fn=organization_find_many,
+        project_find_many_fn=project_find_many,
+    )
+    prisma_client.db.litellm_teamtable = SimpleNamespace(find_many=team_find_many)
+    prisma_client.db.litellm_dailyorganizationspend = _InMemoryDailySpendTable(
+        [_daily_usage_record("organization_id", "company-123")]
+    )
+    prisma_client.db.litellm_dailyprojectspend = _InMemoryDailySpendTable(
+        [_daily_usage_record("project_id", "project-123")]
+    )
+    prisma_client.db.litellm_verificationtoken = SimpleNamespace(
+        find_many=AsyncMock(return_value=[virtual_key])
+    )
+    prisma_client.db.litellm_deletedverificationtoken = SimpleNamespace(
+        find_many=AsyncMock(return_value=[])
+    )
+
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", prisma_client)
+    monkeypatch.setattr(
+        "litellm.proxy.spend_tracking.spend_management_endpoints._is_admin_view_safe",
+        lambda user_api_key_dict: True,
+    )
+    admin_auth = UserAPIKeyAuth(
+        user_role=LitellmUserRoles.PROXY_ADMIN,
+        user_id="admin_user",
+    )
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: admin_auth
+
+    try:
+        start_date, end_date = _default_date_range()
+        logs_response = client.get(
+            "/spend/logs/ui",
+            params={
+                "company_id": "company-123",
+                "project_id": "project-123",
+                "api_key": "runtime-key-hash",
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+            headers={"Authorization": "Bearer sk-test"},
+        )
+
+        assert logs_response.status_code == 200
+        logs_body = logs_response.json()
+        assert logs_body["total"] == 1
+        assert logs_body["data"][0]["request_id"] == "req-company-project-runtime"
+        assert logs_body["data"][0]["company_id"] == "company-123"
+        assert logs_body["data"][0]["company_name"] == "Acme Company"
+        assert logs_body["data"][0]["project_id"] == "project-123"
+        assert logs_body["data"][0]["project_name"] == "Support Project"
+
+        company_daily = await organization_endpoints.get_organization_daily_activity(
+            company_id="company-123",
+            start_date="2026-05-18",
+            end_date="2026-05-18",
+            api_key="runtime-key-hash",
+            user_api_key_dict=admin_auth,
+        )
+        assert company_daily.metadata.total_spend == 0.25
+        assert company_daily.metadata.total_api_requests == 1
+        assert (
+            prisma_client.db.litellm_dailyorganizationspend.last_where[
+                "organization_id"
+            ]
+            == {"in": ["company-123"]}
+        )
+        assert (
+            prisma_client.db.litellm_dailyorganizationspend.last_where["api_key"]
+            == "runtime-key-hash"
+        )
+
+        project_daily = await project_endpoints.get_project_daily_activity(
+            project_id="project-123",
+            company_id="company-123",
+            start_date="2026-05-18",
+            end_date="2026-05-18",
+            api_key="runtime-key-hash",
+            user_api_key_dict=admin_auth,
+        )
+        assert project_daily.metadata.total_spend == 0.25
+        assert project_daily.metadata.total_api_requests == 1
+        assert prisma_client.db.litellm_dailyprojectspend.last_where["project_id"] == {
+            "in": ["project-123"]
+        }
+        assert (
+            prisma_client.db.litellm_dailyprojectspend.last_where["api_key"]
+            == "runtime-key-hash"
+        )
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+
+class _SpendLogAuthTeamRow:
+    def __init__(
+        self,
+        team_id: str,
+        company_id: str,
+        members_with_roles=None,
+        permissions=None,
+    ):
+        self.team_id = team_id
+        self.organization_id = company_id
+        self.members_with_roles = members_with_roles or []
+        self.team_member_permissions = permissions
+
+    def model_dump(self):
+        return {
+            "team_id": self.team_id,
+            "organization_id": self.organization_id,
+            "members_with_roles": self.members_with_roles,
+            "team_member_permissions": self.team_member_permissions,
+        }
+
+
+def _spend_log_project_row(project_id: str, team: _SpendLogAuthTeamRow):
+    project = MagicMock()
+    project.project_id = project_id
+    project.team_id = team.team_id
+    project.company_id = None
+    project.litellm_team_table = team
+    return project
+
+
+def _company_admin_lookup_for(admin_company_ids):
+    async def _lookup(where):
+        user_org = where["user_id_organization_id"]
+        if user_org["organization_id"] in admin_company_ids:
+            membership = MagicMock()
+            membership.user_role = LitellmUserRoles.ORG_ADMIN.value
+            return membership
+        return None
+
+    return _lookup
+
+
+def _project_lookup_for(projects):
+    async def _lookup(where, include=None):
+        return projects.get(where["project_id"])
+
+    return _lookup
+
+
+def _team_lookup_for(teams):
+    async def _lookup(where):
+        return teams.get(where["team_id"])
+
+    return _lookup
+
+
+@pytest.mark.asyncio
+async def test_ui_view_spend_logs_company_admin_can_view_company_project_scope(
+    client, monkeypatch
+):
+    team = _SpendLogAuthTeamRow("team-123", "company-123")
+    project = _spend_log_project_row("project-123", team)
+    mock_spend_logs = [
+        {
+            "id": "log1",
+            "request_id": "req-company-project",
+            "api_key": "sk-test-key",
+            "user": "other-user",
+            "team_id": "team-123",
+            "organization_id": "company-123",
+            "project_id": "project-123",
+            "spend": 0.05,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-4",
+        },
+        {
+            "id": "log2",
+            "request_id": "req-other-company",
+            "api_key": "sk-test-key",
+            "user": "other-user",
+            "team_id": "team-999",
+            "organization_id": "company-999",
+            "project_id": "project-999",
+            "spend": 0.10,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-4",
+        },
+    ]
+
+    def filter_by_scope(where):
+        return [
+            log
+            for log in mock_spend_logs
+            if log["organization_id"] == where.get("organization_id")
+            and log["project_id"] == where.get("project_id")
+        ]
+
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.prisma_client",
+        make_ui_spend_logs_mock_prisma(
+            mock_spend_logs,
+            filter_by_scope,
+            team_lookup_fn=_team_lookup_for({"team-123": team}),
+            organization_membership_lookup_fn=_company_admin_lookup_for(
+                {"company-123"}
+            ),
+            project_lookup_fn=_project_lookup_for({"project-123": project}),
+        ),
+    )
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="company-admin",
+    )
+
+    try:
+        start_date, end_date = _default_date_range()
+        response = client.get(
+            "/spend/logs/ui",
+            params={
+                "company_id": "company-123",
+                "project_id": "project-123",
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+            headers={"Authorization": "Bearer sk-test"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 1
+        assert body["data"][0]["request_id"] == "req-company-project"
+        assert body["data"][0]["company_id"] == "company-123"
+        assert body["data"][0]["project_id"] == "project-123"
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+
+@pytest.mark.asyncio
+async def test_ui_view_spend_logs_company_admin_rejects_outside_company(
+    client, monkeypatch
+):
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.prisma_client",
+        make_ui_spend_logs_mock_prisma(
+            [],
+            lambda where: [],
+            organization_membership_lookup_fn=_company_admin_lookup_for(
+                {"company-123"}
+            ),
+        ),
+    )
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="company-admin",
+    )
+
+    try:
+        start_date, end_date = _default_date_range()
+        response = client.get(
+            "/spend/logs/ui",
+            params={
+                "company_id": "company-999",
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+            headers={"Authorization": "Bearer sk-test"},
+        )
+
+        assert response.status_code == 403
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+
+@pytest.mark.asyncio
+async def test_ui_view_spend_logs_rejects_project_outside_requested_company(
+    client, monkeypatch
+):
+    company_team = _SpendLogAuthTeamRow("team-123", "company-123")
+    outside_project_team = _SpendLogAuthTeamRow(
+        "team-999",
+        "company-999",
+        members_with_roles=[{"user_id": "company-admin", "role": "admin"}],
+    )
+    outside_project = _spend_log_project_row("project-999", outside_project_team)
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.prisma_client",
+        make_ui_spend_logs_mock_prisma(
+            [],
+            lambda where: [],
+            team_lookup_fn=_team_lookup_for(
+                {"team-123": company_team, "team-999": outside_project_team}
+            ),
+            organization_membership_lookup_fn=_company_admin_lookup_for(
+                {"company-123"}
+            ),
+            project_lookup_fn=_project_lookup_for({"project-999": outside_project}),
+        ),
+    )
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="company-admin",
+    )
+
+    try:
+        start_date, end_date = _default_date_range()
+        response = client.get(
+            "/spend/logs/ui",
+            params={
+                "company_id": "company-123",
+                "project_id": "project-999",
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+            headers={"Authorization": "Bearer sk-test"},
+        )
+
+        assert response.status_code == 403
+        assert "does not belong to company_id=company-123" in str(response.json())
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+
+@pytest.mark.asyncio
+async def test_ui_view_spend_logs_rejects_project_without_project_permission(
+    client, monkeypatch
+):
+    team = _SpendLogAuthTeamRow(
+        "team-123",
+        "company-123",
+        members_with_roles=[{"user_id": "member-user", "role": "user"}],
+        permissions=[],
+    )
+    project = _spend_log_project_row("project-123", team)
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.prisma_client",
+        make_ui_spend_logs_mock_prisma(
+            [],
+            lambda where: [],
+            team_lookup_fn=_team_lookup_for({"team-123": team}),
+            organization_membership_lookup_fn=_company_admin_lookup_for(set()),
+            project_lookup_fn=_project_lookup_for({"project-123": project}),
+        ),
+    )
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="member-user",
+    )
+
+    try:
+        start_date, end_date = _default_date_range()
+        response = client.get(
+            "/spend/logs/ui",
+            params={
+                "project_id": "project-123",
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+            headers={"Authorization": "Bearer sk-test"},
+        )
+
+        assert response.status_code == 403
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+
+@pytest.mark.asyncio
+async def test_spend_logs_v2_project_member_with_permission_is_project_scoped(
+    client, monkeypatch
+):
+    team = _SpendLogAuthTeamRow(
+        "team-123",
+        "company-123",
+        members_with_roles=[{"user_id": "project-viewer", "role": "user"}],
+        permissions=["/spend/logs"],
+    )
+    project = _spend_log_project_row("project-123", team)
+    mock_spend_logs = [
+        {
+            "id": "log1",
+            "request_id": "req-project",
+            "api_key": "sk-test-key",
+            "user": "other-user",
+            "team_id": "team-123",
+            "organization_id": "company-123",
+            "project_id": "project-123",
+            "spend": 0.05,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-4",
+        },
+        {
+            "id": "log2",
+            "request_id": "req-other-project",
+            "api_key": "sk-test-key",
+            "user": "other-user",
+            "team_id": "team-999",
+            "organization_id": "company-999",
+            "project_id": "project-999",
+            "spend": 0.10,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-4",
+        },
+    ]
+
+    def filter_by_scope(where):
+        result = mock_spend_logs
+        if where.get("organization_id"):
+            result = [
+                log
+                for log in result
+                if log["organization_id"] == where["organization_id"]
+            ]
+        if where.get("project_id"):
+            result = [
+                log for log in result if log["project_id"] == where["project_id"]
+            ]
+        return result
+
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.prisma_client",
+        make_ui_spend_logs_mock_prisma(
+            mock_spend_logs,
+            filter_by_scope,
+            team_lookup_fn=_team_lookup_for({"team-123": team}),
+            organization_membership_lookup_fn=_company_admin_lookup_for(set()),
+            project_lookup_fn=_project_lookup_for({"project-123": project}),
+        ),
+    )
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="project-viewer",
+    )
+
+    try:
+        start_date, end_date = _default_date_range()
+        response = client.get(
+            "/spend/logs/v2",
+            params={
+                "project_id": "project-123",
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+            headers={"Authorization": "Bearer sk-test"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 1
+        assert body["data"][0]["request_id"] == "req-project"
+        assert body["data"][0]["project_id"] == "project-123"
+        assert body["data"][0]["company_id"] == "company-123"
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+
+@pytest.mark.asyncio
+async def test_ui_view_spend_logs_project_member_with_permission_can_filter_by_company_and_project(
+    client, monkeypatch
+):
+    team = _SpendLogAuthTeamRow(
+        "team-123",
+        "company-123",
+        members_with_roles=[{"user_id": "project-viewer", "role": "user"}],
+        permissions=["/spend/logs"],
+    )
+    project = _spend_log_project_row("project-123", team)
+    mock_spend_logs = [
+        {
+            "id": "log1",
+            "request_id": "req-project-company",
+            "api_key": "sk-test-key",
+            "user": "other-user",
+            "team_id": "team-123",
+            "organization_id": "company-123",
+            "project_id": "project-123",
+            "spend": 0.05,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-4",
+        },
+        {
+            "id": "log2",
+            "request_id": "req-other-project",
+            "api_key": "sk-test-key",
+            "user": "other-user",
+            "team_id": "team-999",
+            "organization_id": "company-999",
+            "project_id": "project-999",
+            "spend": 0.10,
+            "startTime": datetime.datetime.now(timezone.utc).isoformat(),
+            "model": "gpt-4",
+        },
+    ]
+
+    def filter_by_scope(where):
+        result = mock_spend_logs
+        if where.get("organization_id"):
+            result = [
+                log
+                for log in result
+                if log["organization_id"] == where["organization_id"]
+            ]
+        if where.get("project_id"):
+            result = [
+                log for log in result if log["project_id"] == where["project_id"]
+            ]
+        return result
+
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.prisma_client",
+        make_ui_spend_logs_mock_prisma(
+            mock_spend_logs,
+            filter_by_scope,
+            team_lookup_fn=_team_lookup_for({"team-123": team}),
+            organization_membership_lookup_fn=_company_admin_lookup_for(set()),
+            project_lookup_fn=_project_lookup_for({"project-123": project}),
+        ),
+    )
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="project-viewer",
+    )
+
+    try:
+        start_date, end_date = _default_date_range()
+        response = client.get(
+            "/spend/logs/ui",
+            params={
+                "company_id": "company-123",
+                "project_id": "project-123",
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+            headers={"Authorization": "Bearer sk-test"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["total"] == 1
+        assert body["data"][0]["request_id"] == "req-project-company"
+        assert body["data"][0]["company_id"] == "company-123"
+        assert body["data"][0]["project_id"] == "project-123"
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+
+@pytest.mark.asyncio
+async def test_spend_logs_v2_company_admin_rejects_outside_company(
+    client, monkeypatch
+):
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.prisma_client",
+        make_ui_spend_logs_mock_prisma(
+            [],
+            lambda where: [],
+            organization_membership_lookup_fn=_company_admin_lookup_for(
+                {"company-123"}
+            ),
+        ),
+    )
+    app.dependency_overrides[ps.user_api_key_auth] = lambda: UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="company-admin",
+    )
+
+    try:
+        start_date, end_date = _default_date_range()
+        response = client.get(
+            "/spend/logs/v2",
+            params={
+                "company_id": "company-999",
+                "start_date": start_date,
+                "end_date": end_date,
+            },
+            headers={"Authorization": "Bearer sk-test"},
+        )
+
+        assert response.status_code == 403
+    finally:
+        app.dependency_overrides.pop(ps.user_api_key_auth, None)
+
+
+@pytest.mark.asyncio
+async def test_ui_view_spend_logs_rejects_conflicting_company_aliases(
+    client, monkeypatch
+):
+    monkeypatch.setattr(
+        "litellm.proxy.proxy_server.prisma_client",
+        make_ui_spend_logs_mock_prisma([], lambda where: []),
+    )
+    start_date, end_date = _default_date_range()
+
+    response = client.get(
+        "/spend/logs/ui",
+        params={
+            "company_id": "company-123",
+            "organization_id": "company-456",
+            "start_date": start_date,
+            "end_date": end_date,
+        },
+        headers={"Authorization": "Bearer sk-test"},
+    )
+
+    assert response.status_code == 400
+    assert "company_id and organization_id" in str(response.json())
 
 
 @pytest.mark.asyncio
@@ -2132,6 +3127,8 @@ async def test_view_spend_logs_summarize_parameter(client, monkeypatch):
             "api_key": "sk-test-key",
             "user": "test_user_1",
             "team_id": "team1",
+            "organization_id": "company-123",
+            "project_id": "project-123",
             "spend": 0.10,
             "startTime": (
                 datetime.datetime.now(timezone.utc) - timedelta(days=1)
@@ -2147,6 +3144,22 @@ async def test_view_spend_logs_summarize_parameter(client, monkeypatch):
     class MockDB:
         def __init__(self):
             self.litellm_spendlogs = self
+            self.litellm_organizationtable = self.MockOrganizationTable()
+            self.litellm_projecttable = self.MockProjectTable()
+
+        class MockOrganizationTable:
+            async def find_many(self, *args, **kwargs):
+                organization = MagicMock()
+                organization.organization_id = "company-123"
+                organization.organization_alias = "Acme Company"
+                return [organization]
+
+        class MockProjectTable:
+            async def find_many(self, *args, **kwargs):
+                project = MagicMock()
+                project.project_id = "project-123"
+                project.project_alias = "Support Project"
+                return [project]
 
         async def find_many(self, *args, **kwargs):
             # Return individual log entries when summarize=false
@@ -2212,6 +3225,10 @@ async def test_view_spend_logs_summarize_parameter(client, monkeypatch):
         assert data[1]["id"] == "log2"
         assert data[0]["request_id"] == "req1"
         assert data[1]["request_id"] == "req2"
+        assert data[1]["company_id"] == "company-123"
+        assert data[1]["company_name"] == "Acme Company"
+        assert data[1]["project_id"] == "project-123"
+        assert data[1]["project_name"] == "Support Project"
 
         # Test 2: summarize=true should return grouped data
         response = client.get(

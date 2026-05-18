@@ -22,6 +22,7 @@ from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
 from litellm.litellm_core_utils.sensitive_data_masker import SensitiveDataMasker
 from litellm.proxy._types import (
     LiteLLM_ManagedVectorStoresTable,
+    LitellmUserRoles,
     ResponseLiteLLM_ManagedVectorStore,
     UserAPIKeyAuth,
 )
@@ -131,7 +132,11 @@ async def _fetch_and_authorize_vector_store(
             detail=f"Vector store with ID {vector_store_id} not found",
         )
     typed = LiteLLM_ManagedVectorStore(**row.model_dump())
-    if not await _check_vector_store_access(typed, user_api_key_dict):
+    if not await _can_user_access_vector_store_with_company_project(
+        vector_store=typed,
+        user_api_key_dict=user_api_key_dict,
+        prisma_client=prisma_client,
+    ):
         raise HTTPException(
             status_code=403,
             detail="Access denied: You do not have permission to access this vector store",
@@ -405,6 +410,276 @@ async def _check_vector_store_access(
     )
 
 
+def _get_field_value(value: Any, field_name: str) -> Any:
+    if isinstance(value, dict):
+        return value.get(field_name)
+    return getattr(value, field_name, None)
+
+
+def _is_proxy_admin(user_api_key_dict: UserAPIKeyAuth) -> bool:
+    return user_api_key_dict.user_role in (
+        LitellmUserRoles.PROXY_ADMIN,
+        LitellmUserRoles.PROXY_ADMIN.value,
+    )
+
+
+def _company_id_from_team(team: Any) -> Optional[str]:
+    return _get_field_value(team, "organization_id") if team is not None else None
+
+
+async def _resolve_vector_store_project_context(
+    *,
+    prisma_client: Any,
+    project_id: Optional[str],
+    company_id: Optional[str],
+    user_api_key_dict: UserAPIKeyAuth,
+) -> tuple[Optional[str], Optional[str], Optional[str]]:
+    if project_id is None:
+        if company_id is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="project_id is required when company_id is provided",
+            )
+        return None, company_id, None
+
+    project = await prisma_client.db.litellm_projecttable.find_unique(
+        where={"project_id": project_id},
+        include={"litellm_team_table": True},
+    )
+    if project is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Project not found: {project_id}",
+        )
+
+    team = _get_field_value(project, "litellm_team_table")
+    team_id = _get_field_value(project, "team_id")
+    if team is None and team_id is not None:
+        team = await prisma_client.db.litellm_teamtable.find_unique(
+            where={"team_id": team_id}
+        )
+
+    if team_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Project must have a backing team before it can own vector stores",
+        )
+
+    project_company_id = _get_field_value(project, "company_id") or _company_id_from_team(
+        team
+    )
+    if company_id is not None and project_company_id != company_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"project_id={project_id} belongs to company_id={project_company_id}; "
+                f"received company_id={company_id}"
+            ),
+        )
+
+    if _is_proxy_admin(user_api_key_dict) or user_api_key_dict.team_id == team_id:
+        return team_id, project_company_id, _get_field_value(project, "project_alias")
+
+    if user_api_key_dict.user_id and project_company_id:
+        membership = (
+            await prisma_client.db.litellm_organizationmembership.find_unique(
+                where={
+                    "user_id_organization_id": {
+                        "user_id": user_api_key_dict.user_id,
+                        "organization_id": project_company_id,
+                    }
+                }
+            )
+        )
+        if (
+            membership is not None
+            and _get_field_value(membership, "user_role")
+            == LitellmUserRoles.ORG_ADMIN.value
+        ):
+            return team_id, project_company_id, _get_field_value(
+                project, "project_alias"
+            )
+
+    raise HTTPException(
+        status_code=403,
+        detail="Access denied: You do not have permission to manage vector stores for this Project",
+    )
+
+
+async def _get_vector_store_company_id(
+    *,
+    vector_store: LiteLLM_ManagedVectorStore,
+    prisma_client: Any,
+) -> Optional[str]:
+    project_id = _get_field_value(vector_store, "project_id")
+    if project_id:
+        project = await prisma_client.db.litellm_projecttable.find_unique(
+            where={"project_id": project_id},
+            include={"litellm_team_table": True},
+        )
+        if project is not None:
+            team = _get_field_value(project, "litellm_team_table")
+            return _get_field_value(project, "company_id") or _company_id_from_team(
+                team
+            )
+
+    team_id = _get_field_value(vector_store, "team_id")
+    if not team_id:
+        return None
+    team = await prisma_client.db.litellm_teamtable.find_unique(
+        where={"team_id": team_id}
+    )
+    return _company_id_from_team(team)
+
+
+async def _can_user_access_vector_store_with_company_project(
+    *,
+    vector_store: LiteLLM_ManagedVectorStore,
+    user_api_key_dict: UserAPIKeyAuth,
+    prisma_client: Any,
+) -> bool:
+    if await _check_vector_store_access(vector_store, user_api_key_dict):
+        return True
+    if _is_proxy_admin(user_api_key_dict):
+        return True
+
+    company_id = await _get_vector_store_company_id(
+        vector_store=vector_store,
+        prisma_client=prisma_client,
+    )
+    if not company_id or not user_api_key_dict.user_id:
+        return False
+
+    membership = await prisma_client.db.litellm_organizationmembership.find_unique(
+        where={
+            "user_id_organization_id": {
+                "user_id": user_api_key_dict.user_id,
+                "organization_id": company_id,
+            }
+        }
+    )
+    return (
+        membership is not None
+        and _get_field_value(membership, "user_role")
+        == LitellmUserRoles.ORG_ADMIN.value
+    )
+
+
+async def _enrich_vector_store_contexts(
+    *,
+    vector_stores: List[LiteLLM_ManagedVectorStore],
+    prisma_client: Any,
+) -> List[LiteLLM_ManagedVectorStore]:
+    if not vector_stores:
+        return vector_stores
+
+    project_ids = sorted(
+        {
+            project_id
+            for project_id in (
+                _get_field_value(vector_store, "project_id")
+                for vector_store in vector_stores
+            )
+            if project_id
+        }
+    )
+    team_ids = sorted(
+        {
+            team_id
+            for team_id in (
+                _get_field_value(vector_store, "team_id")
+                for vector_store in vector_stores
+            )
+            if team_id
+        }
+    )
+
+    projects_by_id: Dict[str, Any] = {}
+    if project_ids:
+        projects = await prisma_client.db.litellm_projecttable.find_many(
+            where={"project_id": {"in": project_ids}},
+            include={"litellm_team_table": True},
+        )
+        projects_by_id = {
+            _get_field_value(project, "project_id"): project for project in projects
+        }
+
+    teams_by_id: Dict[str, Any] = {}
+    if team_ids:
+        teams = await prisma_client.db.litellm_teamtable.find_many(
+            where={"team_id": {"in": team_ids}}
+        )
+        teams_by_id = {_get_field_value(team, "team_id"): team for team in teams}
+
+    company_ids = set()
+    for project in projects_by_id.values():
+        team = _get_field_value(project, "litellm_team_table")
+        company_id = _get_field_value(project, "company_id") or _company_id_from_team(
+            team
+        )
+        if company_id:
+            company_ids.add(company_id)
+    for team in teams_by_id.values():
+        company_id = _company_id_from_team(team)
+        if company_id:
+            company_ids.add(company_id)
+
+    companies_by_id: Dict[str, Any] = {}
+    if company_ids:
+        companies = await prisma_client.db.litellm_organizationtable.find_many(
+            where={"organization_id": {"in": sorted(company_ids)}}
+        )
+        companies_by_id = {
+            _get_field_value(company, "organization_id"): company
+            for company in companies
+        }
+
+    enriched: List[LiteLLM_ManagedVectorStore] = []
+    for vector_store in vector_stores:
+        vector_store_dict = LiteLLM_ManagedVectorStore(**dict(vector_store))
+        project = projects_by_id.get(vector_store_dict.get("project_id"))
+        team = None
+        company_id = None
+
+        if project is not None:
+            vector_store_dict["project_name"] = _get_field_value(
+                project, "project_alias"
+            )
+            team = _get_field_value(project, "litellm_team_table")
+            company_id = _get_field_value(project, "company_id") or _company_id_from_team(
+                team
+            )
+
+        if company_id is None:
+            team = teams_by_id.get(vector_store_dict.get("team_id")) or team
+            company_id = _company_id_from_team(team)
+
+        if company_id is not None:
+            vector_store_dict["company_id"] = company_id
+            company = companies_by_id.get(company_id)
+            company_name = _get_field_value(
+                company, "organization_alias"
+            ) or _get_field_value(company, "company_name")
+            if company_name:
+                vector_store_dict["company_name"] = company_name
+
+        enriched.append(vector_store_dict)
+
+    return enriched
+
+
+async def _enrich_vector_store_context(
+    *,
+    vector_store: LiteLLM_ManagedVectorStore,
+    prisma_client: Any,
+) -> LiteLLM_ManagedVectorStore:
+    enriched = await _enrich_vector_store_contexts(
+        vector_stores=[vector_store],
+        prisma_client=prisma_client,
+    )
+    return enriched[0]
+
+
 async def create_vector_store_in_db(
     vector_store_id: str,
     custom_llm_provider: str,
@@ -415,6 +690,7 @@ async def create_vector_store_in_db(
     litellm_params: Optional[Dict] = None,
     litellm_credential_name: Optional[str] = None,
     team_id: Optional[str] = None,
+    project_id: Optional[str] = None,
     user_id: Optional[str] = None,
 ) -> LiteLLM_ManagedVectorStore:
     """
@@ -464,6 +740,8 @@ async def create_vector_store_in_db(
         data_to_create["litellm_credential_name"] = litellm_credential_name
     if team_id is not None:
         data_to_create["team_id"] = team_id
+    if project_id is not None:
+        data_to_create["project_id"] = project_id
     if user_id is not None:
         data_to_create["user_id"] = user_id
 
@@ -537,12 +815,21 @@ async def new_vector_store(
     try:
         vector_store_id = vector_store.get("vector_store_id")
         custom_llm_provider = vector_store.get("custom_llm_provider")
+        company_id = vector_store.get("company_id")
+        project_id = vector_store.get("project_id")
 
         if not vector_store_id or not custom_llm_provider:
             raise HTTPException(
                 status_code=400,
                 detail="vector_store_id and custom_llm_provider are required",
             )
+
+        project_team_id, _, _ = await _resolve_vector_store_project_context(
+            prisma_client=prisma_client,
+            project_id=project_id,
+            company_id=company_id,
+            user_api_key_dict=user_api_key_dict,
+        )
 
         # Extract and validate metadata
         metadata = vector_store.get("vector_store_metadata")
@@ -559,7 +846,8 @@ async def new_vector_store(
             vector_store_metadata=validated_metadata,
             litellm_params=vector_store.get("litellm_params"),
             litellm_credential_name=vector_store.get("litellm_credential_name"),
-            team_id=user_api_key_dict.team_id,
+            team_id=project_team_id or user_api_key_dict.team_id,
+            project_id=project_id,
             user_id=user_api_key_dict.user_id,
         )
 
@@ -571,12 +859,18 @@ async def new_vector_store(
         response_vs["litellm_params"] = _redact_sensitive_litellm_params(
             new_vector_store.get("litellm_params")
         )
+        response_vs = await _enrich_vector_store_context(
+            vector_store=response_vs,
+            prisma_client=prisma_client,
+        )
 
         return {
             "status": "success",
             "message": f"Vector store {vector_store.get('vector_store_id')} created successfully",
             "vector_store": response_vs,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         verbose_proxy_logger.exception(f"Error creating vector store: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -598,6 +892,8 @@ async def list_vector_stores(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
     page: int = 1,
     page_size: int = 100,
+    company_id: Optional[str] = None,
+    project_id: Optional[str] = None,
 ):
     """
     List all available vector stores with optional filtering and pagination.
@@ -616,6 +912,14 @@ async def list_vector_stores(
     db_vector_store_ids: set = set()
 
     try:
+        if project_id is not None:
+            await _resolve_vector_store_project_context(
+                prisma_client=prisma_client,
+                project_id=project_id,
+                company_id=company_id,
+                user_api_key_dict=user_api_key_dict,
+            )
+
         # Get vector stores from database first (source of truth)
         vector_stores_from_db = await VectorStoreRegistry._get_vector_stores_from_db(
             prisma_client=prisma_client
@@ -672,12 +976,33 @@ async def list_vector_stores(
         # Filter vector stores based on access control
         accessible_vector_stores = []
         for vs in vector_store_map.values():
-            if await _check_vector_store_access(vs, user_api_key_dict):
+            if await _can_user_access_vector_store_with_company_project(
+                vector_store=vs,
+                user_api_key_dict=user_api_key_dict,
+                prisma_client=prisma_client,
+            ):
                 redacted = LiteLLM_ManagedVectorStore(**vs)
                 redacted["litellm_params"] = _redact_sensitive_litellm_params(
                     vs.get("litellm_params")
                 )
                 accessible_vector_stores.append(redacted)
+
+        accessible_vector_stores = await _enrich_vector_store_contexts(
+            vector_stores=accessible_vector_stores,
+            prisma_client=prisma_client,
+        )
+        if company_id is not None:
+            accessible_vector_stores = [
+                vs
+                for vs in accessible_vector_stores
+                if _get_field_value(vs, "company_id") == company_id
+            ]
+        if project_id is not None:
+            accessible_vector_stores = [
+                vs
+                for vs in accessible_vector_stores
+                if _get_field_value(vs, "project_id") == project_id
+            ]
 
         total_count = len(accessible_vector_stores)
         total_pages = (total_count + page_size - 1) // page_size
@@ -692,6 +1017,8 @@ async def list_vector_stores(
         )
 
         return response
+    except HTTPException:
+        raise
     except Exception as e:
         verbose_proxy_logger.exception(f"Error listing vector stores: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -754,8 +1081,10 @@ async def delete_vector_store(
             )
 
         # Check access control
-        if vector_store_to_check and not await _check_vector_store_access(
-            vector_store_to_check, user_api_key_dict
+        if vector_store_to_check and not await _can_user_access_vector_store_with_company_project(
+            vector_store=vector_store_to_check,
+            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
         ):
             raise HTTPException(
                 status_code=403,
@@ -810,8 +1139,10 @@ async def get_vector_store_info(
             )
             if vector_store is not None:
                 # Check access control
-                if not await _check_vector_store_access(
-                    vector_store, user_api_key_dict
+                if not await _can_user_access_vector_store_with_company_project(
+                    vector_store=vector_store,
+                    user_api_key_dict=user_api_key_dict,
+                    prisma_client=prisma_client,
                 ):
                     raise HTTPException(
                         status_code=403,
@@ -826,7 +1157,7 @@ async def get_vector_store_info(
                 elif isinstance(vector_store_metadata, dict):
                     parsed_metadata = vector_store_metadata
 
-                vector_store_pydantic_obj = LiteLLM_ManagedVectorStoresTable(
+                vector_store_payload = LiteLLM_ManagedVectorStore(
                     vector_store_id=vector_store.get("vector_store_id") or "",
                     custom_llm_provider=vector_store.get("custom_llm_provider") or "",
                     vector_store_name=vector_store.get("vector_store_name") or None,
@@ -842,7 +1173,15 @@ async def get_vector_store_info(
                         vector_store.get("litellm_params")
                     ),
                     team_id=vector_store.get("team_id") or None,
+                    project_id=vector_store.get("project_id") or None,
                     user_id=vector_store.get("user_id") or None,
+                )
+                vector_store_payload = await _enrich_vector_store_context(
+                    vector_store=vector_store_payload,
+                    prisma_client=prisma_client,
+                )
+                vector_store_pydantic_obj = LiteLLM_ManagedVectorStoresTable(
+                    **vector_store_payload
                 )
                 return {"vector_store": vector_store_pydantic_obj}
 
@@ -856,6 +1195,10 @@ async def get_vector_store_info(
             vector_store_dict["litellm_params"] = _redact_sensitive_litellm_params(
                 vector_store_dict["litellm_params"]
             )
+        vector_store_dict = await _enrich_vector_store_context(
+            vector_store=LiteLLM_ManagedVectorStore(**vector_store_dict),
+            prisma_client=prisma_client,
+        )
         return {"vector_store": vector_store_dict}
     except HTTPException:
         # Preserve 403/404 from the access-control / not-found checks above;
@@ -890,6 +1233,9 @@ async def update_vector_store(
     try:
         update_data = data.model_dump(exclude_unset=True)
         vector_store_id = update_data.pop("vector_store_id")
+        company_id = update_data.pop("company_id", None)
+        project_id_was_set = "project_id" in update_data
+        project_id = update_data.get("project_id")
 
         # Per-store access control: anyone authenticated who passes the
         # premium-feature gate could otherwise update *any* vector store —
@@ -899,6 +1245,25 @@ async def update_vector_store(
             user_api_key_dict=user_api_key_dict,
             prisma_client=prisma_client,
         )
+
+        if company_id is not None and not project_id_was_set:
+            raise HTTPException(
+                status_code=400,
+                detail="project_id is required when company_id is provided",
+            )
+        if project_id_was_set:
+            if project_id is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="project_id is required to update vector store Project context",
+                )
+            project_team_id, _, _ = await _resolve_vector_store_project_context(
+                prisma_client=prisma_client,
+                project_id=project_id,
+                company_id=company_id,
+                user_api_key_dict=user_api_key_dict,
+            )
+            update_data["team_id"] = project_team_id
 
         # Handle metadata serialization
         if update_data.get("vector_store_metadata") is not None:
@@ -945,6 +1310,10 @@ async def update_vector_store(
         response_vs = LiteLLM_ManagedVectorStore(**updated_vs)
         response_vs["litellm_params"] = _redact_sensitive_litellm_params(
             updated_vs.get("litellm_params")
+        )
+        response_vs = await _enrich_vector_store_context(
+            vector_store=response_vs,
+            prisma_client=prisma_client,
         )
         return {
             "status": "success",

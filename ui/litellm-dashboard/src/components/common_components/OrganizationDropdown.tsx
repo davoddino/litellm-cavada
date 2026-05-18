@@ -8,23 +8,34 @@ interface OrganizationDropdownProps {
   organizations?: Organization[] | null;
   value?: string;
   onChange?: (value: string) => void;
+  id?: string;
   disabled?: boolean;
   loading?: boolean;
   style?: React.CSSProperties;
 }
 
+export const getCompanyDisplayName = (organization: Organization): string => {
+  return organization.company_name || organization.organization_alias || organization.company_id || organization.organization_id;
+};
+
+export const getCompanyDisplayId = (organization: Organization): string => {
+  return organization.company_id || organization.organization_id;
+};
+
 const OrganizationDropdown: React.FC<OrganizationDropdownProps> = ({
   organizations,
   value,
   onChange,
+  id,
   disabled,
   loading,
   style,
 }) => {
   return (
     <Select
+      id={id}
       showSearch
-      placeholder="All Organizations"
+      placeholder="All Companies"
       value={value}
       onChange={onChange}
       disabled={disabled}
@@ -37,18 +48,21 @@ const OrganizationDropdown: React.FC<OrganizationDropdownProps> = ({
         if (!org) return false;
 
         const searchTerm = input.toLowerCase().trim();
-        const orgAlias = (org.organization_alias || "").toLowerCase();
-        const orgId = (org.organization_id || "").toLowerCase();
+        const companyName = getCompanyDisplayName(org).toLowerCase();
+        const companyId = getCompanyDisplayId(org).toLowerCase();
 
-        return orgAlias.includes(searchTerm) || orgId.includes(searchTerm);
+        return companyName.includes(searchTerm) || companyId.includes(searchTerm);
       }}
     >
-      {organizations?.map((org) => (
-        <Select.Option key={org.organization_id} value={org.organization_id}>
-          <span className="font-medium">{org.organization_alias}</span>{" "}
-          <Text type="secondary">({org.organization_id})</Text>
-        </Select.Option>
-      ))}
+      {organizations?.map((org) => {
+        const companyName = getCompanyDisplayName(org);
+        const companyId = getCompanyDisplayId(org);
+        return (
+          <Select.Option key={org.organization_id} value={org.organization_id}>
+            <span className="font-medium">{companyName}</span> <Text type="secondary">({companyId})</Text>
+          </Select.Option>
+        );
+      })}
     </Select>
   );
 };

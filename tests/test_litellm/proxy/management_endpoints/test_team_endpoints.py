@@ -3,12 +3,14 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Optional, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from litellm._uuid import uuid
 
@@ -27,9 +29,11 @@ from litellm.proxy._types import (
     LiteLLM_UserTable,
     LitellmUserRoles,
     Member,
+    NewTeamRequest,
     ProxyErrorTypes,
     ProxyException,
     TeamMemberAddRequest,
+    UpdateTeamRequest,
 )
 from litellm.proxy.management_endpoints.team_endpoints import (
     user_api_key_auth,  # Assuming this dependency is needed
@@ -38,6 +42,10 @@ from litellm.proxy.management_endpoints.team_endpoints import (
     GetTeamMemberPermissionsResponse,
     UpdateTeamMemberPermissionsRequest,
     _persist_deleted_team_records,
+    _build_team_list_where_conditions,
+    _convert_teams_to_response_models,
+    _drop_company_id_from_team_db_payload,
+    _enrich_team_dicts_with_company_project_context,
     _save_deleted_team_records,
     _transform_teams_to_deleted_records,
     _validate_and_populate_member_user_info,
@@ -70,6 +78,178 @@ mock_prisma_client = MagicMock()
 mock_prisma_client.db = MagicMock()
 mock_prisma_client.db.litellm_teamtable = MagicMock()
 mock_prisma_client.db.litellm_teamtable.update = AsyncMock()
+
+
+def test_team_requests_accept_company_id_alias():
+    new_request = NewTeamRequest(team_id="team-1", company_id="company-1")
+    update_request = UpdateTeamRequest(team_id="team-1", company_id="company-1")
+
+    assert new_request.company_id == "company-1"
+    assert new_request.organization_id == "company-1"
+    assert update_request.company_id == "company-1"
+    assert update_request.organization_id == "company-1"
+
+
+def test_team_requests_reject_conflicting_company_and_organization_id():
+    with pytest.raises(ValidationError, match="company_id and organization_id"):
+        NewTeamRequest(
+            team_id="team-1",
+            company_id="company-1",
+            organization_id="company-2",
+        )
+
+    with pytest.raises(ValidationError, match="company_id and organization_id"):
+        UpdateTeamRequest(
+            team_id="team-1",
+            company_id="company-1",
+            organization_id="company-2",
+        )
+
+
+def test_team_request_schema_marks_organization_id_internal_deprecated():
+    for model in (NewTeamRequest, UpdateTeamRequest):
+        properties = model.model_json_schema()["properties"]
+
+        assert "company_id" in properties
+        assert properties["organization_id"]["deprecated"] is True
+        assert properties["organization_id"]["x-internal"] is True
+        assert (
+            properties["organization_id"]["x-compat-alias-for"]
+            == "company_id"
+        )
+
+
+def _team_route_query_schema(path: str):
+    team_list_route = next(
+        route
+        for route in router.routes
+        if getattr(route, "path", None) == path
+    )
+    return {
+        param.name: getattr(param.field_info, "include_in_schema", True)
+        for param in team_list_route.dependant.query_params
+    }
+
+
+@pytest.mark.parametrize("path", ["/v2/team/list", "/team/list"])
+def test_team_list_schema_exposes_company_project_and_hides_legacy_organization_alias(
+    path: str,
+):
+    query_params = _team_route_query_schema(path)
+
+    assert query_params["company_id"] is True
+    assert query_params["project_id"] is True
+    assert query_params["organization_id"] is False
+
+
+def test_team_db_payload_keeps_internal_company_and_drops_product_context_fields():
+    payload = {
+        "team_id": "team-1",
+        "team_alias": "Platform",
+        "organization_id": "company-1",
+        "company_id": "company-1",
+        "company_name": "Acme Company",
+        "project_ids": ["project-1"],
+        "project_names": ["Project One"],
+    }
+
+    sanitized = _drop_company_id_from_team_db_payload(payload.copy())
+
+    assert sanitized["organization_id"] == "company-1"
+    assert sanitized["team_id"] == "team-1"
+    assert "company_id" not in sanitized
+    assert "company_name" not in sanitized
+    assert "project_ids" not in sanitized
+    assert "project_names" not in sanitized
+
+
+@pytest.mark.asyncio
+async def test_build_team_list_where_conditions_filters_by_project_team_ids():
+    where = await _build_team_list_where_conditions(
+        prisma_client=MagicMock(),
+        team_id=None,
+        team_alias=None,
+        organization_id="company-1",
+        project_team_ids=["team-project"],
+        user_id=None,
+        use_deleted_table=False,
+    )
+
+    assert where == {
+        "organization_id": "company-1",
+        "team_id": {"in": ["team-project"]},
+    }
+
+
+def test_convert_teams_to_response_models_preserves_company_project_fields():
+    team_list = _convert_teams_to_response_models(
+        [
+            {
+                "team_id": "team-project",
+                "organization_id": "company-1",
+                "company_id": "company-1",
+                "company_name": "Company One",
+                "project_ids": ["project-1"],
+                "project_names": ["Project One"],
+                "members_with_roles": [],
+            }
+        ],
+        use_deleted_table=False,
+    )
+
+    assert team_list[0].company_id == "company-1"
+    assert team_list[0].company_name == "Company One"
+    assert team_list[0].project_ids == ["project-1"]
+    assert team_list[0].project_names == ["Project One"]
+
+
+@pytest.mark.asyncio
+async def test_enrich_team_dicts_with_company_project_context():
+    prisma_client = MagicMock()
+    prisma_client.db.litellm_organizationtable.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id="company-1",
+                organization_alias="Acme Company",
+            )
+        ]
+    )
+    prisma_client.db.litellm_projecttable.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                project_id="project-1",
+                project_alias="Project One",
+                team_id="team-project",
+            ),
+            SimpleNamespace(
+                project_id="project-2",
+                project_alias=None,
+                team_id="team-project",
+            ),
+        ]
+    )
+
+    enriched_teams = await _enrich_team_dicts_with_company_project_context(
+        prisma_client=prisma_client,
+        team_dicts=[
+            {
+                "team_id": "team-project",
+                "organization_id": "company-1",
+                "members_with_roles": [],
+            }
+        ],
+    )
+
+    assert enriched_teams[0]["company_id"] == "company-1"
+    assert enriched_teams[0]["company_name"] == "Acme Company"
+    assert enriched_teams[0]["project_ids"] == ["project-1", "project-2"]
+    assert enriched_teams[0]["project_names"] == ["Project One", "project-2"]
+    prisma_client.db.litellm_organizationtable.find_many.assert_awaited_once_with(
+        where={"organization_id": {"in": ["company-1"]}},
+    )
+    prisma_client.db.litellm_projecttable.find_many.assert_awaited_once_with(
+        where={"team_id": {"in": ["team-project"]}},
+    )
 
 
 # Fixture to provide the mock prisma client
@@ -2901,6 +3081,13 @@ async def test_list_team_v2_org_admin_sees_org_teams():
         }
         mock_db.litellm_teamtable.find_many = AsyncMock(return_value=[mock_team])
         mock_db.litellm_teamtable.count = AsyncMock(return_value=1)
+        mock_company = Mock()
+        mock_company.organization_id = "org_A"
+        mock_company.organization_alias = "Company A"
+        mock_db.litellm_organizationtable.find_many = AsyncMock(
+            return_value=[mock_company]
+        )
+        mock_db.litellm_projecttable.find_many = AsyncMock(return_value=[])
 
         result = await list_team_v2(
             http_request=mock_request,
@@ -2993,10 +3180,9 @@ async def test_list_team_v2_org_admin_cannot_view_other_orgs():
             )
 
         assert exc_info.value.status_code == 403
-        assert (
-            "only view teams within your organizations"
-            in str(exc_info.value.detail).lower()
-        )
+        assert "only view teams within your companies" in str(
+            exc_info.value.detail
+        ).lower()
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,7 @@ export interface ProjectBudget {
 
 export interface ProjectResponse {
   project_id: string;
+  company_id?: string | null;
   project_alias: string | null;
   description: string | null;
   team_id: string | null;
@@ -47,13 +48,25 @@ export interface ProjectResponse {
 
 export const projectKeys = createQueryKeys("projects");
 
+interface UseProjectsOptions {
+  includeNonAdmin?: boolean;
+  companyID?: string | null;
+  organizationID?: string | null;
+}
+
 // ── Fetch function ───────────────────────────────────────────────────────────
 
-const fetchProjects = async (
+export const projectListCall = async (
   accessToken: string,
+  options: UseProjectsOptions = {},
 ): Promise<ProjectResponse[]> => {
   const baseUrl = getProxyBaseUrl();
-  const url = `${baseUrl}/project/list`;
+  const queryParams = new URLSearchParams();
+  const companyID = options.companyID ?? options.organizationID;
+  if (companyID) {
+    queryParams.append("company_id", companyID);
+  }
+  const url = `${baseUrl}/project/list${queryParams.toString() ? `?${queryParams.toString()}` : ""}`;
 
   const response = await fetch(url, {
     method: "GET",
@@ -73,14 +86,18 @@ const fetchProjects = async (
   return response.json();
 };
 
-// ── Hook ─────────────────────────────────────────────────────────────────────
-
-export const useProjects = () => {
+export const useProjects = (options: UseProjectsOptions = {}) => {
   const { accessToken, userRole } = useAuthorized();
+  const { includeNonAdmin = false } = options;
+  const companyID = options.companyID ?? options.organizationID ?? null;
 
   return useQuery<ProjectResponse[]>({
-    queryKey: projectKeys.list({}),
-    queryFn: async () => fetchProjects(accessToken!),
-    enabled: Boolean(accessToken) && all_admin_roles.includes(userRole!),
+    queryKey: projectKeys.list(
+      companyID ? { filters: { companyID } } : {},
+    ),
+    queryFn: async () => projectListCall(accessToken!, options),
+    enabled:
+      Boolean(accessToken) &&
+      (includeNonAdmin || all_admin_roles.includes(userRole!)),
   });
 };

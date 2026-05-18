@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -76,7 +77,7 @@ def test_list_request_filters(client):
     request = client.list(
         user_id="user123",
         team_id="team456",
-        organization_id="org789",
+        organization_id="company789",
         key_hash="hash123",
         key_alias="alias123",
         return_request=True,
@@ -85,10 +86,41 @@ def test_list_request_filters(client):
     assert request.params == {
         "user_id": "user123",
         "team_id": "team456",
-        "organization_id": "org789",
+        "company_id": "company789",
         "key_hash": "hash123",
         "key_alias": "alias123",
     }
+
+
+def test_list_request_company_filter(client):
+    """Test list request with CavadaLabs company filtering"""
+    request = client.list(company_id="company789", return_request=True)
+
+    assert request.params == {"company_id": "company789"}
+
+
+def test_list_request_legacy_organization_alias_maps_to_company_filter(client):
+    """Test list request keeps organization_id as a compatibility alias only"""
+    request = client.list(organization_id="company789", return_request=True)
+
+    assert request.params == {"company_id": "company789"}
+
+
+def test_list_request_rejects_conflicting_company_and_organization_aliases(client):
+    """Test list request rejects conflicting tenant aliases before sending"""
+    with pytest.raises(ValueError, match="company_id and organization_id"):
+        client.list(
+            company_id="company789",
+            organization_id="org789",
+            return_request=True,
+        )
+
+
+def test_list_request_project_filter(client):
+    """Test list request with CavadaLabs project filtering"""
+    request = client.list(project_id="project789", return_request=True)
+
+    assert request.params == {"project_id": "project789"}
 
 
 def test_list_request_flags(client):
@@ -110,7 +142,9 @@ def test_list_request_all_parameters(client):
         size=10,
         user_id="user123",
         team_id="team456",
-        organization_id="org789",
+        company_id="company789",
+        organization_id="company789",
+        project_id="project789",
         key_hash="hash123",
         key_alias="alias123",
         return_full_object=True,
@@ -123,7 +157,8 @@ def test_list_request_all_parameters(client):
         "size": 10,
         "user_id": "user123",
         "team_id": "team456",
-        "organization_id": "org789",
+        "company_id": "company789",
+        "project_id": "project789",
         "key_hash": "hash123",
         "key_alias": "alias123",
         "return_full_object": "true",
@@ -230,6 +265,8 @@ def test_generate_request_full(client):
         duration="24h",
         key_alias="test-key-alias",
         team_id="team123",
+        company_id="company123",
+        project_id="project123",
         user_id="user456",
         budget_id="budget789",
         config={"max_parallel_requests": 5},
@@ -243,6 +280,8 @@ def test_generate_request_full(client):
         "duration": "24h",
         "key_alias": "test-key-alias",
         "team_id": "team123",
+        "company_id": "company123",
+        "project_id": "project123",
         "user_id": "user456",
         "budget_id": "budget789",
         "config": {"max_parallel_requests": 5},
@@ -294,6 +333,56 @@ def test_generate_unauthorized_error(client):
 
     with pytest.raises(UnauthorizedError):
         client.generate()
+
+
+@responses.activate
+def test_update_request_company_id(client):
+    """Test update request includes CavadaLabs company ID"""
+    mock_response = {"status": "success"}
+    responses.add(
+        responses.POST,
+        f"{client._base_url}/key/update",
+        json=mock_response,
+        status=200,
+    )
+
+    response = client.update(
+        key="sk-test-key",
+        company_id="company123",
+        key_alias="test-key-alias",
+    )
+
+    assert response == mock_response
+    assert json.loads(responses.calls[0].request.body) == {
+        "key": "sk-test-key",
+        "key_alias": "test-key-alias",
+        "company_id": "company123",
+    }
+
+
+@responses.activate
+def test_update_request_project_id(client):
+    """Test update request includes CavadaLabs project ID"""
+    mock_response = {"status": "success"}
+    responses.add(
+        responses.POST,
+        f"{client._base_url}/key/update",
+        json=mock_response,
+        status=200,
+    )
+
+    response = client.update(
+        key="sk-test-key",
+        project_id="project123",
+        key_alias="test-key-alias",
+    )
+
+    assert response == mock_response
+    assert json.loads(responses.calls[0].request.body) == {
+        "key": "sk-test-key",
+        "key_alias": "test-key-alias",
+        "project_id": "project123",
+    }
 
 
 def test_delete_request_minimal(client, base_url, api_key):

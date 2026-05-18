@@ -54,6 +54,7 @@ const { Sider } = Layout;
  */
 const MIGRATED_PAGES: Record<string, string> = {
   "api-reference": "api-reference",
+  organizations: "companies",
 };
 
 /** Build an absolute href for a migrated page, respecting base URL + serverRootPath. */
@@ -271,7 +272,7 @@ const menuGroups: MenuGroup[] = [
       {
         key: "organizations",
         page: "organizations",
-        label: "Organizations",
+        label: "Companies",
         icon: <BankOutlined />,
         roles: all_admin_roles,
       },

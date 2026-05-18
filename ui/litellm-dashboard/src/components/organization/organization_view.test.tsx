@@ -46,7 +46,15 @@ vi.mock("../team/edit_membership", () => ({
 }));
 vi.mock("../common_components/user_search_modal", () => ({
   __esModule: true,
-  default: () => null,
+  default: ({ isVisible, title, roles = [] }: any) =>
+    isVisible ? (
+      <div data-testid="user-search-modal">
+        <div>{title}</div>
+        {roles.map((role: { label: string; value: string }) => (
+          <div key={role.value}>{role.label}</div>
+        ))}
+      </div>
+    ) : null,
 }));
 vi.mock("../vector_store_management/VectorStoreSelector", () => ({
   __esModule: true,
@@ -147,6 +155,37 @@ test("should display empty state when organization has no members", async () => 
   });
 });
 
+test("should display company labels in detail and settings", async () => {
+  mockUseOrganization.mockReturnValue({ data: mockOrg, isLoading: false } as any);
+
+  const user = userEvent.setup();
+  renderWithProviders(
+    <OrganizationInfoView
+      organizationId="org_123"
+      onClose={() => {}}
+      accessToken="test-token"
+      is_org_admin={true}
+      is_proxy_admin={false}
+      userModels={[]}
+      editOrg={false}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByText("Company Details")).toBeInTheDocument();
+  });
+
+  await user.click(screen.getByRole("tab", { name: "Settings" }));
+
+  await waitFor(() => {
+    expect(screen.getByText("Company Settings")).toBeInTheDocument();
+    expect(screen.getByText("Company Name")).toBeInTheDocument();
+    expect(screen.getByText("Company ID")).toBeInTheDocument();
+    expect(screen.queryByText("Organization Settings")).not.toBeInTheDocument();
+    expect(screen.queryByText("Organization ID")).not.toBeInTheDocument();
+  });
+});
+
 test("should display team aliases when teams are available", async () => {
   const orgWithTeams = {
     ...mockOrg,
@@ -202,5 +241,67 @@ test("should display team ID as fallback when alias is not found", async () => {
 
   await waitFor(() => {
     expect(screen.getByText("team_999")).toBeInTheDocument();
+  });
+});
+
+test("should display company member roles without exposing org_admin", async () => {
+  const orgWithCompanyAdmin = {
+    ...mockOrg,
+    members: [
+      {
+        user_id: "company-admin-user",
+        user_email: "admin@acme.test",
+        user_role: "org_admin",
+      },
+    ],
+  };
+  mockUseOrganization.mockReturnValue({ data: orgWithCompanyAdmin, isLoading: false } as any);
+
+  const user = userEvent.setup();
+  renderWithProviders(
+    <OrganizationInfoView
+      organizationId="org_123"
+      onClose={() => {}}
+      accessToken="test-token"
+      is_org_admin={true}
+      is_proxy_admin={false}
+      userModels={[]}
+      editOrg={false}
+    />,
+  );
+
+  await user.click(screen.getByRole("tab", { name: "Members" }));
+
+  await waitFor(() => {
+    expect(screen.getByText("Company Admin")).toBeInTheDocument();
+    expect(screen.queryByText("org_admin")).not.toBeInTheDocument();
+  });
+});
+
+test("should display add company member role labels without org_admin", async () => {
+  mockUseOrganization.mockReturnValue({ data: mockOrg, isLoading: false } as any);
+
+  const user = userEvent.setup();
+  renderWithProviders(
+    <OrganizationInfoView
+      organizationId="org_123"
+      onClose={() => {}}
+      accessToken="test-token"
+      is_org_admin={true}
+      is_proxy_admin={false}
+      userModels={[]}
+      editOrg={false}
+    />,
+  );
+
+  await user.click(screen.getByRole("tab", { name: "Members" }));
+  await user.click(screen.getByRole("button", { name: /Add Member/ }));
+
+  await waitFor(() => {
+    expect(screen.getByText("Add Company Member")).toBeInTheDocument();
+    expect(screen.getByText("Company Admin")).toBeInTheDocument();
+    expect(screen.getByText("Internal User")).toBeInTheDocument();
+    expect(screen.getByText("Internal User Viewer")).toBeInTheDocument();
+    expect(screen.queryByText("org_admin")).not.toBeInTheDocument();
   });
 });

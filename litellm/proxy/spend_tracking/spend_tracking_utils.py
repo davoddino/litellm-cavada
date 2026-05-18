@@ -424,6 +424,7 @@ def get_logging_payload(  # noqa: PLR0915
             user=metadata.get("user_api_key_user_id", "") or "",
             team_id=metadata.get("user_api_key_team_id", "") or "",
             organization_id=metadata.get("user_api_key_org_id") or "",
+            project_id=metadata.get("user_api_key_project_id") or "",
             metadata=safe_dumps(clean_metadata),
             cache_key=cache_key,
             spend=kwargs.get("response_cost", 0),

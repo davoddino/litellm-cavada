@@ -20,11 +20,12 @@ describe("ExportTypeSelector", () => {
     expect(screen.getByText(/Day-by-day by team and model/)).toBeInTheDocument();
   });
 
-  it("should display the correct entity type for different entities", () => {
+  it("should display Company for compatibility organization entity type", () => {
     renderWithProviders(
       <ExportTypeSelector value="daily" onChange={vi.fn()} entityType="organization" />
     );
-    expect(screen.getByText(/Day-by-day breakdown by organization$/)).toBeInTheDocument();
+    expect(screen.getByText(/Day-by-day breakdown by company$/)).toBeInTheDocument();
+    expect(screen.queryByText(/organization/i)).not.toBeInTheDocument();
   });
 
   it("should call onChange when a radio option is selected", async () => {

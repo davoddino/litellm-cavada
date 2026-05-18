@@ -3,11 +3,41 @@ import { render, screen, waitFor, act, fireEvent } from "@testing-library/react"
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import AgentsPanel from "./agents";
 import * as networking from "./networking";
+import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
+import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
 
 vi.mock("./networking", () => ({
   getAgentsList: vi.fn().mockResolvedValue({ agents: [] }),
   deleteAgentCall: vi.fn(),
   keyListCall: vi.fn().mockResolvedValue({ keys: [] }),
+}));
+
+vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
+  useOrganizations: vi.fn(),
+}));
+
+vi.mock("@/app/(dashboard)/hooks/projects/useProjects", () => ({
+  useProjects: vi.fn(),
+}));
+
+vi.mock("./common_components/ProjectDropdown", () => ({
+  default: ({ projects, value, onChange, companyId }: any) => (
+    <select
+      aria-label="Project"
+      value={value || ""}
+      data-company-id={companyId || ""}
+      onChange={(event) => onChange(event.target.value || undefined)}
+    >
+      <option value="">All Projects</option>
+      {projects
+        ?.filter((project: any) => !companyId || project.company_id === companyId)
+        .map((project: any) => (
+          <option key={project.project_id} value={project.project_id}>
+            {project.project_alias || project.project_id} ({project.project_id})
+          </option>
+        ))}
+    </select>
+  ),
 }));
 
 vi.mock("./agents/add_agent_form", () => ({
@@ -29,6 +59,38 @@ vi.mock("./agents/agent_info", () => ({
 describe("AgentsPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(useOrganizations).mockReturnValue({
+      data: [
+        {
+          organization_id: "company-1",
+          company_id: "company-1",
+          company_name: "Acme Corp",
+          organization_alias: "Acme Corp",
+        },
+        {
+          organization_id: "company-2",
+          company_id: "company-2",
+          company_name: "Globex",
+          organization_alias: "Globex",
+        },
+      ],
+      isLoading: false,
+    } as any);
+    vi.mocked(useProjects).mockReturnValue({
+      data: [
+        {
+          project_id: "project-1",
+          project_alias: "Project One",
+          company_id: "company-1",
+        },
+        {
+          project_id: "project-2",
+          project_alias: "Project Two",
+          company_id: "company-2",
+        },
+      ],
+      isLoading: false,
+    } as any);
   });
 
   it("should render the Agents panel title", async () => {
@@ -85,14 +147,20 @@ describe("AgentsPanel", () => {
   it("should call getAgentsList with health_check=false on initial load", async () => {
     render(<AgentsPanel accessToken="test-token" userRole="Admin" />);
     await waitFor(() => {
-      expect(networking.getAgentsList).toHaveBeenCalledWith("test-token", false);
+      expect(networking.getAgentsList).toHaveBeenCalledWith("test-token", false, {
+        company_id: null,
+        project_id: null,
+      });
     });
   });
 
   it("should call getAgentsList with health_check=true when toggle is enabled", async () => {
     render(<AgentsPanel accessToken="test-token" userRole="Admin" />);
     await waitFor(() => {
-      expect(networking.getAgentsList).toHaveBeenCalledWith("test-token", false);
+      expect(networking.getAgentsList).toHaveBeenCalledWith("test-token", false, {
+        company_id: null,
+        project_id: null,
+      });
     });
 
     const toggle = screen.getByRole("switch");
@@ -101,7 +169,53 @@ describe("AgentsPanel", () => {
     });
 
     await waitFor(() => {
-      expect(networking.getAgentsList).toHaveBeenCalledWith("test-token", true);
+      expect(networking.getAgentsList).toHaveBeenCalledWith("test-token", true, {
+        company_id: null,
+        project_id: null,
+      });
+    });
+  });
+
+  it("should filter agents by Company and Project without Organization payloads", async () => {
+    render(<AgentsPanel accessToken="test-token" userRole="Admin" />);
+
+    await waitFor(() => {
+      expect(networking.getAgentsList).toHaveBeenCalledWith("test-token", false, {
+        company_id: null,
+        project_id: null,
+      });
+    });
+
+    expect(screen.getAllByText("Company").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Project").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.mouseDown(screen.getByLabelText("Company"));
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByText("Acme Corp (company-1)"));
+    });
+
+    await waitFor(() => {
+      expect(networking.getAgentsList).toHaveBeenCalledWith("test-token", false, {
+        company_id: "company-1",
+        project_id: null,
+      });
+    });
+
+    expect(screen.getByLabelText("Project")).toHaveAttribute("data-company-id", "company-1");
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Project"), {
+        target: { value: "project-1" },
+      });
+    });
+
+    await waitFor(() => {
+      expect(networking.getAgentsList).toHaveBeenCalledWith("test-token", false, {
+        company_id: "company-1",
+        project_id: "project-1",
+      });
     });
   });
 });

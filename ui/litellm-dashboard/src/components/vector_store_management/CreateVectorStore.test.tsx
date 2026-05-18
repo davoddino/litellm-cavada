@@ -6,6 +6,40 @@ import * as networking from "../networking";
 // Mock the networking module
 vi.mock("../networking", () => ({
   ragIngestCall: vi.fn(),
+  modelHubCall: vi.fn().mockResolvedValue({ data: [] }),
+}));
+
+vi.mock("../common_components/OrganizationDropdown", () => ({
+  default: ({ organizations, value, onChange }: any) => (
+    <select aria-label="Company" value={value || ""} onChange={(event) => onChange(event.target.value || undefined)}>
+      <option value="">Select Company</option>
+      {organizations?.map((company: any) => (
+        <option key={company.company_id || company.organization_id} value={company.company_id || company.organization_id}>
+          {company.company_name || company.organization_alias}
+        </option>
+      ))}
+    </select>
+  ),
+}));
+
+vi.mock("../common_components/ProjectDropdown", () => ({
+  default: ({ projects, value, onChange, companyId, disabled }: any) => (
+    <select
+      aria-label="Project"
+      value={value || ""}
+      disabled={disabled}
+      onChange={(event) => onChange(event.target.value || undefined)}
+    >
+      <option value="">Select Project</option>
+      {projects
+        ?.filter((project: any) => !companyId || project.company_id === companyId)
+        .map((project: any) => (
+          <option key={project.project_id} value={project.project_id}>
+            {project.project_alias || project.project_id}
+          </option>
+        ))}
+    </select>
+  ),
 }));
 
 // Mock NotificationsManager
@@ -70,12 +104,42 @@ vi.mock("../vector_store_providers", () => ({
 }));
 
 describe("CreateVectorStore", () => {
+  const companies = [
+    {
+      company_id: "company-alpha",
+      company_name: "Acme Labs",
+      organization_id: "company-alpha",
+      organization_alias: "Acme Labs",
+    },
+  ];
+  const projects = [
+    {
+      project_id: "project-alpha",
+      company_id: "company-alpha",
+      project_alias: "Project Alpha",
+    },
+  ];
+
+  const renderCreateVectorStore = (props = {}) =>
+    render(
+      <CreateVectorStore
+        accessToken="test-token"
+        organizations={companies as any}
+        projects={projects as any}
+        {...props}
+      />,
+    );
+  const getProviderCombobox = () =>
+    screen
+      .getAllByRole("combobox")
+      .find((element) => !["Company", "Project"].includes(element.getAttribute("aria-label") || ""))!;
+
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   it("should render the component successfully", () => {
-    render(<CreateVectorStore accessToken="test-token" />);
+    renderCreateVectorStore();
 
     expect(screen.getAllByText("Create Vector Store").length).toBeGreaterThan(0);
     expect(screen.getByText("Step 1: Upload Documents")).toBeInTheDocument();
@@ -83,27 +147,29 @@ describe("CreateVectorStore", () => {
   });
 
   it("should display upload area with correct text", () => {
-    render(<CreateVectorStore accessToken="test-token" />);
+    renderCreateVectorStore();
 
     expect(screen.getByText("Click or drag files to this area to upload")).toBeInTheDocument();
     expect(screen.getByText(/Support for single or bulk upload/)).toBeInTheDocument();
   });
 
   it("should have provider selection dropdown", () => {
-    render(<CreateVectorStore accessToken="test-token" />);
+    renderCreateVectorStore();
 
     expect(screen.getByText("Provider")).toBeInTheDocument();
+    expect(screen.getByText("Company")).toBeInTheDocument();
+    expect(screen.getByText("Project")).toBeInTheDocument();
   });
 
   it("should have create button disabled initially when no documents", () => {
-    render(<CreateVectorStore accessToken="test-token" />);
+    renderCreateVectorStore();
 
     const createButton = screen.getByRole("button", { name: /Create Vector Store/i });
     expect(createButton).toBeDisabled();
   });
 
   it("should show uploaded documents table when files are added", async () => {
-    render(<CreateVectorStore accessToken="test-token" />);
+    renderCreateVectorStore();
 
     // Create a mock file
     const file = new File(["test content"], "test.pdf", { type: "application/pdf" });
@@ -132,7 +198,7 @@ describe("CreateVectorStore", () => {
     });
 
     const onSuccess = vi.fn();
-    render(<CreateVectorStore accessToken="test-token" onSuccess={onSuccess} />);
+    renderCreateVectorStore({ onSuccess });
 
     // Create a mock file
     const file = new File(["test content"], "test.pdf", { type: "application/pdf" });
@@ -147,6 +213,11 @@ describe("CreateVectorStore", () => {
     // Wait for file to be added
     await waitFor(() => {
       expect(screen.getByText("Uploaded Documents (1)")).toBeInTheDocument();
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Company"), { target: { value: "company-alpha" } });
+      fireEvent.change(screen.getByLabelText("Project"), { target: { value: "project-alpha" } });
     });
 
     // Click create button
@@ -164,7 +235,9 @@ describe("CreateVectorStore", () => {
         undefined,
         undefined,
         undefined,
-        {}
+        {},
+        "company-alpha",
+        "project-alpha"
       );
     });
   });
@@ -178,7 +251,7 @@ describe("CreateVectorStore", () => {
       file_id: "file_123",
     });
 
-    render(<CreateVectorStore accessToken="test-token" />);
+    renderCreateVectorStore();
 
     // Create and upload a mock file
     const file = new File(["test content"], "test.pdf", { type: "application/pdf" });
@@ -194,6 +267,11 @@ describe("CreateVectorStore", () => {
       expect(screen.getByText("Uploaded Documents (1)")).toBeInTheDocument();
     });
 
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Company"), { target: { value: "company-alpha" } });
+      fireEvent.change(screen.getByLabelText("Project"), { target: { value: "project-alpha" } });
+    });
+
     // Click create button
     const createButton = screen.getByRole("button", { name: /Create Vector Store/i });
 
@@ -207,10 +285,10 @@ describe("CreateVectorStore", () => {
   });
 
   it("should display S3 Vectors provider-specific fields when selected", async () => {
-    render(<CreateVectorStore accessToken="test-token" />);
+    renderCreateVectorStore();
 
     // Find and click the provider dropdown
-    const providerSelect = screen.getByRole("combobox");
+    const providerSelect = getProviderCombobox();
 
     await act(async () => {
       fireEvent.mouseDown(providerSelect);
@@ -233,7 +311,7 @@ describe("CreateVectorStore", () => {
   });
 
   it("should validate S3 Vectors required fields before submission", async () => {
-    render(<CreateVectorStore accessToken="test-token" />);
+    renderCreateVectorStore();
 
     // Upload a file first
     const file = new File(["test content"], "test.pdf", { type: "application/pdf" });
@@ -249,8 +327,13 @@ describe("CreateVectorStore", () => {
       expect(screen.getByText("Uploaded Documents (1)")).toBeInTheDocument();
     });
 
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText("Company"), { target: { value: "company-alpha" } });
+      fireEvent.change(screen.getByLabelText("Project"), { target: { value: "project-alpha" } });
+    });
+
     // Select S3 Vectors provider
-    const providerSelect = screen.getByRole("combobox");
+    const providerSelect = getProviderCombobox();
 
     await act(async () => {
       fireEvent.mouseDown(providerSelect);

@@ -1,4 +1,5 @@
 import { useProjects, ProjectResponse } from "@/app/(dashboard)/hooks/projects/useProjects";
+import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
 import { useTeams } from "@/app/(dashboard)/hooks/teams/useTeams";
 import { LoadingOutlined, PlusOutlined } from "@ant-design/icons";
 import {
@@ -21,14 +22,19 @@ import { LayersIcon, SearchIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { CreateProjectModal } from "./ProjectModals/CreateProjectModal";
 import { ProjectDetail } from "./ProjectDetailsPage";
+import OrganizationDropdown, {
+  getCompanyDisplayName,
+} from "../common_components/OrganizationDropdown";
 
 const { Title, Text } = Typography;
 const { Content } = Layout;
 
 export function ProjectsPage() {
   const { token } = theme.useToken();
-  const { data: projects, isLoading } = useProjects();
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string | null>(null);
+  const { data: projects, isLoading } = useProjects({ companyID: selectedCompanyId });
   const { data: teams, isLoading: isTeamsLoading } = useTeams();
+  const { data: companies, isLoading: isCompaniesLoading } = useOrganizations();
 
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [isCreateModalVisible, setIsCreateModalVisible] = useState(false);
@@ -49,6 +55,20 @@ export function ProjectsPage() {
     return map;
   }, [teams]);
 
+  const companyAliasMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const company of companies ?? []) {
+      map.set(company.company_id || company.organization_id, getCompanyDisplayName(company));
+      map.set(company.organization_id, getCompanyDisplayName(company));
+    }
+    return map;
+  }, [companies]);
+
+  const getProjectCompanyLabel = (project: ProjectResponse) => {
+    if (!project.company_id) return "—";
+    return companyAliasMap.get(project.company_id) ?? project.company_id;
+  };
+
   // ---------- filtered data ----------
   const filteredProjects = useMemo(() => {
     const list = projects ?? [];
@@ -56,14 +76,16 @@ export function ProjectsPage() {
     const lower = searchText.toLowerCase();
     return list.filter((p) => {
       const alias = teamAliasMap.get(p.team_id ?? "") ?? "";
+      const companyLabel = getProjectCompanyLabel(p);
       return (
         (p.project_alias ?? "").toLowerCase().includes(lower) ||
         p.project_id.toLowerCase().includes(lower) ||
         (p.description ?? "").toLowerCase().includes(lower) ||
+        companyLabel.toLowerCase().includes(lower) ||
         alias.toLowerCase().includes(lower)
       );
     });
-  }, [projects, searchText, teamAliasMap]);
+  }, [projects, searchText, teamAliasMap, companyAliasMap]);
 
   // ---------- Ant Design columns ----------
   const columns: ColumnsType<ProjectResponse> = [
@@ -91,6 +113,12 @@ export function ProjectsPage() {
       key: "project_alias",
       sorter: (a, b) => (a.project_alias ?? "").localeCompare(b.project_alias ?? ""),
       render: (alias: string | null) => alias ?? "—",
+    },
+    {
+      title: "Company",
+      key: "company",
+      sorter: (a, b) => getProjectCompanyLabel(a).localeCompare(getProjectCompanyLabel(b)),
+      render: (_: unknown, record: ProjectResponse) => getProjectCompanyLabel(record),
     },
     {
       title: "Team",
@@ -175,7 +203,7 @@ export function ProjectsPage() {
             Projects
           </Title>
           <Text type="secondary">
-            Manage projects within your teams
+            Manage Company-scoped projects
           </Text>
         </Space>
         <Button
@@ -193,14 +221,23 @@ export function ProjectsPage() {
           align="center"
           style={{ padding: "12px 16px" }}
         >
-          <Input
-            prefix={<SearchIcon size={16} />}
-            placeholder="Search projects by name, ID, description, or team..."
-            style={{ maxWidth: 400 }}
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-            allowClear
-          />
+          <Space>
+            <Input
+              prefix={<SearchIcon size={16} />}
+              placeholder="Search projects by name, ID, description, company, or team..."
+              style={{ width: 420 }}
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              allowClear
+            />
+            <OrganizationDropdown
+              organizations={companies}
+              value={selectedCompanyId ?? undefined}
+              onChange={(value) => setSelectedCompanyId(value ?? null)}
+              loading={isCompaniesLoading}
+              style={{ minWidth: 240 }}
+            />
+          </Space>
           <Pagination
             current={currentPage}
             total={filteredProjects.length}

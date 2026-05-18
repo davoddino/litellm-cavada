@@ -453,6 +453,80 @@ async def check_tools_allowlist(
         )
 
 
+def _field_from_obj(obj: Any, field: str) -> Any:
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(field)
+    return getattr(obj, field, None)
+
+
+async def _get_agent_for_token_context(
+    *,
+    agent_id: str,
+    prisma_client: Optional[PrismaClient],
+) -> Any:
+    from litellm.proxy.agent_endpoints.agent_registry import global_agent_registry
+
+    agent = global_agent_registry.get_agent_by_id(agent_id=agent_id)
+    if agent is not None:
+        return agent
+
+    if prisma_client is None:
+        return None
+
+    return await prisma_client.db.litellm_agentstable.find_unique(
+        where={"agent_id": agent_id}
+    )
+
+
+async def _check_agent_token_tenant_context(
+    *,
+    valid_token: Optional[UserAPIKeyAuth],
+    prisma_client: Optional[PrismaClient],
+) -> None:
+    if valid_token is None or valid_token.agent_id is None:
+        return
+
+    agent = await _get_agent_for_token_context(
+        agent_id=valid_token.agent_id,
+        prisma_client=prisma_client,
+    )
+    if agent is None:
+        return
+
+    agent_company_id = _field_from_obj(agent, "company_id")
+    agent_project_id = _field_from_obj(agent, "project_id")
+    if agent_company_id is None and agent_project_id is None:
+        return
+
+    token_company_id = getattr(valid_token, "company_id", None) or getattr(
+        valid_token, "organization_id", None
+    )
+    token_project_id = getattr(valid_token, "project_id", None)
+
+    if agent_company_id is not None and token_company_id != agent_company_id:
+        raise ProxyException(
+            message=(
+                f"Agent key company_id={token_company_id} does not match "
+                f"agent company_id={agent_company_id}."
+            ),
+            type=ProxyErrorTypes.auth_error,
+            param="company_id",
+            code=status.HTTP_403_FORBIDDEN,
+        )
+    if agent_project_id is not None and token_project_id != agent_project_id:
+        raise ProxyException(
+            message=(
+                f"Agent key project_id={token_project_id} does not match "
+                f"agent project_id={agent_project_id}."
+            ),
+            type=ProxyErrorTypes.auth_error,
+            param="project_id",
+            code=status.HTTP_403_FORBIDDEN,
+        )
+
+
 async def common_checks(  # noqa: PLR0915
     request_body: dict,
     team_object: Optional[LiteLLM_TeamTable],
@@ -544,6 +618,11 @@ async def common_checks(  # noqa: PLR0915
     if valid_token is not None and valid_token.agent_id:
         from litellm.proxy.agent_endpoints.agent_registry import global_agent_registry
         from litellm.proxy.litellm_pre_call_utils import get_chain_id_from_headers
+
+        await _check_agent_token_tenant_context(
+            valid_token=valid_token,
+            prisma_client=prisma_client,
+        )
 
         agent = global_agent_registry.get_agent_by_id(agent_id=valid_token.agent_id)
         if agent is not None:

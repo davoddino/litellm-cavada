@@ -2,10 +2,17 @@ import { InfoCircleOutlined } from "@ant-design/icons";
 import { Button, SelectItem, TextInput, Textarea } from "@tremor/react";
 import { Checkbox, Form, Select, Tooltip } from "antd";
 import React, { useState } from "react";
+import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
+import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
 import { all_admin_roles } from "../utils/roles";
 import BudgetDurationDropdown from "./common_components/budget_duration_dropdown";
 import { getModelDisplayName } from "./key_team_helpers/fetch_available_models_team_key";
 import NumericalInput from "./shared/numerical_input";
+import {
+  filterProjectsByCompanyIds,
+  pruneProjectIdsForCompanySelection,
+} from "./common_components/ProjectDropdown";
+import { getCompanyDisplayId, getCompanyDisplayName } from "./common_components/OrganizationDropdown";
 
 interface UserEditViewProps {
   userData: any;
@@ -19,6 +26,14 @@ interface UserEditViewProps {
   possibleUIRoles: Record<string, Record<string, string>> | null;
   isBulkEdit?: boolean;
 }
+
+const sanitizeUserEditTenantValues = (values: any) => {
+  const sanitizedValues = { ...values };
+  delete sanitizedValues.organization_id;
+  delete sanitizedValues.organization_ids;
+  delete sanitizedValues.organizations;
+  return sanitizedValues;
+};
 
 export function UserEditView({
   userData,
@@ -34,6 +49,25 @@ export function UserEditView({
 }: UserEditViewProps) {
   const [form] = Form.useForm();
   const [unlimitedBudget, setUnlimitedBudget] = useState(false);
+  const { data: organizations = [] } = useOrganizations();
+  const { data: projects = [], isLoading: isProjectsLoading } = useProjects({ includeNonAdmin: true });
+  const selectedCompanyIds = Form.useWatch("company_ids", form) || [];
+  const selectedProjectIds = Form.useWatch("project_ids", form) || [];
+  const availableProjects = React.useMemo(() => {
+    return filterProjectsByCompanyIds(projects, selectedCompanyIds);
+  }, [projects, selectedCompanyIds]);
+
+  React.useEffect(() => {
+    const nextProjectIds = pruneProjectIdsForCompanySelection({
+      projects,
+      selectedCompanyIds,
+      selectedProjectIds,
+      isLoading: isProjectsLoading,
+    });
+    if (nextProjectIds !== null) {
+      form.setFieldValue("project_ids", nextProjectIds);
+    }
+  }, [form, isProjectsLoading, projects, selectedCompanyIds, selectedProjectIds]);
 
   // Set initial form values
   React.useEffect(() => {
@@ -49,6 +83,8 @@ export function UserEditView({
       models: userData.user_info?.models || [],
       max_budget: isUnlimited ? "" : maxBudget,
       budget_duration: userData.user_info?.budget_duration,
+      company_ids: userData.user_info?.company_ids || [],
+      project_ids: userData.user_info?.project_ids || [],
       metadata: userData.user_info?.metadata ? JSON.stringify(userData.user_info.metadata, null, 2) : undefined,
     });
   }, [userData, form]);
@@ -62,21 +98,23 @@ export function UserEditView({
   };
 
   const handleSubmit = (values: any) => {
+    const sanitizedValues = sanitizeUserEditTenantValues(values);
+
     // Convert metadata back to an object if it exists and is a string
-    if (values.metadata && typeof values.metadata === "string") {
+    if (sanitizedValues.metadata && typeof sanitizedValues.metadata === "string") {
       try {
-        values.metadata = JSON.parse(values.metadata);
+        sanitizedValues.metadata = JSON.parse(sanitizedValues.metadata);
       } catch (error) {
         console.error("Error parsing metadata JSON:", error);
         return;
       }
     }
 
-    if (unlimitedBudget || values.max_budget === "" || values.max_budget === undefined) {
-      values.max_budget = null;
+    if (unlimitedBudget || sanitizedValues.max_budget === "" || sanitizedValues.max_budget === undefined) {
+      sanitizedValues.max_budget = null;
     }
 
-    onSubmit(values);
+    onSubmit(sanitizedValues);
   };
 
   return (
@@ -97,11 +135,42 @@ export function UserEditView({
         <TextInput />
       </Form.Item>
 
+      <Form.Item label="Company" name="company_ids">
+        <Select
+          mode="multiple"
+          placeholder="Select Company"
+          style={{ width: "100%" }}
+          disabled={!all_admin_roles.includes(userRole || "")}
+        >
+          {organizations.map((company) => (
+            <Select.Option key={getCompanyDisplayId(company)} value={getCompanyDisplayId(company)}>
+              {getCompanyDisplayName(company)} ({getCompanyDisplayId(company)})
+            </Select.Option>
+          ))}
+        </Select>
+      </Form.Item>
+
+      <Form.Item label="Project" name="project_ids">
+        <Select
+          mode="multiple"
+          placeholder="Select Project"
+          style={{ width: "100%" }}
+          loading={isProjectsLoading}
+          disabled={isProjectsLoading || !all_admin_roles.includes(userRole || "")}
+        >
+          {availableProjects.map((project) => (
+            <Select.Option key={project.project_id} value={project.project_id}>
+              {project.project_alias || project.project_id} ({project.project_id})
+            </Select.Option>
+          ))}
+        </Select>
+      </Form.Item>
+
       <Form.Item
         label={
           <span>
             Global Proxy Role{" "}
-            <Tooltip title="This is the role that the user will globally on the proxy. This role is independent of any team/org specific roles.">
+            <Tooltip title="This is the role that the user will globally on the proxy. This role is independent of any team/company specific roles.">
               <InfoCircleOutlined />
             </Tooltip>
           </span>

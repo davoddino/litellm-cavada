@@ -12,6 +12,8 @@ import type { LogsSortField } from "./columns";
 /** Spend log `model` column (LLM public model name or `search_tool_name` for /search). */
 export const FILTER_KEYS = {
   TEAM_ID: "Team ID",
+  COMPANY_ID: "Company ID",
+  PROJECT_ID: "Project ID",
   KEY_HASH: "Key Hash",
   REQUEST_ID: "Request ID",
   MODEL: "Model",
@@ -27,6 +29,32 @@ export const FILTER_KEYS = {
 
 export type FilterKey = keyof typeof FILTER_KEYS;
 export type LogFilterState = Record<(typeof FILTER_KEYS)[FilterKey], string>;
+
+const normalizeTenantFilterChange = (
+  previousFilters: LogFilterState,
+  requestedFilters: Partial<LogFilterState>,
+): Partial<LogFilterState> => {
+  const normalizedFilters = { ...requestedFilters };
+  const requestedCompany = requestedFilters[FILTER_KEYS.COMPANY_ID];
+  const didRequestCompany = Object.prototype.hasOwnProperty.call(
+    requestedFilters,
+    FILTER_KEYS.COMPANY_ID,
+  );
+  const didRequestProject = Object.prototype.hasOwnProperty.call(
+    requestedFilters,
+    FILTER_KEYS.PROJECT_ID,
+  );
+
+  if (
+    didRequestCompany &&
+    !didRequestProject &&
+    requestedCompany !== previousFilters[FILTER_KEYS.COMPANY_ID]
+  ) {
+    normalizedFilters[FILTER_KEYS.PROJECT_ID] = "";
+  }
+
+  return normalizedFilters;
+};
 
 export function useLogFilterLogic({
   logs,
@@ -58,6 +86,8 @@ export function useLogFilterLogic({
   const defaultFilters = useMemo<LogFilterState>(
     () => ({
       [FILTER_KEYS.TEAM_ID]: "",
+      [FILTER_KEYS.COMPANY_ID]: "",
+      [FILTER_KEYS.PROJECT_ID]: "",
       [FILTER_KEYS.KEY_HASH]: "",
       [FILTER_KEYS.REQUEST_ID]: "",
       [FILTER_KEYS.MODEL]: "",
@@ -106,6 +136,8 @@ export function useLogFilterLogic({
           params: {
             api_key: filters[FILTER_KEYS.KEY_HASH] || undefined,
             team_id: filters[FILTER_KEYS.TEAM_ID] || undefined,
+            company_id: filters[FILTER_KEYS.COMPANY_ID] || undefined,
+            project_id: filters[FILTER_KEYS.PROJECT_ID] || undefined,
             request_id: filters[FILTER_KEYS.REQUEST_ID] || undefined,
             user_id: filters[FILTER_KEYS.USER_ID] || undefined,
             end_user: filters[FILTER_KEYS.END_USER] || undefined,
@@ -155,6 +187,8 @@ export function useLogFilterLogic({
       !!(
         filters[FILTER_KEYS.KEY_ALIAS] ||
         filters[FILTER_KEYS.KEY_HASH] ||
+        filters[FILTER_KEYS.COMPANY_ID] ||
+        filters[FILTER_KEYS.PROJECT_ID] ||
         filters[FILTER_KEYS.REQUEST_ID] ||
         filters[FILTER_KEYS.USER_ID] ||
         filters[FILTER_KEYS.END_USER] ||
@@ -209,6 +243,18 @@ export function useLogFilterLogic({
 
     if (filters[FILTER_KEYS.TEAM_ID]) {
       filteredData = filteredData.filter((log) => log.team_id === filters[FILTER_KEYS.TEAM_ID]);
+    }
+
+    if (filters[FILTER_KEYS.COMPANY_ID]) {
+      filteredData = filteredData.filter(
+        (log) => (log.company_id ?? log.organization_id ?? log.metadata?.user_api_key_org_id) === filters[FILTER_KEYS.COMPANY_ID],
+      );
+    }
+
+    if (filters[FILTER_KEYS.PROJECT_ID]) {
+      filteredData = filteredData.filter(
+        (log) => (log.project_id ?? log.metadata?.user_api_key_project_id) === filters[FILTER_KEYS.PROJECT_ID],
+      );
     }
 
     if (filters[FILTER_KEYS.STATUS]) {
@@ -291,7 +337,8 @@ export function useLogFilterLogic({
   // Update filters state
   const handleFilterChange = (newFilters: Partial<LogFilterState>) => {
     setFilters((prev) => {
-      const updatedFilters = { ...prev, ...newFilters };
+      const normalizedFilters = normalizeTenantFilterChange(prev, newFilters);
+      const updatedFilters = { ...prev, ...normalizedFilters };
 
       // Ensure all keys in LogFilterState are present, defaulting to '' if not in newFilters
       for (const key of Object.keys(defaultFilters) as Array<keyof LogFilterState>) {

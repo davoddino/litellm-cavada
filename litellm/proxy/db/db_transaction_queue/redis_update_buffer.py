@@ -15,6 +15,7 @@ from litellm.constants import (
     REDIS_DAILY_AGENT_SPEND_UPDATE_BUFFER_KEY,
     REDIS_DAILY_END_USER_SPEND_UPDATE_BUFFER_KEY,
     REDIS_DAILY_ORG_SPEND_UPDATE_BUFFER_KEY,
+    REDIS_DAILY_PROJECT_SPEND_UPDATE_BUFFER_KEY,
     REDIS_DAILY_SPEND_UPDATE_BUFFER_KEY,
     REDIS_DAILY_TAG_SPEND_UPDATE_BUFFER_KEY,
     REDIS_DAILY_TEAM_SPEND_UPDATE_BUFFER_KEY,
@@ -26,6 +27,7 @@ from litellm.proxy._types import (
     DailyAgentSpendTransaction,
     DailyEndUserSpendTransaction,
     DailyOrganizationSpendTransaction,
+    DailyProjectSpendTransaction,
     DailyTagSpendTransaction,
     DailyTeamSpendTransaction,
     DailyUserSpendTransaction,
@@ -132,6 +134,7 @@ class RedisUpdateBuffer:
         daily_spend_update_queue: DailySpendUpdateQueue,
         daily_team_spend_update_queue: DailySpendUpdateQueue,
         daily_org_spend_update_queue: DailySpendUpdateQueue,
+        daily_project_spend_update_queue: DailySpendUpdateQueue,
         daily_end_user_spend_update_queue: DailySpendUpdateQueue,
         daily_agent_spend_update_queue: DailySpendUpdateQueue,
     ):
@@ -198,6 +201,9 @@ class RedisUpdateBuffer:
         daily_org_spend_update_transactions = (
             await daily_org_spend_update_queue.flush_and_get_aggregated_daily_spend_update_transactions()
         )
+        daily_project_spend_update_transactions = (
+            await daily_project_spend_update_queue.flush_and_get_aggregated_daily_spend_update_transactions()
+        )
         daily_end_user_spend_update_transactions = (
             await daily_end_user_spend_update_queue.flush_and_get_aggregated_daily_spend_update_transactions()
         )
@@ -233,6 +239,11 @@ class RedisUpdateBuffer:
                 daily_org_spend_update_transactions,
                 REDIS_DAILY_ORG_SPEND_UPDATE_BUFFER_KEY,
                 ServiceTypes.REDIS_DAILY_ORG_SPEND_UPDATE_QUEUE,
+            ),
+            (
+                daily_project_spend_update_transactions,
+                REDIS_DAILY_PROJECT_SPEND_UPDATE_BUFFER_KEY,
+                ServiceTypes.REDIS_DAILY_PROJECT_SPEND_UPDATE_QUEUE,
             ),
             (
                 daily_end_user_spend_update_transactions,
@@ -282,12 +293,14 @@ class RedisUpdateBuffer:
                 daily_spend_update_transactions=daily_spend_update_transactions,
                 daily_team_spend_update_transactions=daily_team_spend_update_transactions,
                 daily_org_spend_update_transactions=daily_org_spend_update_transactions,
+                daily_project_spend_update_transactions=daily_project_spend_update_transactions,
                 daily_end_user_spend_update_transactions=daily_end_user_spend_update_transactions,
                 daily_agent_spend_update_transactions=daily_agent_spend_update_transactions,
                 spend_update_queue=spend_update_queue,
                 daily_spend_update_queue=daily_spend_update_queue,
                 daily_team_spend_update_queue=daily_team_spend_update_queue,
                 daily_org_spend_update_queue=daily_org_spend_update_queue,
+                daily_project_spend_update_queue=daily_project_spend_update_queue,
                 daily_end_user_spend_update_queue=daily_end_user_spend_update_queue,
                 daily_agent_spend_update_queue=daily_agent_spend_update_queue,
             )
@@ -311,6 +324,9 @@ class RedisUpdateBuffer:
         daily_org_spend_update_transactions: Optional[
             Dict[str, BaseDailySpendTransaction]
         ],
+        daily_project_spend_update_transactions: Optional[
+            Dict[str, BaseDailySpendTransaction]
+        ],
         daily_end_user_spend_update_transactions: Optional[
             Dict[str, BaseDailySpendTransaction]
         ],
@@ -321,6 +337,7 @@ class RedisUpdateBuffer:
         daily_spend_update_queue: DailySpendUpdateQueue,
         daily_team_spend_update_queue: DailySpendUpdateQueue,
         daily_org_spend_update_queue: DailySpendUpdateQueue,
+        daily_project_spend_update_queue: DailySpendUpdateQueue,
         daily_end_user_spend_update_queue: DailySpendUpdateQueue,
         daily_agent_spend_update_queue: DailySpendUpdateQueue,
     ) -> None:
@@ -360,6 +377,10 @@ class RedisUpdateBuffer:
                     db_spend_update_transactions.get("org_list_transactions"),
                 ),
                 (
+                    Litellm_EntityType.PROJECT,
+                    db_spend_update_transactions.get("project_list_transactions"),
+                ),
+                (
                     Litellm_EntityType.TAG,
                     db_spend_update_transactions.get("tag_list_transactions"),
                 ),
@@ -386,6 +407,10 @@ class RedisUpdateBuffer:
             (daily_spend_update_transactions, daily_spend_update_queue),
             (daily_team_spend_update_transactions, daily_team_spend_update_queue),
             (daily_org_spend_update_transactions, daily_org_spend_update_queue),
+            (
+                daily_project_spend_update_transactions,
+                daily_project_spend_update_queue,
+            ),
             (
                 daily_end_user_spend_update_transactions,
                 daily_end_user_spend_update_queue,
@@ -490,22 +515,24 @@ class RedisUpdateBuffer:
         Optional[Dict[str, DailyUserSpendTransaction]],
         Optional[Dict[str, DailyTeamSpendTransaction]],
         Optional[Dict[str, DailyOrganizationSpendTransaction]],
+        Optional[Dict[str, DailyProjectSpendTransaction]],
         Optional[Dict[str, DailyEndUserSpendTransaction]],
         Optional[Dict[str, DailyAgentSpendTransaction]],
     ]:
         """
-        Drains the main 6 Redis buffer queues in a single pipeline round-trip.
+        Drains the main Redis buffer queues in a single pipeline round-trip.
 
-        Returns a 6-tuple of parsed results in this order:
+        Returns a tuple of parsed results in this order:
             0: DBSpendUpdateTransactions
             1: daily user spend
             2: daily team spend
             3: daily org spend
-            4: daily end-user spend
-            5: daily agent spend
+            4: daily project spend
+            5: daily end-user spend
+            6: daily agent spend
         """
         if self.redis_cache is None:
-            return None, None, None, None, None, None
+            return None, None, None, None, None, None, None
 
         lpop_list: List[RedisPipelineLpopOperation] = [
             RedisPipelineLpopOperation(
@@ -524,6 +551,10 @@ class RedisUpdateBuffer:
                 count=MAX_REDIS_BUFFER_DEQUEUE_COUNT,
             ),
             RedisPipelineLpopOperation(
+                key=REDIS_DAILY_PROJECT_SPEND_UPDATE_BUFFER_KEY,
+                count=MAX_REDIS_BUFFER_DEQUEUE_COUNT,
+            ),
+            RedisPipelineLpopOperation(
                 key=REDIS_DAILY_END_USER_SPEND_UPDATE_BUFFER_KEY,
                 count=MAX_REDIS_BUFFER_DEQUEUE_COUNT,
             ),
@@ -536,7 +567,7 @@ class RedisUpdateBuffer:
         raw_results = await self.redis_cache.async_lpop_pipeline(lpop_list=lpop_list)
 
         # Pad with None if pipeline returned fewer results than expected
-        while len(raw_results) < 6:
+        while len(raw_results) < 7:
             raw_results.append(None)
 
         # Slot 0: DBSpendUpdateTransactions
@@ -546,9 +577,9 @@ class RedisUpdateBuffer:
             if len(parsed) > 0:
                 db_spend = self._combine_list_of_transactions(parsed)
 
-        # Slots 1-5: daily spend categories
+        # Slots 1-6: daily spend categories
         daily_results: List[Optional[Dict[str, Any]]] = []
-        for slot in range(1, 6):
+        for slot in range(1, 7):
             if raw_results[slot] is None:
                 daily_results.append(None)
             else:
@@ -565,8 +596,9 @@ class RedisUpdateBuffer:
             cast(
                 Optional[Dict[str, DailyOrganizationSpendTransaction]], daily_results[2]
             ),
-            cast(Optional[Dict[str, DailyEndUserSpendTransaction]], daily_results[3]),
-            cast(Optional[Dict[str, DailyAgentSpendTransaction]], daily_results[4]),
+            cast(Optional[Dict[str, DailyProjectSpendTransaction]], daily_results[3]),
+            cast(Optional[Dict[str, DailyEndUserSpendTransaction]], daily_results[4]),
+            cast(Optional[Dict[str, DailyAgentSpendTransaction]], daily_results[5]),
         )
 
     async def store_in_memory_daily_tag_spend_updates_in_redis(
@@ -652,6 +684,30 @@ class RedisUpdateBuffer:
         ]
         return cast(
             Dict[str, DailyOrganizationSpendTransaction],
+            DailySpendUpdateQueue.get_aggregated_daily_spend_update_transactions(
+                list_of_daily_spend_update_transactions
+            ),
+        )
+
+    async def get_all_daily_project_spend_update_transactions_from_redis_buffer(
+        self,
+    ) -> Optional[Dict[str, DailyProjectSpendTransaction]]:
+        """
+        Gets all the daily project spend update transactions from Redis
+        """
+        if self.redis_cache is None:
+            return None
+        list_of_transactions = await self.redis_cache.async_lpop(
+            key=REDIS_DAILY_PROJECT_SPEND_UPDATE_BUFFER_KEY,
+            count=MAX_REDIS_BUFFER_DEQUEUE_COUNT,
+        )
+        if list_of_transactions is None:
+            return None
+        list_of_daily_spend_update_transactions = [
+            json.loads(transaction) for transaction in list_of_transactions
+        ]
+        return cast(
+            Dict[str, DailyProjectSpendTransaction],
             DailySpendUpdateQueue.get_aggregated_daily_spend_update_transactions(
                 list_of_daily_spend_update_transactions
             ),
@@ -756,6 +812,7 @@ class RedisUpdateBuffer:
             team_list_transactions={},
             team_member_list_transactions={},
             org_list_transactions={},
+            project_list_transactions={},
             tag_list_transactions={},
             agent_list_transactions={},
         )
@@ -768,6 +825,7 @@ class RedisUpdateBuffer:
             "team_list_transactions",
             "team_member_list_transactions",
             "org_list_transactions",
+            "project_list_transactions",
             "tag_list_transactions",
             "agent_list_transactions",
         ]

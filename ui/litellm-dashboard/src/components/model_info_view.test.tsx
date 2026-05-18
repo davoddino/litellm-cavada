@@ -30,6 +30,7 @@ vi.mock("./networking", () => ({
   modelPatchUpdateCall: vi.fn(),
   modelDeleteCall: vi.fn(),
   credentialCreateCall: vi.fn(),
+  vectorStoreListCall: vi.fn().mockResolvedValue({ data: [] }),
 }));
 
 const mockUseModelsInfo = vi.fn();
@@ -382,6 +383,15 @@ describe("ModelInfoView", () => {
     });
   });
 
+  it("should label model organization as provider-specific", async () => {
+    render(<ModelInfoView {...DEFAULT_ADMIN_PROPS} />, { wrapper });
+    await waitFor(() => {
+      expect(screen.getByText("Provider Organization ID")).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+  });
+
   it("should display edit settings button when user can edit model", async () => {
     render(<ModelInfoView {...DEFAULT_ADMIN_PROPS} />, { wrapper });
     await waitFor(() => {
@@ -427,6 +437,20 @@ describe("ModelInfoView", () => {
       expect(screen.getByRole("button", { name: /save changes/i })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument();
     });
+  });
+
+  it("should label editable model organization as provider-specific", async () => {
+    const user = userEvent.setup();
+    render(<ModelInfoView {...DEFAULT_ADMIN_PROPS} />, { wrapper });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /edit settings/i })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: /edit settings/i }));
+
+    expect(await screen.findByPlaceholderText("Enter provider organization ID")).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("Enter organization")).not.toBeInTheDocument();
   });
 
   it("should display form fields in edit mode", async () => {

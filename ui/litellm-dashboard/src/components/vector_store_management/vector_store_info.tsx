@@ -3,11 +3,14 @@ import { Card, Text, Title, Button, Badge, TabGroup, TabList, Tab, TabPanels, Ta
 import { Form, Input, Select as Select2, Tooltip, Button as AntButton } from "antd";
 import { InfoCircleOutlined } from "@ant-design/icons";
 import { ArrowLeftIcon } from "@heroicons/react/outline";
-import { vectorStoreInfoCall, vectorStoreUpdateCall, credentialListCall, CredentialItem } from "../networking";
+import { vectorStoreInfoCall, vectorStoreUpdateCall, credentialListCall, CredentialItem, Organization } from "../networking";
 import { VectorStore } from "./types";
 import { Providers, providerLogoMap, provider_map } from "../provider_info_helpers";
 import VectorStoreTester from "./VectorStoreTester";
 import NotificationsManager from "../molecules/notifications_manager";
+import { ProjectResponse } from "@/app/(dashboard)/hooks/projects/useProjects";
+import OrganizationDropdown from "../common_components/OrganizationDropdown";
+import ProjectDropdown from "../common_components/ProjectDropdown";
 
 interface VectorStoreInfoViewProps {
   vectorStoreId: string;
@@ -15,6 +18,9 @@ interface VectorStoreInfoViewProps {
   accessToken: string | null;
   is_admin: boolean;
   editVectorStore: boolean;
+  organizations?: Organization[] | null;
+  projects?: ProjectResponse[] | null;
+  projectsLoading?: boolean;
 }
 
 const VectorStoreInfoView: React.FC<VectorStoreInfoViewProps> = ({
@@ -23,6 +29,9 @@ const VectorStoreInfoView: React.FC<VectorStoreInfoViewProps> = ({
   accessToken,
   is_admin,
   editVectorStore,
+  organizations,
+  projects,
+  projectsLoading,
 }) => {
   const [form] = Form.useForm();
   const [vectorStoreDetails, setVectorStoreDetails] = useState<VectorStore | null>(null);
@@ -30,6 +39,7 @@ const VectorStoreInfoView: React.FC<VectorStoreInfoViewProps> = ({
   const [metadataString, setMetadataString] = useState<string>("{}");
   const [credentials, setCredentials] = useState<CredentialItem[]>([]);
   const [activeTab, setActiveTab] = useState<string>(editVectorStore ? "details" : "details");
+  const selectedCompanyId = Form.useWatch("company_id", form);
 
   const fetchVectorStoreDetails = async () => {
     if (!accessToken) return;
@@ -53,6 +63,8 @@ const VectorStoreInfoView: React.FC<VectorStoreInfoViewProps> = ({
             custom_llm_provider: response.vector_store.custom_llm_provider,
             vector_store_name: response.vector_store.vector_store_name,
             vector_store_description: response.vector_store.vector_store_description,
+            company_id: response.vector_store.company_id,
+            project_id: response.vector_store.project_id,
           });
         }
       }
@@ -96,6 +108,8 @@ const VectorStoreInfoView: React.FC<VectorStoreInfoViewProps> = ({
         vector_store_name: values.vector_store_name,
         vector_store_description: values.vector_store_description,
         vector_store_metadata: metadata,
+        company_id: values.company_id,
+        project_id: values.project_id,
       };
 
       await vectorStoreUpdateCall(accessToken, updateData);
@@ -155,6 +169,33 @@ const VectorStoreInfoView: React.FC<VectorStoreInfoViewProps> = ({
 
                     <Form.Item label="Description" name="vector_store_description">
                       <Input.TextArea rows={4} />
+                    </Form.Item>
+
+                    <Form.Item
+                      label="Company"
+                      name="company_id"
+                      rules={[{ required: true, message: "Please select a Company" }]}
+                    >
+                      <OrganizationDropdown
+                        organizations={organizations}
+                        onChange={(value) => {
+                          form.setFieldsValue({ company_id: value, project_id: undefined });
+                        }}
+                        style={{ width: "100%" }}
+                      />
+                    </Form.Item>
+
+                    <Form.Item
+                      label="Project"
+                      name="project_id"
+                      rules={[{ required: true, message: "Please select a Project" }]}
+                    >
+                      <ProjectDropdown
+                        projects={projects}
+                        companyId={selectedCompanyId}
+                        loading={projectsLoading}
+                        disabled={!selectedCompanyId}
+                      />
                     </Form.Item>
 
                     <Form.Item
@@ -329,6 +370,14 @@ const VectorStoreInfoView: React.FC<VectorStoreInfoViewProps> = ({
                           );
                         })()}
                       </div>
+                    </div>
+                    <div>
+                      <Text className="font-medium">Company</Text>
+                      <Text>{vectorStoreDetails.company_name || vectorStoreDetails.company_id || "-"}</Text>
+                    </div>
+                    <div>
+                      <Text className="font-medium">Project</Text>
+                      <Text>{vectorStoreDetails.project_name || vectorStoreDetails.project_id || "-"}</Text>
                     </div>
                     <div>
                       <Text className="font-medium">Metadata</Text>

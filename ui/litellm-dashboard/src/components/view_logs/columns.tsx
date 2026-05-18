@@ -41,6 +41,11 @@ export type LogEntry = {
   request_id: string;
   api_key: string;
   team_id: string;
+  company_id?: string;
+  company_name?: string;
+  organization_id?: string;
+  project_id?: string;
+  project_name?: string;
   model: string;
   model_id: string;
   api_base?: string;
@@ -76,6 +81,11 @@ export type LogEntry = {
   onKeyHashClick?: (keyHash: string) => void;
   onSessionClick?: (sessionId: string) => void;
 };
+
+const getCompanyId = (row: LogEntry) => row.company_id ?? row.organization_id ?? row.metadata?.user_api_key_org_id;
+const getProjectId = (row: LogEntry) => row.project_id ?? row.metadata?.user_api_key_project_id;
+const getCompanyDisplay = (row: LogEntry) => row.company_name ?? getCompanyId(row);
+const getProjectDisplay = (row: LogEntry) => row.project_name ?? getProjectId(row);
 
 const SortableHeader = ({
   label,
@@ -162,11 +172,7 @@ export const createColumns = (sortProps?: LogsSortProps): ColumnDef<LogEntry>[] 
         sessionAgentCount > 0 && `${sessionAgentCount} Agent`,
         sessionMcpCount > 0 && `${sessionMcpCount} MCP`,
       ].filter(Boolean);
-      return (
-        <Tooltip title={tooltipParts.join(" • ")}>
-          {sessionTypeBadge}
-        </Tooltip>
-      );
+      return <Tooltip title={tooltipParts.join(" • ")}>{sessionTypeBadge}</Tooltip>;
     },
   },
   {
@@ -310,6 +316,30 @@ export const createColumns = (sortProps?: LogsSortProps): ColumnDef<LogEntry>[] 
         <span className="max-w-[15ch] truncate block">{String(info.getValue() || "-")}</span>
       </Tooltip>
     ),
+  },
+  {
+    header: "Company",
+    id: "company_id",
+    cell: (info: any) => {
+      const value = getCompanyDisplay(info.row.original) || "-";
+      return (
+        <Tooltip title={String(value)}>
+          <span className="max-w-[15ch] truncate block">{String(value)}</span>
+        </Tooltip>
+      );
+    },
+  },
+  {
+    header: "Project",
+    id: "project_id",
+    cell: (info: any) => {
+      const value = getProjectDisplay(info.row.original) || "-";
+      return (
+        <Tooltip title={String(value)}>
+          <span className="max-w-[15ch] truncate block">{String(value)}</span>
+        </Tooltip>
+      );
+    },
   },
   {
     header: "Key Hash",
@@ -639,7 +669,7 @@ export const auditLogColumns: ColumnDef<AuditLogEntry>[] = [
           displayValue = "Teams";
           break;
         case "LiteLLM_OrganizationTable":
-          displayValue = "Organizations";
+          displayValue = "Companies";
           break;
         case "LiteLLM_UserTable":
           displayValue = "Users";

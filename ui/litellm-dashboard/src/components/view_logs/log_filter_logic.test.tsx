@@ -21,6 +21,8 @@ const createLogEntry = (overrides: Partial<LogEntry> = {}): LogEntry =>
   request_id: "req-1",
   api_key: "key-1",
   team_id: "team-1",
+  company_id: "company-1",
+  project_id: "project-1",
   model: "gpt-4",
   model_id: "gpt-4",
   call_type: "chat",
@@ -103,6 +105,8 @@ describe("useLogFilterLogic", () => {
 
     const filters = result.current.filters;
     expect(filters["Team ID"]).toBe("");
+    expect(filters["Company ID"]).toBe("");
+    expect(filters["Project ID"]).toBe("");
     expect(filters["Key Hash"]).toBe("");
     expect(filters["Request ID"]).toBe("");
     expect(filters["Model"]).toBe("");
@@ -472,6 +476,122 @@ describe("useLogFilterLogic", () => {
       },
       { timeout: 500 },
     );
+  });
+
+  it("should call uiSpendLogsCall with company_id when Company ID filter is set", async () => {
+    vi.mocked(uiSpendLogsCall).mockResolvedValue(
+      createPaginatedResponse([createLogEntry()]),
+    );
+    const logs = createPaginatedResponse([createLogEntry()]);
+    const { result } = renderHook(() => useLogFilterLogic({ ...defaultProps, logs }), { wrapper });
+
+    act(() => {
+      result.current.handleFilterChange({ "Company ID": "company-123" });
+    });
+
+    await waitFor(
+      () => {
+        expect(uiSpendLogsCall).toHaveBeenCalledWith(
+          expect.objectContaining({
+            params: expect.objectContaining({ company_id: "company-123" }),
+          }),
+        );
+      },
+      { timeout: 500 },
+    );
+  });
+
+  it("should call uiSpendLogsCall with project_id when Project ID filter is set", async () => {
+    vi.mocked(uiSpendLogsCall).mockResolvedValue(
+      createPaginatedResponse([createLogEntry()]),
+    );
+    const logs = createPaginatedResponse([createLogEntry()]);
+    const { result } = renderHook(() => useLogFilterLogic({ ...defaultProps, logs }), { wrapper });
+
+    act(() => {
+      result.current.handleFilterChange({ "Project ID": "project-123" });
+    });
+
+    await waitFor(
+      () => {
+        expect(uiSpendLogsCall).toHaveBeenCalledWith(
+          expect.objectContaining({
+            params: expect.objectContaining({ project_id: "project-123" }),
+          }),
+        );
+      },
+      { timeout: 500 },
+    );
+  });
+
+  it("should call uiSpendLogsCall with company_id and project_id without organization_id", async () => {
+    vi.mocked(uiSpendLogsCall).mockResolvedValue(
+      createPaginatedResponse([createLogEntry()]),
+    );
+    const logs = createPaginatedResponse([createLogEntry()]);
+    const { result } = renderHook(() => useLogFilterLogic({ ...defaultProps, logs }), { wrapper });
+
+    act(() => {
+      result.current.handleFilterChange({
+        "Company ID": "company-123",
+        "Project ID": "project-123",
+      });
+    });
+
+    await waitFor(
+      () => {
+        expect(uiSpendLogsCall).toHaveBeenCalled();
+      },
+      { timeout: 500 },
+    );
+
+    const lastCall = vi.mocked(uiSpendLogsCall).mock.calls.at(-1)?.[0];
+    expect(lastCall?.params).toMatchObject({
+      company_id: "company-123",
+      project_id: "project-123",
+    });
+    expect(lastCall?.params).not.toHaveProperty("organization_id");
+  });
+
+  it("should clear stale project_id when company filter changes without an explicit project", async () => {
+    vi.mocked(uiSpendLogsCall).mockResolvedValue(
+      createPaginatedResponse([createLogEntry()]),
+    );
+    const logs = createPaginatedResponse([createLogEntry()]);
+    const { result } = renderHook(() => useLogFilterLogic({ ...defaultProps, logs }), { wrapper });
+
+    act(() => {
+      result.current.handleFilterChange({
+        "Company ID": "company-123",
+        "Project ID": "project-123",
+      });
+    });
+
+    await waitFor(
+      () => {
+        expect(uiSpendLogsCall).toHaveBeenCalled();
+      },
+      { timeout: 500 },
+    );
+    vi.mocked(uiSpendLogsCall).mockClear();
+
+    act(() => {
+      result.current.handleFilterChange({ "Company ID": "company-456" });
+    });
+
+    await waitFor(
+      () => {
+        expect(uiSpendLogsCall).toHaveBeenCalled();
+      },
+      { timeout: 500 },
+    );
+
+    const lastCall = vi.mocked(uiSpendLogsCall).mock.calls.at(-1)?.[0];
+    expect(result.current.filters["Company ID"]).toBe("company-456");
+    expect(result.current.filters["Project ID"]).toBe("");
+    expect(lastCall?.params).toMatchObject({ company_id: "company-456" });
+    expect(lastCall?.params?.project_id).toBeUndefined();
+    expect(lastCall?.params).not.toHaveProperty("organization_id");
   });
 
   it("should call uiSpendLogsCall with error_message when Error Message filter is set", async () => {

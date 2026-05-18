@@ -257,12 +257,10 @@ function GuardrailLabel({ label, maskedCount }: { label: string; maskedCount: nu
 
   return (
     <Space size={SPACING_MEDIUM}>
-      <a onClick={handleClick} style={{ cursor: "pointer" }}>{label}</a>
-      {maskedCount > 0 && (
-        <Tag color="blue">
-          {maskedCount} masked
-        </Tag>
-      )}
+      <a onClick={handleClick} style={{ cursor: "pointer" }}>
+        {label}
+      </a>
+      {maskedCount > 0 && <Tag color="blue">{maskedCount} masked</Tag>}
     </Space>
   );
 }
@@ -294,15 +292,15 @@ function MetricsSection({ logEntry, metadata }: { logEntry: LogEntry; metadata: 
 
   const cacheHitValue = String(logEntry.cache_hit ?? "None");
   const cacheHitColor =
-    cacheHitValue.toLowerCase() === "true"
-      ? "green"
-      : cacheHitValue.toLowerCase() === "false"
-        ? "red"
-        : "default";
+    cacheHitValue.toLowerCase() === "true" ? "green" : cacheHitValue.toLowerCase() === "false" ? "red" : "default";
 
   const uncachedInputTokens = getUncachedInputTextTokens(metadata);
   const showAnthropicMessagesInputOutput =
     logEntry.call_type === "anthropic_messages" && uncachedInputTokens !== undefined;
+  const companyId = logEntry.company_id ?? logEntry.organization_id ?? metadata?.user_api_key_org_id;
+  const projectId = logEntry.project_id ?? metadata?.user_api_key_project_id;
+  const companyDisplay = logEntry.company_name ?? companyId;
+  const projectDisplay = logEntry.project_name ?? projectId;
 
   return (
     <div className="bg-white rounded-lg shadow w-full max-w-full overflow-hidden mb-6">
@@ -310,9 +308,7 @@ function MetricsSection({ logEntry, metadata }: { logEntry: LogEntry; metadata: 
         <Descriptions column={2} size="small">
           {showAnthropicMessagesInputOutput ? (
             <>
-              <Descriptions.Item label="Input Tokens">
-                {formatNumberWithCommas(uncachedInputTokens)}
-              </Descriptions.Item>
+              <Descriptions.Item label="Input Tokens">{formatNumberWithCommas(uncachedInputTokens)}</Descriptions.Item>
               <Descriptions.Item label="Output Tokens">
                 {formatNumberWithCommas(logEntry.completion_tokens)}
               </Descriptions.Item>
@@ -327,7 +323,11 @@ function MetricsSection({ logEntry, metadata }: { logEntry: LogEntry; metadata: 
             </Descriptions.Item>
           )}
           <Descriptions.Item label="Cost">${formatNumberWithCommas(logEntry.spend || 0, 8)}</Descriptions.Item>
-          <Descriptions.Item label="Duration">{logEntry.request_duration_ms != null ? (logEntry.request_duration_ms / 1000).toFixed(3) : "-"} s</Descriptions.Item>
+          {companyDisplay && <Descriptions.Item label="Company">{companyDisplay}</Descriptions.Item>}
+          {projectDisplay && <Descriptions.Item label="Project">{projectDisplay}</Descriptions.Item>}
+          <Descriptions.Item label="Duration">
+            {logEntry.request_duration_ms != null ? (logEntry.request_duration_ms / 1000).toFixed(3) : "-"} s
+          </Descriptions.Item>
           {ttftMs != null && ttftMs > 0 && (
             <Descriptions.Item label="Time to First Token">{(ttftMs / 1000).toFixed(3)} s</Descriptions.Item>
           )}
@@ -357,11 +357,20 @@ function MetricsSection({ logEntry, metadata }: { logEntry: LogEntry; metadata: 
           )}
 
           <Descriptions.Item label="Retries">
-            {metadata?.attempted_retries !== undefined && metadata?.attempted_retries !== null
-              ? metadata.attempted_retries > 0
-                ? <>{metadata.attempted_retries}{metadata.max_retries !== undefined && metadata.max_retries !== null ? ` / ${metadata.max_retries}` : ''}</>
-                : <Tag color="green">None</Tag>
-              : "-"}
+            {metadata?.attempted_retries !== undefined && metadata?.attempted_retries !== null ? (
+              metadata.attempted_retries > 0 ? (
+                <>
+                  {metadata.attempted_retries}
+                  {metadata.max_retries !== undefined && metadata.max_retries !== null
+                    ? ` / ${metadata.max_retries}`
+                    : ""}
+                </>
+              ) : (
+                <Tag color="green">None</Tag>
+              )
+            ) : (
+              "-"
+            )}
           </Descriptions.Item>
 
           <Descriptions.Item label="Start Time">
@@ -392,7 +401,7 @@ function RequestResponseSection({
   logEntry,
 }: RequestResponseSectionProps) {
   const [activeTab, setActiveTab] = useState<typeof TAB_REQUEST | typeof TAB_RESPONSE>(TAB_REQUEST);
-  const [viewMode, setViewMode] = useState<'pretty' | 'json'>('pretty');
+  const [viewMode, setViewMode] = useState<"pretty" | "json">("pretty");
 
   const getCopyText = () => {
     const data = activeTab === TAB_REQUEST ? getRawRequest() : getFormattedResponse();
@@ -404,16 +413,14 @@ function RequestResponseSection({
   const completionTokens = logEntry.completion_tokens || 0;
   const totalTokens = promptTokens + completionTokens;
   const costBreakdown = logEntry.metadata?.cost_breakdown;
-  const useCostBreakdown =
-    costBreakdown?.input_cost !== undefined &&
-    costBreakdown?.output_cost !== undefined;
+  const useCostBreakdown = costBreakdown?.input_cost !== undefined && costBreakdown?.output_cost !== undefined;
   const inputCost = useCostBreakdown
-    ? (costBreakdown!.input_cost ?? 0)
+    ? costBreakdown!.input_cost ?? 0
     : totalTokens > 0
       ? (totalSpend * promptTokens) / totalTokens
       : 0;
   const outputCost = useCostBreakdown
-    ? (costBreakdown!.output_cost ?? 0)
+    ? costBreakdown!.output_cost ?? 0
     : totalTokens > 0
       ? (totalSpend * completionTokens) / totalTokens
       : 0;
@@ -428,20 +435,18 @@ function RequestResponseSection({
             key: "1",
             label: (
               <div
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}
+                style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}
                 onClick={(e) => {
                   const target = e.target as HTMLElement;
-                  if (target.closest('.ant-radio-group')) {
+                  if (target.closest(".ant-radio-group")) {
                     e.stopPropagation();
                   }
                 }}
               >
-                <h3 className="text-lg font-medium text-gray-900" style={{ margin: 0 }}>Request & Response</h3>
-                <Radio.Group
-                  size="small"
-                  value={viewMode}
-                  onChange={(e) => setViewMode(e.target.value)}
-                >
+                <h3 className="text-lg font-medium text-gray-900" style={{ margin: 0 }}>
+                  Request & Response
+                </h3>
+                <Radio.Group size="small" value={viewMode} onChange={(e) => setViewMode(e.target.value)}>
                   <Radio.Button value="pretty">Pretty</Radio.Button>
                   <Radio.Button value="json">JSON</Radio.Button>
                 </Radio.Group>
@@ -449,7 +454,7 @@ function RequestResponseSection({
             ),
             children: (
               <div>
-                {viewMode === 'pretty' ? (
+                {viewMode === "pretty" ? (
                   <PrettyMessagesView
                     request={getRawRequest()}
                     response={getFormattedResponse()}
@@ -468,7 +473,7 @@ function RequestResponseSection({
                       <Text
                         copyable={{
                           text: getCopyText(),
-                          tooltips: ["Copy JSON", "Copied!"]
+                          tooltips: ["Copy JSON", "Copied!"],
                         }}
                         disabled={activeTab === TAB_RESPONSE && !hasResponse && !hasError}
                       />
@@ -539,7 +544,8 @@ export function GuardrailJumpLink({ guardrailEntries }: { guardrailEntries: any[
           border: `1px solid ${allPassed ? "#bbf7d0" : "#fecaca"}`,
         }}
       >
-        {allPassed ? "\u2713" : "\u2717"} {guardrailEntries.length} guardrail{guardrailEntries.length !== 1 ? "s" : ""} evaluated
+        {allPassed ? "\u2713" : "\u2717"} {guardrailEntries.length} guardrail{guardrailEntries.length !== 1 ? "s" : ""}{" "}
+        evaluated
         <span style={{ fontSize: 11, opacity: 0.7 }}>{"\u2193"}</span>
       </div>
     </div>
@@ -562,7 +568,7 @@ function MetadataSection({ metadata }: { metadata: Record<string, any> }) {
                   <Text
                     copyable={{
                       text: JSON.stringify(metadata, null, 2),
-                      tooltips: ["Copy Metadata", "Copied!"]
+                      tooltips: ["Copy Metadata", "Copied!"],
                     }}
                   />
                 </div>

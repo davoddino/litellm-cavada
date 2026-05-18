@@ -23,14 +23,20 @@ import {
   type GuardrailSubmissionItem,
 } from "@/components/networking";
 import NotificationsManager from "@/components/molecules/notifications_manager";
-import TeamDropdown from "@/components/common_components/team_dropdown";
+import OrganizationDropdown from "@/components/common_components/OrganizationDropdown";
+import ProjectDropdown from "@/components/common_components/ProjectDropdown";
+import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
+import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
 import { useRegisterGuardrail } from "@/app/(dashboard)/hooks/guardrails/useRegisterGuardrail";
 
 type GuardrailStatus = "active" | "pending" | "rejected";
 
 type TeamGuardrail = {
   id: string;
-  team: string;
+  companyId: string | null;
+  companyName: string;
+  projectId: string | null;
+  projectName: string;
   name: string;
   endpoint: string;
   status: GuardrailStatus;
@@ -92,7 +98,10 @@ function submissionToTeamGuardrail(item: GuardrailSubmissionItem): TeamGuardrail
     : [];
   return {
     id: item.guardrail_id,
-    team: item.team_id ?? "—",
+    companyId: item.company_id ?? null,
+    companyName: item.company_name ?? item.company_id ?? "Unassigned Company",
+    projectId: item.project_id ?? null,
+    projectName: item.project_name ?? item.project_id ?? "Unassigned Project",
     name: item.guardrail_name,
     endpoint,
     status: mapStatus(item.status),
@@ -135,14 +144,8 @@ const STATUS_CONFIG: Record<
   },
 };
 
-const TEAM_COLORS: Record<string, string> = {
-  "ML Platform": "bg-purple-100 text-purple-700",
-  "Data Science": "bg-blue-100 text-blue-700",
-  Security: "bg-red-100 text-red-700",
-  "Customer Success": "bg-orange-100 text-orange-700",
-  Legal: "bg-gray-100 text-gray-700",
-  Finance: "bg-green-100 text-green-700",
-};
+const COMPANY_BADGE_CLASS = "bg-blue-50 text-blue-700";
+const PROJECT_BADGE_CLASS = "bg-slate-100 text-slate-700";
 
 function buildEquivalentConfigYaml(g: TeamGuardrail): string {
   const lines: string[] = [
@@ -247,7 +250,6 @@ function GuardrailCard({
   onReject,
 }: GuardrailCardProps) {
   const status = STATUS_CONFIG[g.status];
-  const teamColor = TEAM_COLORS[g.team] ?? "bg-gray-100 text-gray-700";
   return (
     <div
       className={`bg-white border rounded-lg p-4 transition-all ${
@@ -258,9 +260,14 @@ function GuardrailCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1.5 flex-wrap">
             <span
-              className={`text-xs font-medium px-2 py-0.5 rounded-full ${teamColor}`}
+              className={`text-xs font-medium px-2 py-0.5 rounded-full ${COMPANY_BADGE_CLASS}`}
             >
-              Team: {g.team}
+              Company: {g.companyName}
+            </span>
+            <span
+              className={`text-xs font-medium px-2 py-0.5 rounded-full ${PROJECT_BADGE_CLASS}`}
+            >
+              Project: {g.projectName}
             </span>
             <span
               className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full ${status.bg} ${status.text}`}
@@ -415,7 +422,6 @@ function DetailPanel({
   const [newStaticHeaderKey, setNewStaticHeaderKey] = useState("");
   const [newStaticHeaderValue, setNewStaticHeaderValue] = useState("");
   const status = STATUS_CONFIG[g.status];
-  const teamColor = TEAM_COLORS[g.team] ?? "bg-gray-100 text-gray-700";
   return (
     <div className="w-96 flex-shrink-0 bg-white overflow-auto">
       <div className="p-5">
@@ -423,9 +429,14 @@ function DetailPanel({
           <div>
             <div className="flex items-center gap-2 mb-1">
               <span
-                className={`text-xs font-medium px-2 py-0.5 rounded-full ${teamColor}`}
+                className={`text-xs font-medium px-2 py-0.5 rounded-full ${COMPANY_BADGE_CLASS}`}
               >
-                Team: {g.team}
+                Company: {g.companyName}
+              </span>
+              <span
+                className={`text-xs font-medium px-2 py-0.5 rounded-full ${PROJECT_BADGE_CLASS}`}
+              >
+                Project: {g.projectName}
               </span>
               <span
                 className={`inline-flex items-center gap-1.5 text-xs font-medium px-2 py-0.5 rounded-full ${status.bg} ${status.text}`}
@@ -824,7 +835,14 @@ export function TeamGuardrailsTab({ accessToken }: TeamGuardrailsTabProps) {
   const [error, setError] = useState<string | null>(null);
   const [searchDebounced, setSearchDebounced] = useState("");
   const [isSubmitModalOpen, setIsSubmitModalOpen] = useState(false);
+  const [companyFilter, setCompanyFilter] = useState<string | undefined>();
+  const [projectFilter, setProjectFilter] = useState<string | undefined>();
   const [submitForm] = Form.useForm();
+  const submitCompanyId = Form.useWatch("company_id", submitForm);
+  const { data: companies = [], isLoading: isCompaniesLoading } = useOrganizations();
+  const { data: projects = [], isLoading: isProjectsLoading } = useProjects({
+    includeNonAdmin: true,
+  });
   const registerGuardrail = useRegisterGuardrail();
 
   useEffect(() => {
@@ -848,6 +866,8 @@ export function TeamGuardrailsTab({ accessToken }: TeamGuardrailsTabProps) {
             : statusFilter;
       const res = await listGuardrailSubmissions(accessToken, {
         status: statusParam,
+        company_id: companyFilter,
+        project_id: projectFilter,
         search: searchDebounced.trim() || undefined,
       });
       setGuardrails(res.submissions.map(submissionToTeamGuardrail));
@@ -858,7 +878,7 @@ export function TeamGuardrailsTab({ accessToken }: TeamGuardrailsTabProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [accessToken, statusFilter, searchDebounced]);
+  }, [accessToken, statusFilter, searchDebounced, companyFilter, projectFilter]);
 
   useEffect(() => {
     fetchSubmissions();
@@ -1010,6 +1030,25 @@ export function TeamGuardrailsTab({ accessToken }: TeamGuardrailsTabProps) {
             <option value="active">Active</option>
             <option value="rejected">Rejected</option>
           </select>
+          <OrganizationDropdown
+            organizations={companies}
+            value={companyFilter}
+            onChange={(value) => {
+              setCompanyFilter(value);
+              setProjectFilter(undefined);
+            }}
+            disabled={isCompaniesLoading}
+            loading={isCompaniesLoading}
+            style={{ minWidth: 220 }}
+          />
+          <ProjectDropdown
+            projects={projects}
+            value={projectFilter}
+            onChange={setProjectFilter}
+            companyId={companyFilter ?? null}
+            disabled={isProjectsLoading || !companyFilter}
+            loading={isProjectsLoading}
+          />
           <button
             type="button"
             onClick={() => setIsSubmitModalOpen(true)}
@@ -1110,7 +1149,8 @@ export function TeamGuardrailsTab({ accessToken }: TeamGuardrailsTabProps) {
             };
             try {
               await registerGuardrail.mutateAsync({
-                team_id: values.team_id,
+                company_id: values.company_id,
+                project_id: values.project_id,
                 guardrail_name: values.guardrail_name,
                 litellm_params,
                 guardrail_info: values.guardrail_info ? JSON.parse(values.guardrail_info) : undefined,
@@ -1125,11 +1165,34 @@ export function TeamGuardrailsTab({ accessToken }: TeamGuardrailsTabProps) {
           }}
         >
           <Form.Item
-            label="Team"
-            name="team_id"
-            rules={[{ required: true, message: "Select a team" }]}
+            label="Company"
+            name="company_id"
+            rules={[{ required: true, message: "Select a Company" }]}
           >
-            <TeamDropdown />
+            <OrganizationDropdown
+              organizations={companies}
+              loading={isCompaniesLoading}
+              disabled={isCompaniesLoading}
+              onChange={(value) => {
+                submitForm.setFieldsValue({
+                  company_id: value,
+                  project_id: undefined,
+                });
+              }}
+              style={{ width: "100%" }}
+            />
+          </Form.Item>
+          <Form.Item
+            label="Project"
+            name="project_id"
+            rules={[{ required: true, message: "Select a Project" }]}
+          >
+            <ProjectDropdown
+              projects={projects}
+              companyId={submitCompanyId ?? null}
+              loading={isProjectsLoading}
+              disabled={isProjectsLoading || !submitCompanyId}
+            />
           </Form.Item>
           <Form.Item
             label="Guardrail Name"

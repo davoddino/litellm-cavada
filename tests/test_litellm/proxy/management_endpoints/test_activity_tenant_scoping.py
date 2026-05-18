@@ -8,6 +8,7 @@ VERIA-43 regression tests:
   may actually see, instead of returning the entire proxy's agent rows.
 """
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -194,6 +195,326 @@ async def test_agent_activity_admin_unscoped():
         )
 
     assert captured["entity_id"] is None  # no agent_id scoping for admin
+
+
+# ---------------------------------------------------------------------------
+# /project/daily/activity — Company/Project product filters
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_project_activity_accepts_project_id_and_company_id_filters():
+    from enterprise.litellm_enterprise.proxy.management_endpoints import (
+        project_endpoints,
+    )
+
+    admin = UserAPIKeyAuth(user_id="root", user_role=LitellmUserRoles.PROXY_ADMIN.value)
+
+    team = MagicMock()
+    team.team_id = "team-company"
+    team.organization_id = "company-1"
+
+    project = MagicMock()
+    project.project_id = "project-1"
+    project.project_alias = "Project 1"
+    project.company_id = "company-1"
+    project.team_id = "team-company"
+    project.litellm_team_table = team
+
+    prisma = MagicMock()
+    prisma.db.litellm_teamtable.find_many = AsyncMock(return_value=[team])
+    prisma.db.litellm_projecttable.find_many = AsyncMock(return_value=[project])
+
+    captured = {}
+
+    async def _fake_get_daily_activity(**kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client", prisma),
+        patch(
+            "enterprise.litellm_enterprise.proxy.management_endpoints.project_endpoints.get_daily_activity",
+            new=AsyncMock(side_effect=_fake_get_daily_activity),
+        ),
+    ):
+        await project_endpoints.get_project_daily_activity(
+            project_id="project-1",
+            company_id="company-1",
+            start_date="2026-01-01",
+            end_date="2026-01-02",
+            api_key="runtime-key-hash",
+            user_api_key_dict=admin,
+        )
+
+    project_where = prisma.db.litellm_projecttable.find_many.call_args.kwargs["where"]
+    assert project_where["project_id"] == {"in": ["project-1"]}
+    assert project_where["team_id"] == {"in": ["team-company"]}
+    assert captured["table_name"] == "litellm_dailyprojectspend"
+    assert captured["entity_id_field"] == "project_id"
+    assert captured["entity_id"] == ["project-1"]
+    assert captured["api_key"] == "runtime-key-hash"
+
+
+@pytest.mark.asyncio
+async def test_project_activity_rejects_conflicting_project_aliases():
+    from enterprise.litellm_enterprise.proxy.management_endpoints import (
+        project_endpoints,
+    )
+
+    admin = UserAPIKeyAuth(user_id="root", user_role=LitellmUserRoles.PROXY_ADMIN.value)
+    prisma = MagicMock()
+
+    with patch("litellm.proxy.proxy_server.prisma_client", prisma):
+        with pytest.raises(Exception) as exc_info:
+            await project_endpoints.get_project_daily_activity(
+                project_id="project-1",
+                project_ids="project-2",
+                start_date="2026-01-01",
+                end_date="2026-01-02",
+                user_api_key_dict=admin,
+            )
+
+    assert getattr(exc_info.value, "status_code", None) == 400
+    assert "project_id" in str(getattr(exc_info.value, "detail", ""))
+
+
+@pytest.mark.asyncio
+async def test_project_activity_accepts_organization_id_as_company_compat_alias():
+    from enterprise.litellm_enterprise.proxy.management_endpoints import (
+        project_endpoints,
+    )
+
+    admin = UserAPIKeyAuth(user_id="root", user_role=LitellmUserRoles.PROXY_ADMIN.value)
+
+    team = MagicMock()
+    team.team_id = "team-company"
+    team.organization_id = "company-1"
+
+    project = MagicMock()
+    project.project_id = "project-1"
+    project.project_alias = "Project 1"
+    project.company_id = "company-1"
+    project.team_id = "team-company"
+    project.litellm_team_table = team
+
+    prisma = MagicMock()
+    prisma.db.litellm_teamtable.find_many = AsyncMock(return_value=[team])
+    prisma.db.litellm_projecttable.find_many = AsyncMock(return_value=[project])
+
+    captured = {}
+
+    async def _fake_get_daily_activity(**kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client", prisma),
+        patch(
+            "enterprise.litellm_enterprise.proxy.management_endpoints.project_endpoints.get_daily_activity",
+            new=AsyncMock(side_effect=_fake_get_daily_activity),
+        ),
+    ):
+        await project_endpoints.get_project_daily_activity(
+            project_id="project-1",
+            organization_id="company-1",
+            start_date="2026-01-01",
+            end_date="2026-01-02",
+            user_api_key_dict=admin,
+        )
+
+    project_where = prisma.db.litellm_projecttable.find_many.call_args.kwargs["where"]
+    assert project_where["project_id"] == {"in": ["project-1"]}
+    assert project_where["team_id"] == {"in": ["team-company"]}
+    assert captured["entity_id"] == ["project-1"]
+    assert captured["table_name"] == "litellm_dailyprojectspend"
+
+
+@pytest.mark.asyncio
+async def test_project_activity_rejects_conflicting_company_and_organization_aliases():
+    from enterprise.litellm_enterprise.proxy.management_endpoints import (
+        project_endpoints,
+    )
+
+    admin = UserAPIKeyAuth(user_id="root", user_role=LitellmUserRoles.PROXY_ADMIN.value)
+    prisma = MagicMock()
+
+    with patch("litellm.proxy.proxy_server.prisma_client", prisma):
+        with pytest.raises(Exception) as exc_info:
+            await project_endpoints.get_project_daily_activity(
+                company_id="company-1",
+                organization_id="company-2",
+                start_date="2026-01-01",
+                end_date="2026-01-02",
+                user_api_key_dict=admin,
+            )
+
+    assert getattr(exc_info.value, "status_code", None) == 400
+    detail = str(getattr(exc_info.value, "detail", ""))
+    assert "company_id/company_ids" in detail
+    assert "organization_id/organization_ids" in detail
+
+
+def _project_activity_team(team_id: str, company_id: str):
+    team = MagicMock()
+    team.team_id = team_id
+    team.organization_id = company_id
+    return team
+
+
+def _project_activity_project(project_id: str, team):
+    project = MagicMock()
+    project.project_id = project_id
+    project.project_alias = project_id
+    project.company_id = getattr(team, "organization_id", None)
+    project.team_id = team.team_id
+    project.litellm_team_table = team
+    return project
+
+
+def _filter_project_activity_rows(rows, where):
+    result = rows
+    project_filter = where.get("project_id")
+    if isinstance(project_filter, dict) and "in" in project_filter:
+        result = [row for row in result if row.project_id in project_filter["in"]]
+
+    team_filter = where.get("team_id")
+    if isinstance(team_filter, dict) and "in" in team_filter:
+        result = [row for row in result if row.team_id in team_filter["in"]]
+
+    return result
+
+
+@pytest.mark.asyncio
+async def test_project_activity_company_admin_can_view_own_company_project():
+    from enterprise.litellm_enterprise.proxy.management_endpoints import (
+        project_endpoints,
+    )
+
+    auth = UserAPIKeyAuth(
+        user_id="company-admin",
+        user_role=LitellmUserRoles.INTERNAL_USER.value,
+    )
+    team = _project_activity_team("team-company", "company-1")
+    project = _project_activity_project("project-1", team)
+
+    prisma = MagicMock()
+    prisma.db.litellm_teamtable.find_many = AsyncMock(return_value=[team])
+    prisma.db.litellm_usertable.find_unique = AsyncMock(
+        return_value=SimpleNamespace(teams=[])
+    )
+    prisma.db.litellm_organizationmembership.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id="company-1",
+                user_role=LitellmUserRoles.ORG_ADMIN.value,
+            )
+        ]
+    )
+    prisma.db.litellm_projecttable.find_many = AsyncMock(return_value=[project])
+
+    captured = {}
+
+    async def _fake_get_daily_activity(**kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client", prisma),
+        patch(
+            "enterprise.litellm_enterprise.proxy.management_endpoints.project_endpoints.get_daily_activity",
+            new=AsyncMock(side_effect=_fake_get_daily_activity),
+        ),
+    ):
+        await project_endpoints.get_project_daily_activity(
+            project_ids=None,
+            project_id="project-1",
+            company_ids=None,
+            company_id="company-1",
+            organization_ids=None,
+            organization_id=None,
+            start_date="2026-05-18",
+            end_date="2026-05-18",
+            api_key="runtime-key-hash",
+            exclude_project_ids=None,
+            exclude_project_id=None,
+            user_api_key_dict=auth,
+        )
+
+    project_where = prisma.db.litellm_projecttable.find_many.call_args.kwargs["where"]
+    assert project_where["project_id"] == {"in": ["project-1"]}
+    assert project_where["team_id"] == {"in": ["team-company"]}
+    assert captured["table_name"] == "litellm_dailyprojectspend"
+    assert captured["entity_id"] == ["project-1"]
+    assert captured["api_key"] == "runtime-key-hash"
+
+
+@pytest.mark.asyncio
+async def test_project_activity_company_admin_rejects_project_outside_company_scope():
+    from enterprise.litellm_enterprise.proxy.management_endpoints import (
+        project_endpoints,
+    )
+
+    auth = UserAPIKeyAuth(
+        user_id="company-admin",
+        user_role=LitellmUserRoles.INTERNAL_USER.value,
+    )
+    company_team = _project_activity_team("team-company", "company-1")
+    outside_team = _project_activity_team("team-outside", "company-2")
+    outside_project = _project_activity_project("project-outside", outside_team)
+
+    async def find_teams(where):
+        company_ids = where["organization_id"]["in"]
+        return [
+            team
+            for team in [company_team, outside_team]
+            if team.organization_id in company_ids
+        ]
+
+    async def find_projects(where, include=None):
+        return _filter_project_activity_rows([outside_project], where)
+
+    prisma = MagicMock()
+    prisma.db.litellm_teamtable.find_many = AsyncMock(side_effect=find_teams)
+    prisma.db.litellm_usertable.find_unique = AsyncMock(
+        return_value=SimpleNamespace(teams=[])
+    )
+    prisma.db.litellm_organizationmembership.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id="company-1",
+                user_role=LitellmUserRoles.ORG_ADMIN.value,
+            )
+        ]
+    )
+    prisma.db.litellm_projecttable.find_many = AsyncMock(side_effect=find_projects)
+
+    get_daily_activity_mock = AsyncMock(return_value=MagicMock())
+    with (
+        patch("litellm.proxy.proxy_server.prisma_client", prisma),
+        patch(
+            "enterprise.litellm_enterprise.proxy.management_endpoints.project_endpoints.get_daily_activity",
+            new=get_daily_activity_mock,
+        ),
+    ):
+        with pytest.raises(Exception) as exc_info:
+            await project_endpoints.get_project_daily_activity(
+                project_ids=None,
+                project_id="project-outside",
+                company_ids=None,
+                company_id="company-1",
+                organization_ids=None,
+                organization_id=None,
+                start_date="2026-05-18",
+                end_date="2026-05-18",
+                api_key="runtime-key-hash",
+                exclude_project_ids=None,
+                exclude_project_id=None,
+                user_api_key_dict=auth,
+            )
+
+    assert getattr(exc_info.value, "status_code", None) == 404
+    get_daily_activity_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -227,6 +227,17 @@ describe("VectorStoreSelector", () => {
       });
     });
 
+    it("should fetch vector stores scoped by company and project", async () => {
+      renderComponent({ companyId: "company-1", projectId: "project-1" });
+
+      await waitFor(() => {
+        expect(mockVectorStoreListCall).toHaveBeenCalledWith(mockAccessToken, 1, 100, {
+          company_id: "company-1",
+          project_id: "project-1",
+        });
+      });
+    });
+
     it("should set loading state while fetching", async () => {
       let resolvePromise: (value: any) => void;
       const promise = new Promise((resolve) => {
@@ -299,6 +310,29 @@ describe("VectorStoreSelector", () => {
 
       const option1 = screen.getByText("My Store (store-1)");
       expect(option1).toHaveAttribute("data-option-title", "A test store");
+    });
+
+    it("should include company and project context in option labels when returned", async () => {
+      mockVectorStoreListCall.mockResolvedValueOnce({
+        data: [
+          {
+            vector_store_id: "store-scoped",
+            custom_llm_provider: "openai",
+            vector_store_name: "Scoped Store",
+            company_id: "company-1",
+            company_name: "Acme Labs",
+            project_id: "project-1",
+            project_name: "Support Project",
+            created_at: "2024-01-01T00:00:00Z",
+            updated_at: "2024-01-01T00:00:00Z",
+          },
+        ],
+      });
+
+      renderComponent({ companyId: "company-1", projectId: "project-1" });
+      await waitForDataFetch();
+
+      expect(screen.getByText("Scoped Store (store-scoped) - Acme Labs / Support Project")).toBeInTheDocument();
     });
 
     it("should fallback to vector_store_id as title when vector_store_description is missing", async () => {
@@ -378,6 +412,14 @@ describe("VectorStoreSelector", () => {
       const select = getSelectElement();
       const dataValue = select.getAttribute("data-value");
       expect(dataValue).toBeNull(); // undefined value results in no data-value attribute
+    });
+
+    it("should prune selected vector stores that are outside the scoped result", async () => {
+      renderComponent({ value: ["store-1", "store-outside"] });
+
+      await waitFor(() => {
+        expect(mockOnChange).toHaveBeenCalledWith(["store-1"]);
+      });
     });
   });
 

@@ -4,6 +4,7 @@ Tests both basic functionality and complex scenarios including target_model_name
 """
 
 import asyncio
+import json
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,7 +14,7 @@ import pytest
 sys.path.insert(0, os.path.abspath("../.."))
 
 import litellm
-from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 
 
 @pytest.mark.asyncio
@@ -325,6 +326,130 @@ def test_router_initializes_new_endpoints():
     assert callable(router.avector_store_update)
     assert callable(router.vector_store_delete)
     assert callable(router.avector_store_delete)
+
+
+@pytest.mark.asyncio
+async def test_managed_vector_store_create_maps_company_project_context():
+    """target_model_names vector stores persist Project context without sending it upstream."""
+    from enterprise.litellm_enterprise.proxy.hooks.managed_vector_stores import (
+        _PROXY_LiteLLMManagedVectorStores,
+    )
+
+    project = {
+        "project_id": "project-alpha",
+        "project_alias": "Project Alpha",
+        "team_id": "team-project-alpha",
+        "company_id": "company-alpha",
+        "litellm_team_table": {"organization_id": "company-alpha"},
+    }
+    mock_prisma = MagicMock()
+    mock_prisma.db.litellm_projecttable.find_unique = AsyncMock(return_value=project)
+    mock_prisma.db.litellm_managedvectorstoretable.create = AsyncMock(
+        return_value=MagicMock()
+    )
+    cache = MagicMock()
+    cache.async_set_cache = AsyncMock()
+
+    hook = _PROXY_LiteLLMManagedVectorStores(
+        internal_usage_cache=cache,
+        prisma_client=mock_prisma,
+    )
+    hook.create_resource_for_each_model = AsyncMock(
+        return_value=[
+            {
+                "id": "vs-provider-alpha",
+                "object": "vector_store",
+                "name": "Project Alpha KB",
+            }
+        ]
+    )
+
+    response = await hook.acreate_vector_store(
+        create_request={
+            "name": "Project Alpha KB",
+            "company_id": "company-alpha",
+            "project_id": "project-alpha",
+        },
+        llm_router=MagicMock(),
+        target_model_names_list=["model-alpha"],
+        litellm_parent_otel_span=None,
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="user-alpha",
+            team_id="team-project-alpha",
+        ),
+    )
+
+    provider_request = hook.create_resource_for_each_model.call_args.kwargs[
+        "request_data"
+    ]
+    assert provider_request == {"name": "Project Alpha KB"}
+
+    stored = mock_prisma.db.litellm_managedvectorstoretable.create.call_args.kwargs[
+        "data"
+    ]
+    assert stored["team_id"] == "team-project-alpha"
+    assert stored["project_id"] == "project-alpha"
+    stored_resource_object = json.loads(stored["resource_object"])
+    assert stored_resource_object["company_id"] == "company-alpha"
+    assert stored_resource_object["project_id"] == "project-alpha"
+    assert response["company_id"] == "company-alpha"
+    assert response["project_id"] == "project-alpha"
+
+
+@pytest.mark.asyncio
+async def test_managed_vector_store_company_admin_access_uses_project_company():
+    from enterprise.litellm_enterprise.proxy.hooks.managed_vector_stores import (
+        _PROXY_LiteLLMManagedVectorStores,
+    )
+
+    project = {
+        "project_id": "project-alpha",
+        "team_id": "team-project-alpha",
+        "company_id": "company-alpha",
+        "litellm_team_table": {"organization_id": "company-alpha"},
+    }
+    membership = MagicMock()
+    membership.user_role = LitellmUserRoles.ORG_ADMIN.value
+    mock_prisma = MagicMock()
+    mock_prisma.db.litellm_projecttable.find_unique = AsyncMock(return_value=project)
+    mock_prisma.db.litellm_organizationmembership.find_unique = AsyncMock(
+        return_value=membership
+    )
+
+    hook = _PROXY_LiteLLMManagedVectorStores(
+        internal_usage_cache=MagicMock(),
+        prisma_client=mock_prisma,
+    )
+    hook.get_unified_resource_id = AsyncMock(
+        return_value={
+            "created_by": "other-user",
+            "team_id": "team-project-alpha",
+            "project_id": "project-alpha",
+        }
+    )
+
+    assert (
+        await hook.can_user_access_unified_resource_id(
+            unified_resource_id="unified-vs",
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="company-admin",
+                team_id="team-other",
+            ),
+        )
+        is True
+    )
+
+    mock_prisma.db.litellm_organizationmembership.find_unique.return_value = None
+    assert (
+        await hook.can_user_access_unified_resource_id(
+            unified_resource_id="unified-vs",
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="outside-user",
+                team_id="team-other",
+            ),
+        )
+        is False
+    )
 
 
 if __name__ == "__main__":

@@ -29,13 +29,29 @@ class KeysManagementClient:
             headers["Authorization"] = f"Bearer {self._api_key}"
         return headers
 
+    @staticmethod
+    def _resolve_company_id(
+        company_id: Optional[str], organization_id: Optional[str]
+    ) -> Optional[str]:
+        if (
+            company_id is not None
+            and organization_id is not None
+            and company_id != organization_id
+        ):
+            raise ValueError(
+                "company_id and organization_id refer to the same tenant and must match when both are provided."
+            )
+        return company_id or organization_id
+
     def list(
         self,
         page: Optional[int] = None,
         size: Optional[int] = None,
         user_id: Optional[str] = None,
         team_id: Optional[str] = None,
+        company_id: Optional[str] = None,
         organization_id: Optional[str] = None,
+        project_id: Optional[str] = None,
         key_hash: Optional[str] = None,
         key_alias: Optional[str] = None,
         return_full_object: Optional[bool] = None,
@@ -50,7 +66,9 @@ class KeysManagementClient:
             size (Optional[int]): Number of items per page
             user_id (Optional[str]): Filter keys by user ID
             team_id (Optional[str]): Filter keys by team ID
-            organization_id (Optional[str]): Filter keys by organization ID
+            company_id (Optional[str]): Filter keys by company ID
+            organization_id (Optional[str]): Legacy compatibility alias for company_id
+            project_id (Optional[str]): Filter keys by project ID
             key_hash (Optional[str]): Filter by specific key hash
             key_alias (Optional[str]): Filter by key alias
             return_full_object (Optional[bool]): Whether to return the full key object
@@ -68,6 +86,9 @@ class KeysManagementClient:
         """
         url = f"{self._base_url}/key/list"
         params: Dict[str, Any] = {}
+        resolved_company_id = self._resolve_company_id(
+            company_id=company_id, organization_id=organization_id
+        )
 
         # Add optional query parameters
         if page is not None:
@@ -78,8 +99,10 @@ class KeysManagementClient:
             params["user_id"] = user_id
         if team_id is not None:
             params["team_id"] = team_id
-        if organization_id is not None:
-            params["organization_id"] = organization_id
+        if resolved_company_id is not None:
+            params["company_id"] = resolved_company_id
+        if project_id is not None:
+            params["project_id"] = project_id
         if key_hash is not None:
             params["key_hash"] = key_hash
         if key_alias is not None:
@@ -114,6 +137,8 @@ class KeysManagementClient:
         duration: Optional[str] = None,
         key_alias: Optional[str] = None,
         team_id: Optional[str] = None,
+        company_id: Optional[str] = None,
+        project_id: Optional[str] = None,
         user_id: Optional[str] = None,
         budget_id: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
@@ -131,6 +156,8 @@ class KeysManagementClient:
             duration (Optional[str]): Duration for which the key is valid (e.g. "24h", "7d")
             key_alias (Optional[str]): Alias/name for the key for easier identification
             team_id (Optional[str]): Team ID to associate the key with
+            company_id (Optional[str]): Company ID to associate the key with
+            project_id (Optional[str]): Project ID to associate the key with
             user_id (Optional[str]): User ID to associate the key with
             budget_id (Optional[str]): Budget ID to associate the key with
             config (Optional[Dict[str, Any]]): Additional configuration parameters
@@ -159,6 +186,10 @@ class KeysManagementClient:
             data["key_alias"] = key_alias
         if team_id is not None:
             data["team_id"] = team_id
+        if company_id is not None:
+            data["company_id"] = company_id
+        if project_id is not None:
+            data["project_id"] = project_id
         if user_id is not None:
             data["user_id"] = user_id
         if budget_id is not None:
@@ -234,6 +265,8 @@ class KeysManagementClient:
         duration: Optional[str] = None,
         key_alias: Optional[str] = None,
         team_id: Optional[str] = None,
+        company_id: Optional[str] = None,
+        project_id: Optional[str] = None,
         user_id: Optional[str] = None,
     ) -> Union[Dict[str, Any], requests.Request]:
         """
@@ -246,6 +279,8 @@ class KeysManagementClient:
             duration: Optional[str] = None,
             key_alias: Optional[str] = None,
             team_id: Optional[str] = None,
+            company_id: Optional[str] = None,
+            project_id: Optional[str] = None,
             user_id: Optional[str] = None,
 
         Returns:
@@ -266,6 +301,10 @@ class KeysManagementClient:
             data["user_id"] = user_id
         if team_id is not None:
             data["team_id"] = team_id
+        if company_id is not None:
+            data["company_id"] = company_id
+        if project_id is not None:
+            data["project_id"] = project_id
         if models is not None:
             data["models"] = models
         if spend is not None:

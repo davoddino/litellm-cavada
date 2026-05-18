@@ -2,7 +2,7 @@ import os
 import sys
 import types
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,7 +21,10 @@ sys.path.insert(
 )  # Adds the parent directory to the system path
 
 from litellm.proxy._types import (
+    LiteLLM_OrganizationMembershipTable,
     LiteLLM_MCPServerTable,
+    LiteLLM_UserTable,
+    Member,
     LitellmUserRoles,
     MCPTransport,
     NewMCPServerRequest,
@@ -1109,10 +1112,30 @@ class TestListMCPServers:
 class TestTeamScopedMCPServerAccess:
     """Tests for cross-team information disclosure and restricted key bypass fixes."""
 
+    def _user_info_with_company_membership(
+        self,
+        *,
+        user_id: str,
+        company_id: str,
+        role: str,
+    ) -> LiteLLM_UserTable:
+        now = datetime.now(timezone.utc)
+        return LiteLLM_UserTable(
+            user_id=user_id,
+            organization_memberships=[
+                LiteLLM_OrganizationMembershipTable(
+                    user_id=user_id,
+                    organization_id=company_id,
+                    user_role=role,
+                    created_at=now,
+                    updated_at=now,
+                )
+            ],
+        )
+
     @pytest.mark.asyncio
     async def test_non_member_cannot_query_foreign_team(self):
         """Non-admin user who is NOT a member of the target team should get 403."""
-        from litellm.proxy._types import Member
 
         mock_user_auth = generate_mock_user_api_key_auth(
             user_role=LitellmUserRoles.INTERNAL_USER,
@@ -1134,6 +1157,10 @@ class TestTeamScopedMCPServerAccess:
                 "litellm.proxy.auth.auth_checks.get_team_object",
                 AsyncMock(return_value=mock_team_obj),
             ),
+            patch(
+                "litellm.proxy.auth.auth_checks.get_user_object",
+                AsyncMock(return_value=None),
+            ),
         ):
             from litellm.proxy.management_endpoints.mcp_management_endpoints import (
                 fetch_all_mcp_servers,
@@ -1147,9 +1174,107 @@ class TestTeamScopedMCPServerAccess:
             assert "permission" in str(exc_info.value.detail).lower()
 
     @pytest.mark.asyncio
+    async def test_company_admin_can_query_company_team_without_team_membership(self):
+        """Company admins can read MCP servers scoped to teams in their Company."""
+        mock_user_auth = generate_mock_user_api_key_auth(
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            user_id="company_admin_user",
+        )
+
+        mock_team_obj = MagicMock()
+        mock_team_obj.organization_id = "company-1"
+        mock_team_obj.members_with_roles = [
+            Member(user_id="project_member", role="user"),
+        ]
+
+        with (
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints._user_has_admin_view",
+                return_value=False,
+            ),
+            patch(
+                "litellm.proxy.auth.auth_checks.get_team_object",
+                AsyncMock(return_value=mock_team_obj),
+            ),
+            patch(
+                "litellm.proxy.auth.auth_checks.get_user_object",
+                AsyncMock(
+                    return_value=self._user_info_with_company_membership(
+                        user_id="company_admin_user",
+                        company_id="company-1",
+                        role=LitellmUserRoles.ORG_ADMIN.value,
+                    )
+                ),
+            ),
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints._get_team_scoped_mcp_server_list",
+                AsyncMock(
+                    return_value=[
+                        generate_mock_mcp_server_db_record(server_id="server-1")
+                    ]
+                ),
+            ),
+        ):
+            from litellm.proxy.management_endpoints.mcp_management_endpoints import (
+                fetch_all_mcp_servers,
+            )
+
+            result = await fetch_all_mcp_servers(
+                user_api_key_dict=mock_user_auth, team_id="project-team-id"
+            )
+
+        assert len(result) == 1
+        assert result[0].server_id == "server-1"
+
+    @pytest.mark.asyncio
+    async def test_company_admin_cannot_query_team_in_other_company(self):
+        """Company admins must not read MCP team scope outside their Company."""
+        mock_user_auth = generate_mock_user_api_key_auth(
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            user_id="company_admin_user",
+        )
+
+        mock_team_obj = MagicMock()
+        mock_team_obj.organization_id = "company-2"
+        mock_team_obj.members_with_roles = [
+            Member(user_id="other_user", role="user"),
+        ]
+
+        with (
+            patch(
+                "litellm.proxy.management_endpoints.mcp_management_endpoints._user_has_admin_view",
+                return_value=False,
+            ),
+            patch(
+                "litellm.proxy.auth.auth_checks.get_team_object",
+                AsyncMock(return_value=mock_team_obj),
+            ),
+            patch(
+                "litellm.proxy.auth.auth_checks.get_user_object",
+                AsyncMock(
+                    return_value=self._user_info_with_company_membership(
+                        user_id="company_admin_user",
+                        company_id="company-1",
+                        role=LitellmUserRoles.ORG_ADMIN.value,
+                    )
+                ),
+            ),
+        ):
+            from litellm.proxy.management_endpoints.mcp_management_endpoints import (
+                fetch_all_mcp_servers,
+            )
+
+            with pytest.raises(HTTPException) as exc_info:
+                await fetch_all_mcp_servers(
+                    user_api_key_dict=mock_user_auth, team_id="foreign-team-id"
+                )
+
+        assert exc_info.value.status_code == 403
+        assert "permission" in str(exc_info.value.detail).lower()
+
+    @pytest.mark.asyncio
     async def test_team_member_can_query_own_team(self):
         """User who IS a member of the team should be able to query it."""
-        from litellm.proxy._types import Member
 
         mock_user_auth = generate_mock_user_api_key_auth(
             user_role=LitellmUserRoles.INTERNAL_USER,

@@ -20,12 +20,21 @@ from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 # ---------------------------------------------------------------------------
 
 
-def _make_prisma_with_team(team_id: str, admins: list):
+def _make_prisma_with_team(
+    team_id: str,
+    admins: list,
+    organization_id: str = "company-A",
+    membership=None,
+):
     prisma = MagicMock()
     team_row = MagicMock()
     team_row.team_id = team_id
     team_row.admins = admins
+    team_row.organization_id = organization_id
     prisma.db.litellm_teamtable.find_unique = AsyncMock(return_value=team_row)
+    prisma.db.litellm_organizationmembership.find_unique = AsyncMock(
+        return_value=membership
+    )
     return prisma
 
 
@@ -72,6 +81,68 @@ async def test_project_perm_check_allows_team_admin_of_existing_team():
         prisma_client=prisma,
     )
     assert has_perm is True
+
+
+@pytest.mark.asyncio
+async def test_project_perm_check_allows_company_admin_for_team_company():
+    from litellm_enterprise.proxy.management_endpoints.project_endpoints import (
+        _check_user_permission_for_project,
+    )
+
+    membership = MagicMock()
+    membership.user_role = LitellmUserRoles.ORG_ADMIN.value
+    prisma = _make_prisma_with_team(
+        team_id="team-A",
+        admins=[],
+        organization_id="company-A",
+        membership=membership,
+    )
+    company_admin = UserAPIKeyAuth(
+        user_id="carol",
+        user_role=LitellmUserRoles.INTERNAL_USER.value,
+    )
+
+    has_perm = await _check_user_permission_for_project(
+        user_api_key_dict=company_admin,
+        team_id="team-A",
+        prisma_client=prisma,
+    )
+
+    assert has_perm is True
+    prisma.db.litellm_organizationmembership.find_unique.assert_awaited_once_with(
+        where={
+            "user_id_organization_id": {
+                "user_id": "carol",
+                "organization_id": "company-A",
+            }
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_project_perm_check_rejects_company_admin_outside_team_company():
+    from litellm_enterprise.proxy.management_endpoints.project_endpoints import (
+        _check_user_permission_for_project,
+    )
+
+    prisma = _make_prisma_with_team(
+        team_id="team-A",
+        admins=[],
+        organization_id="company-A",
+        membership=None,
+    )
+    company_admin = UserAPIKeyAuth(
+        user_id="carol",
+        user_role=LitellmUserRoles.INTERNAL_USER.value,
+    )
+
+    has_perm = await _check_user_permission_for_project(
+        user_api_key_dict=company_admin,
+        team_id="team-A",
+        prisma_client=prisma,
+    )
+
+    assert has_perm is False
 
 
 @pytest.mark.asyncio

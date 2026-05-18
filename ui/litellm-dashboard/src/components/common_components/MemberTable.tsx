@@ -7,6 +7,29 @@ import TableIconActionButton from "./IconActionButton/TableIconActionButtons/Tab
 
 const { Text } = Typography;
 
+const formatMemberRoleLabel = (role?: string | null): string => {
+  if (!role) {
+    return "-";
+  }
+
+  const normalizedRole = role.toLowerCase();
+  const roleLabels: Record<string, string> = {
+    org_admin: "Company Admin",
+    internal_user: "Internal User",
+    internal_user_viewer: "Internal User Viewer",
+  };
+
+  if (roleLabels[normalizedRole]) {
+    return roleLabels[normalizedRole];
+  }
+
+  return role
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+};
+
 export interface MemberTableProps {
   members: Member[];
   canEdit: boolean;
@@ -70,7 +93,7 @@ export default function MemberTable({
           ) : (
             <UserOutlined />
           )}
-          <Text style={{ textTransform: "capitalize" }}>{role || "-"}</Text>
+          <Text>{formatMemberRoleLabel(role)}</Text>
         </Space>
       ),
     },

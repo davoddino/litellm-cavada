@@ -36,18 +36,10 @@ interface KeyInfoViewProps {
 
 // Must stay in sync with LiteLLM_ManagementEndpoint_MetadataFields_Premium
 // in litellm/proxy/_types.py — limited to fields the key-edit form submits.
-const PREMIUM_METADATA_FIELDS = [
-  "policies",
-  "guardrails",
-  "prompts",
-  "tags",
-  "allowed_passthrough_routes",
-] as const;
+const PREMIUM_METADATA_FIELDS = ["policies", "guardrails", "prompts", "tags", "allowed_passthrough_routes"] as const;
 
 const isEmptyValue = (v: unknown): boolean =>
-  v == null ||
-  (Array.isArray(v) && v.length === 0) ||
-  (typeof v === "string" && v.trim() === "");
+  v == null || (Array.isArray(v) && v.length === 0) || (typeof v === "string" && v.trim() === "");
 
 /**
  * ─────────────────────────────────────────────────────────────────────────
@@ -113,7 +105,7 @@ export default function KeyInfoView({
               console.error(`Failed to fetch guardrails for policy ${policyName}:`, error);
               guardrailsMap[policyName] = [];
             }
-          })
+          }),
         );
         setPolicyGuardrails(guardrailsMap);
       } catch (error) {
@@ -188,7 +180,11 @@ export default function KeyInfoView({
       }
 
       if (formValues.mcp_servers_and_groups !== undefined) {
-        const { servers, accessGroups, toolsets } = formValues.mcp_servers_and_groups || { servers: [], accessGroups: [], toolsets: [] };
+        const { servers, accessGroups, toolsets } = formValues.mcp_servers_and_groups || {
+          servers: [],
+          accessGroups: [],
+          toolsets: [],
+        };
         formValues.object_permission = {
           ...currentKeyData.object_permission,
           mcp_servers: servers || [],
@@ -239,11 +235,13 @@ export default function KeyInfoView({
             ...parsedMetadata,
             ...(Array.isArray(formValues.tags) && formValues.tags.length > 0 ? { tags: formValues.tags } : {}),
             ...(formValues.guardrails?.length > 0 ? { guardrails: formValues.guardrails } : {}),
-            ...(Array.isArray(formValues.logging_settings) && formValues.logging_settings.length > 0 ? { logging: formValues.logging_settings } : {}),
+            ...(Array.isArray(formValues.logging_settings) && formValues.logging_settings.length > 0
+              ? { logging: formValues.logging_settings }
+              : {}),
             ...(formValues.disabled_callbacks?.length > 0
               ? {
-                litellm_disabled_callbacks: mapDisplayToInternalNames(formValues.disabled_callbacks),
-              }
+                  litellm_disabled_callbacks: mapDisplayToInternalNames(formValues.disabled_callbacks),
+                }
               : {}),
           };
         } catch (error) {
@@ -258,11 +256,13 @@ export default function KeyInfoView({
           ...rest,
           ...(Array.isArray(formValues.tags) && formValues.tags.length > 0 ? { tags: formValues.tags } : {}),
           ...(formValues.guardrails?.length > 0 ? { guardrails: formValues.guardrails } : {}),
-          ...(Array.isArray(formValues.logging_settings) && formValues.logging_settings.length > 0 ? { logging: formValues.logging_settings } : {}),
+          ...(Array.isArray(formValues.logging_settings) && formValues.logging_settings.length > 0
+            ? { logging: formValues.logging_settings }
+            : {}),
           ...(formValues.disabled_callbacks?.length > 0
             ? {
-              litellm_disabled_callbacks: mapDisplayToInternalNames(formValues.disabled_callbacks),
-            }
+                litellm_disabled_callbacks: mapDisplayToInternalNames(formValues.disabled_callbacks),
+              }
             : {}),
         };
       }
@@ -422,9 +422,7 @@ export default function KeyInfoView({
         backButtonText={backButtonText}
         regenerateDisabled={!premiumUser}
         regenerateTooltip={
-          !premiumUser
-            ? "This is a LiteLLM Enterprise feature, and requires a valid key to use."
-            : undefined
+          !premiumUser ? "This is a LiteLLM Enterprise feature, and requires a valid key to use." : undefined
         }
       />
 
@@ -487,8 +485,8 @@ export default function KeyInfoView({
           <strong>$0</strong>?
         </p>
         <p style={{ color: "#666", fontSize: "0.875rem", marginTop: 8 }}>
-          Current spend: <strong>${formatNumberWithCommas(currentKeyData.spend, 4)}</strong>. Spend history is
-          preserved in logs. This resets the current period spend counter, the same as an automatic budget reset.
+          Current spend: <strong>${formatNumberWithCommas(currentKeyData.spend, 4)}</strong>. Spend history is preserved
+          in logs. This resets the current period spend counter, the same as an automatic budget reset.
         </p>
       </Modal>
 
@@ -623,9 +621,7 @@ export default function KeyInfoView({
             <Card>
               <div className="flex justify-between items-center mb-4">
                 <Title>Key Settings</Title>
-                {!isEditing && canModifyKey && (
-                  <Button onClick={() => setIsEditing(true)}>Edit Settings</Button>
-                )}
+                {!isEditing && canModifyKey && <Button onClick={() => setIsEditing(true)}>Edit Settings</Button>}
               </div>
 
               {isEditing ? (
@@ -668,8 +664,10 @@ export default function KeyInfoView({
                         {currentKeyData.project_id
                           ? (() => {
                               const project = projects?.find((p) => p.project_id === currentKeyData.project_id);
-                              return project?.project_alias
-                                ? `${project.project_alias} (${currentKeyData.project_id})`
+                              const projectName =
+                                currentKeyData.project_name ?? currentKeyData.project_alias ?? project?.project_alias;
+                              return projectName
+                                ? `${projectName} (${currentKeyData.project_id})`
                                 : currentKeyData.project_id;
                             })()
                           : "Not Set"}
@@ -678,8 +676,12 @@ export default function KeyInfoView({
                   )}
 
                   <div>
-                    <Text className="font-medium">Organization</Text>
-                    <Text>{(currentKeyData.organization_id ?? currentKeyData.org_id) || "Not Set"}</Text>
+                    <Text className="font-medium">Company</Text>
+                    <Text>
+                      {currentKeyData.company_name ||
+                        (currentKeyData.company_id ?? currentKeyData.organization_id ?? currentKeyData.org_id) ||
+                        "Not Set"}
+                    </Text>
                   </div>
 
                   <div>
@@ -733,10 +735,10 @@ export default function KeyInfoView({
                     <div className="flex flex-wrap gap-2 mt-1">
                       {Array.isArray(currentKeyData.metadata?.tags) && currentKeyData.metadata.tags.length > 0
                         ? currentKeyData.metadata.tags.map((tag, index) => (
-                          <span key={index} className="px-2 mr-2 py-1 bg-blue-100 rounded text-xs">
-                            {tag}
-                          </span>
-                        ))
+                            <span key={index} className="px-2 mr-2 py-1 bg-blue-100 rounded text-xs">
+                              {tag}
+                            </span>
+                          ))
                         : "No tags specified"}
                     </div>
                   </div>
@@ -746,10 +748,10 @@ export default function KeyInfoView({
                     <Text>
                       {Array.isArray(currentKeyData.metadata?.prompts) && currentKeyData.metadata.prompts.length > 0
                         ? currentKeyData.metadata.prompts.map((prompt, index) => (
-                          <span key={index} className="px-2 mr-2 py-1 bg-blue-100 rounded text-xs">
-                            {prompt}
-                          </span>
-                        ))
+                            <span key={index} className="px-2 mr-2 py-1 bg-blue-100 rounded text-xs">
+                              {prompt}
+                            </span>
+                          ))
                         : "No prompts specified"}
                     </Text>
                   </div>
@@ -773,12 +775,12 @@ export default function KeyInfoView({
                     <Text className="font-medium">Allowed Pass Through Routes</Text>
                     <Text>
                       {Array.isArray(currentKeyData.metadata?.allowed_passthrough_routes) &&
-                        currentKeyData.metadata.allowed_passthrough_routes.length > 0
+                      currentKeyData.metadata.allowed_passthrough_routes.length > 0
                         ? currentKeyData.metadata.allowed_passthrough_routes.map((route, index) => (
-                          <span key={index} className="px-2 mr-2 py-1 bg-blue-100 rounded text-xs">
-                            {route}
-                          </span>
-                        ))
+                            <span key={index} className="px-2 mr-2 py-1 bg-blue-100 rounded text-xs">
+                              {route}
+                            </span>
+                          ))
                         : "No pass through routes specified"}
                     </Text>
                   </div>

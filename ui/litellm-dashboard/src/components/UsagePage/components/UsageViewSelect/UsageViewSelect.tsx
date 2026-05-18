@@ -3,6 +3,7 @@ import {
   BarChartOutlined,
   GlobalOutlined,
   LineChartOutlined,
+  ProjectOutlined,
   RobotOutlined,
   ShoppingCartOutlined,
   TagsOutlined,
@@ -11,7 +12,7 @@ import {
 } from "@ant-design/icons";
 import { Badge, Select } from "antd";
 import React from "react";
-export type UsageOption = "global" | "my-usage" | "organization" | "team" | "customer" | "tag" | "agent" | "user" | "user-agent-activity";
+export type UsageOption = "global" | "my-usage" | "company" | "project" | "team" | "customer" | "tag" | "agent" | "user" | "user-agent-activity";
 export interface UsageViewSelectProps {
   value: UsageOption;
   onChange: (value: UsageOption) => void;
@@ -52,14 +53,20 @@ const OPTIONS: OptionConfig[] = [
     adminOnly: true,
   },
   {
-    value: "organization",
-    label: "Organization Usage",
-    showForAdmin: "Organization Usage",
-    showForNonAdmin: "Your Organization Usage",
-    description: "View organization-level usage",
-    descriptionForAdmin: "View usage across all organizations",
-    descriptionForNonAdmin: "View your organization's usage",
+    value: "company",
+    label: "Company Usage",
+    showForAdmin: "Company Usage",
+    showForNonAdmin: "Your Company Usage",
+    description: "View company-level usage",
+    descriptionForAdmin: "View usage across all companies",
+    descriptionForNonAdmin: "View your company's usage",
     icon: <BankOutlined style={{ fontSize: "16px" }} />,
+  },
+  {
+    value: "project",
+    label: "Project Usage",
+    description: "View usage by project",
+    icon: <ProjectOutlined style={{ fontSize: "16px" }} />,
   },
   {
     value: "team",

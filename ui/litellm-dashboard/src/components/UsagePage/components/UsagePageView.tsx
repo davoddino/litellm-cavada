@@ -27,6 +27,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState, type UIEvent 
 
 import { useAgents } from "@/app/(dashboard)/hooks/agents/useAgents";
 import { useCustomers } from "@/app/(dashboard)/hooks/customers/useCustomers";
+import type { ProjectResponse } from "@/app/(dashboard)/hooks/projects/useProjects";
 import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import { useCurrentUser } from "@/app/(dashboard)/hooks/users/useCurrentUser";
 import { useInfiniteUsers } from "@/app/(dashboard)/hooks/users/useUsers";
@@ -55,9 +56,18 @@ import { UsageOption, UsageViewSelect } from "./UsageViewSelect/UsageViewSelect"
 interface UsagePageProps {
   teams: Team[];
   organizations: Organization[];
+  projects: ProjectResponse[];
 }
 
-const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations }) => {
+const toCompanyEntityOption = (organization: Organization): EntityList => {
+  const companyId = organization.company_id || organization.organization_id;
+  return {
+    label: organization.company_name || organization.organization_alias || companyId,
+    value: companyId,
+  };
+};
+
+const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations, projects }) => {
   const { accessToken, userRole, userId: userID, premiumUser } = useAuthorized();
   // Aggregated endpoint: try first, fall back to paginated if unavailable
   const [aggregatedData, setAggregatedData] = useState<{ results: DailyData[]; metadata: any } | null>(null);
@@ -81,8 +91,6 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations }) => {
   const { data: customers = [] } = useCustomers();
   const { data: agentsResponse } = useAgents();
   const { data: currentUser } = useCurrentUser();
-  console.log(`currentUser: ${JSON.stringify(currentUser)}`);
-  console.log(`currentUser max budget: ${currentUser?.max_budget}`);
   const isAdmin = all_admin_roles.includes(userRole || "");
   const canViewTagUsage = isAdmin || internalUserRoles.includes(userRole || "");
 
@@ -142,6 +150,7 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations }) => {
   const [isGlobalExportModalOpen, setIsGlobalExportModalOpen] = useState(false);
   const [isAiChatOpen, setIsAiChatOpen] = useState(false);
   const [usageView, setUsageView] = useState<UsageOption>("global");
+  const [selectedProjectCompanyId, setSelectedProjectCompanyId] = useState<string | null>(null);
   const [showCredentialBanner, setShowCredentialBanner] = useState(true);
   const [topKeysLimit, setTopKeysLimit] = useState<number>(5);
   const [topModelsLimit, setTopModelsLimit] = useState<number>(5);
@@ -155,6 +164,15 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations }) => {
 
   // For non-admins or "my-usage" view, always pass their own user_id
   const effectiveUserId = usageView === "my-usage" || !isAdmin ? userID || null : selectedUserId;
+  const companyOptions = useMemo(
+    () =>
+      organizations?.map((organization) => toCompanyEntityOption(organization)) || [],
+    [organizations],
+  );
+  const projectListForSelectedCompany = useMemo(() => {
+    if (!selectedProjectCompanyId) return projects || [];
+    return (projects || []).filter((project) => project.company_id === selectedProjectCompanyId);
+  }, [projects, selectedProjectCompanyId]);
 
   const startTime = useMemo(() => (dateValue.from ? new Date(dateValue.from) : null), [dateValue.from]);
   const endTime = useMemo(() => (dateValue.to ? new Date(dateValue.to) : null), [dateValue.to]);
@@ -658,7 +676,7 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations }) => {
                                     0,
                                     (userSpendData.metadata?.total_prompt_tokens || 0) -
                                       (userSpendData.metadata?.total_cache_read_input_tokens || 0) -
-                                      (userSpendData.metadata?.total_cache_creation_input_tokens || 0)
+                                      (userSpendData.metadata?.total_cache_creation_input_tokens || 0),
                                   ).toLocaleString()}
                                 </Text>
                               </Card>
@@ -849,23 +867,54 @@ const UsagePage: React.FC<UsagePageProps> = ({ teams, organizations }) => {
               </TabGroup>
             </>
           )}
-          {/* Organization Usage Panel */}
+          {/* Company Usage Panel */}
 
-          {usageView === "organization" && (
+          {usageView === "company" && (
             <EntityUsage
               accessToken={accessToken}
-              entityType="organization"
+              entityType="company"
               userID={userID}
               userRole={userRole}
               dateValue={dateValue}
               entityList={
-                organizations?.map((organization) => ({
-                  label: organization.organization_alias,
-                  value: organization.organization_id,
-                })) || null
+                organizations?.map((organization) => toCompanyEntityOption(organization)) || null
               }
               premiumUser={premiumUser}
             />
+          )}
+
+          {/* Project Usage Panel */}
+          {usageView === "project" && (
+            <>
+              <div className="mb-4">
+                <Text className="mb-2">Filter by company</Text>
+                <Select
+                  allowClear
+                  aria-label="Filter project usage by company"
+                  style={{ width: "100%" }}
+                  placeholder="Select company..."
+                  value={selectedProjectCompanyId}
+                  onChange={(value) => setSelectedProjectCompanyId(value ?? null)}
+                  options={companyOptions}
+                />
+              </div>
+              <EntityUsage
+                key={selectedProjectCompanyId || "all-projects"}
+                accessToken={accessToken}
+                entityType="project"
+                companyIds={selectedProjectCompanyId ? [selectedProjectCompanyId] : null}
+                userID={userID}
+                userRole={userRole}
+                entityList={
+                  projectListForSelectedCompany?.map((project) => ({
+                    label: project.project_alias || project.project_id,
+                    value: project.project_id,
+                  })) || null
+                }
+                premiumUser={premiumUser}
+                dateValue={dateValue}
+              />
+            </>
           )}
 
           {/* Team Usage Panel */}

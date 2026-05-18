@@ -15,7 +15,12 @@ from litellm.llms.base_llm.managed_resources.utils import (
     generate_unified_id_string,
     is_base64_encoded_unified_id,
 )
-from litellm.proxy._types import UserAPIKeyAuth
+from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
+from litellm.proxy.vector_store_endpoints.management_endpoints import (
+    _company_id_from_team,
+    _get_field_value,
+    _resolve_vector_store_project_context,
+)
 from litellm.types.vector_stores import (
     VectorStoreCreateOptionalRequestParams,
     VectorStoreCreateResponse,
@@ -54,6 +59,62 @@ class _PROXY_LiteLLMManagedVectorStores(
     ):
         CustomLogger.__init__(self)
         BaseManagedResource.__init__(self, internal_usage_cache, prisma_client)
+
+    @staticmethod
+    def _pop_product_context(
+        request_data: Dict[str, Any],
+    ) -> tuple[Optional[str], Optional[str]]:
+        company_id = request_data.pop("company_id", None)
+        project_id = request_data.pop("project_id", None)
+        for field_name, value in (
+            ("company_id", company_id),
+            ("project_id", project_id),
+        ):
+            if value is not None and not isinstance(value, str):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{field_name} must be a string when provided",
+                )
+        return company_id, project_id
+
+    async def _company_admin_can_access_project_resource(
+        self,
+        *,
+        project_id: Optional[str],
+        user_api_key_dict: UserAPIKeyAuth,
+    ) -> bool:
+        if project_id is None or user_api_key_dict.user_id is None:
+            return False
+
+        project = await self.prisma_client.db.litellm_projecttable.find_unique(
+            where={"project_id": project_id},
+            include={"litellm_team_table": True},
+        )
+        if project is None:
+            return False
+
+        team = _get_field_value(project, "litellm_team_table")
+        company_id = _get_field_value(project, "company_id") or _company_id_from_team(
+            team
+        )
+        if not company_id:
+            return False
+
+        membership = (
+            await self.prisma_client.db.litellm_organizationmembership.find_unique(
+                where={
+                    "user_id_organization_id": {
+                        "user_id": user_api_key_dict.user_id,
+                        "organization_id": company_id,
+                    }
+                }
+            )
+        )
+        return (
+            membership is not None
+            and _get_field_value(membership, "user_role")
+            == LitellmUserRoles.ORG_ADMIN.value
+        )
 
     # ============================================================================
     #                     ABSTRACT METHOD IMPLEMENTATIONS
@@ -154,9 +215,23 @@ class _PROXY_LiteLLMManagedVectorStores(
             f"Creating managed vector store for models: {target_model_names_list}"
         )
 
-        # Create vector store for each model
-        # Convert TypedDict to Dict[str, Any] for base class compatibility
+        # Create vector store for each model. Convert TypedDict to Dict[str, Any]
+        # for base class compatibility and keep product tenant fields out of the
+        # provider request body.
         request_data_dict: Dict[str, Any] = dict(create_request)
+        company_id, project_id = self._pop_product_context(request_data_dict)
+        project_team_id: Optional[str] = None
+        resolved_company_id: Optional[str] = None
+        project_name: Optional[str] = None
+        if company_id is not None or project_id is not None:
+            project_team_id, resolved_company_id, project_name = (
+                await _resolve_vector_store_project_context(
+                    prisma_client=self.prisma_client,
+                    project_id=project_id,
+                    company_id=company_id,
+                    user_api_key_dict=user_api_key_dict,
+                )
+            )
         responses = await self.create_resource_for_each_model(
             llm_router=llm_router,
             request_data=request_data_dict,
@@ -183,25 +258,68 @@ class _PROXY_LiteLLMManagedVectorStores(
             f"Created vector stores with model mappings: {model_mappings}"
         )
 
+        product_context: Dict[str, Any] = {}
+        additional_db_fields: Dict[str, Any] = {}
+        if project_team_id is not None:
+            additional_db_fields["team_id"] = project_team_id
+        if project_id is not None:
+            additional_db_fields["project_id"] = project_id
+            product_context["project_id"] = project_id
+        if resolved_company_id is not None:
+            product_context["company_id"] = resolved_company_id
+        if project_name is not None:
+            product_context["project_name"] = project_name
+
+        resource_object = responses[0]
+        if isinstance(resource_object, dict) and product_context:
+            resource_object = resource_object.copy()
+            resource_object.update(product_context)
+
         # Store in database
         await self.store_unified_resource_id(
             unified_resource_id=unified_id,
-            resource_object=responses[0],  # Store first response as template
+            resource_object=resource_object,  # Store first response as template
             litellm_parent_otel_span=litellm_parent_otel_span,
             model_mappings=model_mappings,
             user_api_key_dict=user_api_key_dict,
+            additional_db_fields=additional_db_fields or None,
         )
 
         # Return response with unified ID
         # VectorStoreCreateResponse is a TypedDict, so we need to create a new dict with the unified ID
         response = responses[0].copy()
         response["id"] = unified_id
+        response.update(product_context)
         
         verbose_logger.info(
             f"Successfully created managed vector store with unified ID: {unified_id}"
         )
 
         return response
+
+    async def can_user_access_unified_resource_id(
+        self,
+        unified_resource_id: str,
+        user_api_key_dict: UserAPIKeyAuth,
+        litellm_parent_otel_span: Optional[Span] = None,
+    ) -> bool:
+        if await super().can_user_access_unified_resource_id(
+            unified_resource_id=unified_resource_id,
+            user_api_key_dict=user_api_key_dict,
+            litellm_parent_otel_span=litellm_parent_otel_span,
+        ):
+            return True
+
+        resource = await self.get_unified_resource_id(
+            unified_resource_id=unified_resource_id,
+            litellm_parent_otel_span=litellm_parent_otel_span,
+        )
+        if resource is None:
+            return False
+        return await self._company_admin_can_access_project_resource(
+            project_id=resource.get("project_id"),
+            user_api_key_dict=user_api_key_dict,
+        )
 
     async def alist_vector_stores(
         self,

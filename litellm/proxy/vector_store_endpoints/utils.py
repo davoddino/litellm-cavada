@@ -50,6 +50,89 @@ def _object_permission_allows_vector_store(
     return vector_store_id in allowed
 
 
+def _key_context_field(
+    user_api_key_dict: UserAPIKeyAuth, *field_names: str
+) -> Optional[str]:
+    for field_name in field_names:
+        value = getattr(user_api_key_dict, field_name, None)
+        if value:
+            return value
+    return None
+
+
+def _field_from_obj(row: Any, field_name: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(field_name)
+    return getattr(row, field_name, None)
+
+
+async def _get_vector_store_company_id(
+    vector_store: LiteLLM_ManagedVectorStore,
+) -> Optional[str]:
+    company_id = vector_store.get("company_id")
+    if company_id:
+        return company_id
+
+    from litellm.proxy.proxy_server import prisma_client
+
+    if prisma_client is None:
+        return None
+
+    project_id = vector_store.get("project_id")
+    if project_id:
+        project = await prisma_client.db.litellm_projecttable.find_unique(
+            where={"project_id": project_id},
+            include={"litellm_team_table": True},
+        )
+        if project is not None:
+            project_company_id = _field_from_obj(project, "company_id")
+            if project_company_id:
+                return project_company_id
+            project_team = _field_from_obj(project, "litellm_team_table")
+            return _field_from_obj(project_team, "organization_id")
+
+    team_id = vector_store.get("team_id")
+    if not team_id:
+        return None
+    team = await prisma_client.db.litellm_teamtable.find_unique(
+        where={"team_id": team_id}
+    )
+    return _field_from_obj(team, "organization_id")
+
+
+async def _managed_vector_store_matches_key_context(
+    vector_store: LiteLLM_ManagedVectorStore,
+    user_api_key_dict: UserAPIKeyAuth,
+) -> bool:
+    key_project_id = _key_context_field(user_api_key_dict, "project_id")
+    key_company_id = _key_context_field(
+        user_api_key_dict, "company_id", "org_id", "organization_id"
+    )
+    key_team_id = _key_context_field(user_api_key_dict, "team_id")
+    vector_store_project_id = vector_store.get("project_id")
+
+    if (
+        vector_store_project_id is None
+        and vector_store.get("company_id") is None
+        and vector_store.get("team_id") is None
+    ):
+        return True
+
+    if key_project_id is None and key_company_id is None and key_team_id is None:
+        return True
+
+    if key_project_id is not None and vector_store_project_id != key_project_id:
+        return False
+
+    if key_company_id is not None:
+        return await _get_vector_store_company_id(vector_store) == key_company_id
+
+    if key_team_id is not None:
+        return vector_store.get("team_id") == key_team_id
+
+    return True
+
+
 async def _get_object_permission_for_id(
     object_permission_id: Optional[str],
 ) -> Optional[LiteLLM_ObjectPermissionTable]:
@@ -103,6 +186,12 @@ async def can_user_access_vector_store(
     """
     if _is_proxy_admin(user_api_key_dict):
         return True
+
+    if not await _managed_vector_store_matches_key_context(
+        vector_store=vector_store,
+        user_api_key_dict=user_api_key_dict,
+    ):
+        return False
 
     vector_store_team_id = vector_store.get("team_id")
     if vector_store_team_id is None:

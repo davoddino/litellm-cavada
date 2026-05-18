@@ -21,6 +21,7 @@ export function buildProjectApiParams(values: ProjectFormValues) {
 
   return {
     project_alias: values.project_alias,
+    ...(values.company_id && { company_id: values.company_id }),
     description: values.description,
     models: values.models ?? [],
     max_budget: values.max_budget,

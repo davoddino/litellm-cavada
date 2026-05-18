@@ -1,6 +1,8 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import moment from "moment";
 import { useCallback, useDeferredValue, useEffect, useRef, useState } from "react";
+import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
+import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
 import GuardrailViewer from "@/components/view_logs/GuardrailViewer/GuardrailViewer";
 import { formatNumberWithCommas } from "@/utils/dataUtils";
 import { truncateString } from "@/utils/textUtils";
@@ -12,10 +14,12 @@ import { internalUserRoles } from "../../utils/roles";
 import DeletedKeysPage from "../DeletedKeysPage/DeletedKeysPage";
 import DeletedTeamsPage from "../DeletedTeamsPage/DeletedTeamsPage";
 import FilterTeamDropdown from "../common_components/FilterTeamDropdown";
+import OrganizationDropdown from "../common_components/OrganizationDropdown";
+import ProjectDropdown from "../common_components/ProjectDropdown";
 import { KeyResponse } from "../key_team_helpers/key_list";
 import { PaginatedKeyAliasSelect } from "../KeyAliasSelect/PaginatedKeyAliasSelect/PaginatedKeyAliasSelect";
 import { PaginatedModelSelect } from "../ModelSelect/PaginatedModelSelect/PaginatedModelSelect";
-import FilterComponent, { FilterOption } from "../molecules/filter";
+import FilterComponent, { FilterOption, FilterOptionCustomComponentProps } from "../molecules/filter";
 import { allEndUsersCall, keyInfoV1Call, uiSpendLogsCall } from "../networking";
 import KeyInfoView from "../templates/key_info_view";
 import AuditLogs from "./audit_logs";
@@ -47,13 +51,7 @@ export interface PaginatedResponse {
   total_pages: number;
 }
 
-export default function SpendLogsTable({
-  accessToken,
-  token,
-  userRole,
-  userID,
-  premiumUser,
-}: SpendLogsTableProps) {
+export default function SpendLogsTable({ accessToken, token, userRole, userID, premiumUser }: SpendLogsTableProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [showColumnDropdown, setShowColumnDropdown] = useState(false);
@@ -72,6 +70,8 @@ export default function SpendLogsTable({
   const [tempTeamId, setTempTeamId] = useState("");
   const [tempKeyHash, setTempKeyHash] = useState("");
   const [selectedTeamId, setSelectedTeamId] = useState("");
+  const [selectedCompanyId, setSelectedCompanyId] = useState("");
+  const [selectedProjectId, setSelectedProjectId] = useState("");
   const [selectedKeyHash, setSelectedKeyHash] = useState("");
   const [selectedModelId, setSelectedModelId] = useState("");
   const [selectedKeyInfo, setSelectedKeyInfo] = useState<KeyResponse | null>(null);
@@ -94,6 +94,8 @@ export default function SpendLogsTable({
   const [isMainQueryEnabled, setIsMainQueryEnabled] = useState(true);
 
   const queryClient = useQueryClient();
+  const { data: organizations = [] } = useOrganizations();
+  const { data: projects = [] } = useProjects({ includeNonAdmin: true });
 
   const [isLiveTail, setIsLiveTail] = useState<boolean>(() => {
     const storedValue = sessionStorage.getItem("isLiveTail");
@@ -168,6 +170,8 @@ export default function SpendLogsTable({
       startTime,
       endTime,
       selectedTeamId,
+      selectedCompanyId,
+      selectedProjectId,
       selectedKeyHash,
       filterByCurrentUser ? userID : null,
       selectedStatus,
@@ -203,6 +207,8 @@ export default function SpendLogsTable({
         params: {
           api_key: selectedKeyHash || undefined,
           team_id: selectedTeamId || undefined,
+          company_id: selectedCompanyId || undefined,
+          project_id: selectedProjectId || undefined,
           user_id: filterByCurrentUser ? userID ?? undefined : undefined,
           end_user: selectedEndUser || undefined,
           status_filter: selectedStatus || undefined,
@@ -282,6 +288,8 @@ export default function SpendLogsTable({
     } else {
       setSelectedTeamId("");
     }
+    setSelectedCompanyId(filters[FILTER_KEYS.COMPANY_ID] || "");
+    setSelectedProjectId(filters[FILTER_KEYS.PROJECT_ID] || "");
     setSelectedStatus(filters["Status"] || "");
     setSelectedModelId(filters["Model"] || "");
     setSelectedEndUser(filters["End User"] || "");
@@ -307,20 +315,23 @@ export default function SpendLogsTable({
     return matchesSearch;
   });
 
-  const sessionCompositionById = searchedLogs.reduce<Record<string, { llm: number; agent: number; mcp: number }>>((acc, log) => {
-    if (!log.session_id) return acc;
-    if (!acc[log.session_id]) {
-      acc[log.session_id] = { llm: 0, agent: 0, mcp: 0 };
-    }
-    if (MCP_CALL_TYPES.includes(log.call_type)) {
-      acc[log.session_id].mcp += 1;
-    } else if (AGENT_CALL_TYPES.includes(log.call_type)) {
-      acc[log.session_id].agent += 1;
-    } else {
-      acc[log.session_id].llm += 1;
-    }
-    return acc;
-  }, {});
+  const sessionCompositionById = searchedLogs.reduce<Record<string, { llm: number; agent: number; mcp: number }>>(
+    (acc, log) => {
+      if (!log.session_id) return acc;
+      if (!acc[log.session_id]) {
+        acc[log.session_id] = { llm: 0, agent: 0, mcp: 0 };
+      }
+      if (MCP_CALL_TYPES.includes(log.call_type)) {
+        acc[log.session_id].mcp += 1;
+      } else if (AGENT_CALL_TYPES.includes(log.call_type)) {
+        acc[log.session_id].agent += 1;
+      } else {
+        acc[log.session_id].llm += 1;
+      }
+      return acc;
+    },
+    {},
+  );
 
   // Build a single-pass map of session_id → representative request_id.
   // Prefers an LLM row over an MCP row as the representative.
@@ -395,11 +406,40 @@ export default function SpendLogsTable({
     setSelectedLog(log);
   };
 
+  const CompanyFilterDropdown = useCallback(
+    ({ value, onChange }: FilterOptionCustomComponentProps) => (
+      <OrganizationDropdown organizations={organizations} value={value} onChange={onChange} />
+    ),
+    [organizations],
+  );
+
+  const ProjectFilterDropdown = useCallback(
+    ({ value, onChange, allFilters }: FilterOptionCustomComponentProps) => (
+      <ProjectDropdown
+        projects={projects}
+        value={value}
+        onChange={(nextValue) => onChange(nextValue || "")}
+        companyId={allFilters?.[FILTER_KEYS.COMPANY_ID] || null}
+      />
+    ),
+    [projects],
+  );
+
   const logFilterOptions: FilterOption[] = [
     {
       name: "Team ID",
       label: "Team ID",
       customComponent: FilterTeamDropdown,
+    },
+    {
+      name: FILTER_KEYS.COMPANY_ID,
+      label: "Company",
+      customComponent: CompanyFilterDropdown,
+    },
+    {
+      name: FILTER_KEYS.PROJECT_ID,
+      label: "Project",
+      customComponent: ProjectFilterDropdown,
     },
     {
       name: "Status",
@@ -559,8 +599,9 @@ export default function SpendLogsTable({
                                   {QUICK_SELECT_OPTIONS.map((option) => (
                                     <button
                                       key={option.label}
-                                      className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-50 rounded-md ${displayLabel === option.label ? "bg-blue-50 text-blue-600" : ""
-                                        }`}
+                                      className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-50 rounded-md ${
+                                        displayLabel === option.label ? "bg-blue-50 text-blue-600" : ""
+                                      }`}
                                       onClick={() => {
                                         setCurrentPage(1);
                                         setEndTime(moment().format("YYYY-MM-DDTHH:mm"));
@@ -579,8 +620,9 @@ export default function SpendLogsTable({
                                   ))}
                                   <div className="border-t my-2" />
                                   <button
-                                    className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-50 rounded-md ${isCustomDate ? "bg-blue-50 text-blue-600" : ""
-                                      }`}
+                                    className={`w-full px-3 py-2 text-left text-sm hover:bg-gray-50 rounded-md ${
+                                      isCustomDate ? "bg-blue-50 text-blue-600" : ""
+                                    }`}
                                     onClick={() => setIsCustomDate(!isCustomDate)}
                                   >
                                     Custom Range
@@ -706,8 +748,12 @@ export default function SpendLogsTable({
               premiumUser={premiumUser}
             />
           </TabPanel>
-          <TabPanel><DeletedKeysPage /></TabPanel>
-          <TabPanel><DeletedTeamsPage /></TabPanel>
+          <TabPanel>
+            <DeletedKeysPage />
+          </TabPanel>
+          <TabPanel>
+            <DeletedTeamsPage />
+          </TabPanel>
         </TabPanels>
       </TabGroup>
 
@@ -903,10 +949,11 @@ export function RequestViewer({ row }: { row: Row<LogEntry> }) {
             <div className="flex">
               <span className="font-medium w-1/3">Status:</span>
               <span
-                className={`px-2 py-1 rounded-md text-xs font-medium inline-block text-center w-16 ${(row.original.metadata?.status || "Success").toLowerCase() !== "failure"
-                  ? "bg-green-100 text-green-800"
-                  : "bg-red-100 text-red-800"
-                  }`}
+                className={`px-2 py-1 rounded-md text-xs font-medium inline-block text-center w-16 ${
+                  (row.original.metadata?.status || "Success").toLowerCase() !== "failure"
+                    ? "bg-green-100 text-green-800"
+                    : "bg-red-100 text-red-800"
+                }`}
               >
                 {(row.original.metadata?.status || "Success").toLowerCase() !== "failure" ? "Success" : "Failure"}
               </span>
@@ -921,7 +968,10 @@ export function RequestViewer({ row }: { row: Row<LogEntry> }) {
             </div>
             <div className="flex">
               <span className="font-medium w-1/3">Duration:</span>
-              <span>{row.original.request_duration_ms != null ? (row.original.request_duration_ms / 1000).toFixed(3) : "-"} s.</span>
+              <span>
+                {row.original.request_duration_ms != null ? (row.original.request_duration_ms / 1000).toFixed(3) : "-"}{" "}
+                s.
+              </span>
             </div>
             {row.original.metadata?.litellm_overhead_time_ms !== undefined && (
               <div className="flex">
@@ -932,11 +982,16 @@ export function RequestViewer({ row }: { row: Row<LogEntry> }) {
             <div className="flex">
               <span className="font-medium w-1/3">Retries:</span>
               <span>
-                {row.original.metadata?.attempted_retries !== undefined && row.original.metadata?.attempted_retries !== null
-                  ? row.original.metadata.attempted_retries > 0
-                    ? `${row.original.metadata.attempted_retries}${row.original.metadata.max_retries !== undefined && row.original.metadata.max_retries !== null ? ` / ${row.original.metadata.max_retries}` : ''}`
-                    : <Tag color="green">None</Tag>
-                  : '-'}
+                {row.original.metadata?.attempted_retries !== undefined &&
+                row.original.metadata?.attempted_retries !== null ? (
+                  row.original.metadata.attempted_retries > 0 ? (
+                    `${row.original.metadata.attempted_retries}${row.original.metadata.max_retries !== undefined && row.original.metadata.max_retries !== null ? ` / ${row.original.metadata.max_retries}` : ""}`
+                  ) : (
+                    <Tag color="green">None</Tag>
+                  )
+                ) : (
+                  "-"
+                )}
               </span>
             </div>
           </div>

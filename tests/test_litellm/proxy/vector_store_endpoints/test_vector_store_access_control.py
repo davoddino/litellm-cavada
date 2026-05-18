@@ -67,9 +67,8 @@ async def test_check_vector_store_access_proxy_admin_bypass():
 
 
 @pytest.mark.asyncio
-async def test_check_vector_store_access_key_object_permission_grants_access():
-    """A key whose object_permission.vector_stores allowlists the store can access it
-    even if its team_id does not match the store's team_id."""
+async def test_check_vector_store_access_key_object_permission_requires_matching_team():
+    """A key allowlist cannot bypass a managed vector store team mismatch."""
     vector_store: LiteLLM_ManagedVectorStore = {
         "vector_store_id": "vs_explicit",
         "custom_llm_provider": "openai",
@@ -77,6 +76,24 @@ async def test_check_vector_store_access_key_object_permission_grants_access():
     }
     user = UserAPIKeyAuth(
         team_id="team_789",
+        object_permission=LiteLLM_ObjectPermissionTable(
+            object_permission_id="op-1",
+            vector_stores=["vs_explicit"],
+        ),
+    )
+    assert await _check_vector_store_access(vector_store, user) is False
+
+
+@pytest.mark.asyncio
+async def test_check_vector_store_access_key_object_permission_grants_matching_team_access():
+    """A key allowlist grants access when its managed vector store tenant context matches."""
+    vector_store: LiteLLM_ManagedVectorStore = {
+        "vector_store_id": "vs_explicit",
+        "custom_llm_provider": "openai",
+        "team_id": "team_456",
+    }
+    user = UserAPIKeyAuth(
+        team_id="team_456",
         object_permission=LiteLLM_ObjectPermissionTable(
             object_permission_id="op-1",
             vector_stores=["vs_explicit"],
@@ -123,6 +140,7 @@ async def test_delete_vector_store_checks_access():
     mock_prisma.db.litellm_managedvectorstorestable.find_unique = AsyncMock(
         return_value=mock_vector_store
     )
+    mock_prisma.db.litellm_teamtable.find_unique = AsyncMock(return_value=None)
 
     # User from different team should get 403
     user_api_key_dict = UserAPIKeyAuth(team_id="team_789")

@@ -5,6 +5,7 @@ import { Organization } from "../networking";
 export interface TeamFilterOptions {
   keyAliases: string[];
   organizationIds: string[];
+  projectOptions: Array<{ id: string; label: string }>;
   userIds: Array<{ id: string; email: string }>;
 }
 
@@ -15,6 +16,7 @@ const processKeysIntoOptions = (
   keys: Array<Record<string, unknown>>,
   keyAliases: Set<string>,
   organizationIds: Set<string>,
+  projectOptions: Map<string, string>,
   userMap: Map<string, string>,
 ) => {
   for (const key of keys) {
@@ -22,9 +24,20 @@ const processKeysIntoOptions = (
     if (alias && typeof alias === "string") {
       keyAliases.add(alias.trim());
     }
-    const orgId = key?.organization_id ?? key?.org_id;
+    const orgId = key?.company_id ?? key?.organization_id ?? key?.org_id;
     if (orgId && typeof orgId === "string") {
       organizationIds.add(orgId.trim());
+    }
+    const projectId = key?.project_id;
+    if (projectId && typeof projectId === "string") {
+      const trimmedProjectId = projectId.trim();
+      const projectName = key?.project_name ?? key?.project_alias;
+      projectOptions.set(
+        trimmedProjectId,
+        typeof projectName === "string" && projectName.trim()
+          ? `${projectName.trim()} (${trimmedProjectId})`
+          : trimmedProjectId,
+      );
     }
     const userId = key?.user_id;
     if (userId && typeof userId === "string") {
@@ -44,12 +57,13 @@ export const fetchTeamFilterOptions = async (
   teamId: string,
 ): Promise<TeamFilterOptions> => {
   if (!accessToken || !teamId) {
-    return { keyAliases: [], organizationIds: [], userIds: [] };
+    return { keyAliases: [], organizationIds: [], projectOptions: [], userIds: [] };
   }
 
   try {
     const keyAliases = new Set<string>();
     const organizationIds = new Set<string>();
+    const projectOptions = new Map<string, string>();
     const userMap = new Map<string, string>();
 
     // First request: get page 1 and totalPages
@@ -70,7 +84,7 @@ export const fetchTeamFilterOptions = async (
 
     const firstKeys = firstResponse?.keys || [];
     const totalPages = firstResponse?.total_pages ?? 1;
-    processKeysIntoOptions(firstKeys, keyAliases, organizationIds, userMap);
+    processKeysIntoOptions(firstKeys, keyAliases, organizationIds, projectOptions, userMap);
 
     // Batch fetch remaining pages (2 through min(totalPages, MAX_PAGES)) in parallel
     const pagesToFetch = Math.min(totalPages, MAX_PAGES) - 1;
@@ -94,7 +108,7 @@ export const fetchTeamFilterOptions = async (
       const results = await Promise.allSettled(pagePromises);
       for (const result of results) {
         if (result.status === "fulfilled") {
-          processKeysIntoOptions(result.value?.keys || [], keyAliases, organizationIds, userMap);
+          processKeysIntoOptions(result.value?.keys || [], keyAliases, organizationIds, projectOptions, userMap);
         }
       }
     }
@@ -102,11 +116,14 @@ export const fetchTeamFilterOptions = async (
     return {
       keyAliases: Array.from(keyAliases).sort(),
       organizationIds: Array.from(organizationIds).sort(),
+      projectOptions: Array.from(projectOptions.entries())
+        .map(([id, label]) => ({ id, label }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
       userIds: Array.from(userMap.entries()).map(([id, email]) => ({ id, email })),
     };
   } catch (error) {
     console.error("Error fetching team filter options:", error);
-    return { keyAliases: [], organizationIds: [], userIds: [] };
+    return { keyAliases: [], organizationIds: [], projectOptions: [], userIds: [] };
   }
 };
 

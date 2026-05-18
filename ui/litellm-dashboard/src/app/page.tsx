@@ -1,6 +1,7 @@
 "use client";
 
 import SidebarProvider from "@/app/(dashboard)/components/SidebarProvider";
+import { projectListCall, ProjectResponse } from "@/app/(dashboard)/hooks/projects/useProjects";
 import OldModelDashboard from "@/app/(dashboard)/models-and-endpoints/ModelsAndEndpointsView";
 import PlaygroundPage from "@/app/(dashboard)/playground/page";
 import AdminPanel from "@/components/AdminPanel";
@@ -76,6 +77,8 @@ interface ProxySettings {
 const LEGACY_REDIRECTS: Record<string, string> = {
   api_ref: "api-reference",
   "api-reference": "api-reference",
+  organizations: "companies",
+  companies: "companies",
 };
 
 function CreateKeyPageContent() {
@@ -86,6 +89,7 @@ function CreateKeyPageContent() {
   const [teams, setTeams] = useState<Team[] | null>(null);
   const [keys, setKeys] = useState<null | any[]>([]);
   const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [projects, setProjects] = useState<ProjectResponse[]>([]);
   const [userModels, setUserModels] = useState<string[]>([]);
   const [proxySettings, setProxySettings] = useState<ProxySettings>({
     PROXY_BASE_URL: "",
@@ -360,6 +364,7 @@ function CreateKeyPageContent() {
     }
     if (accessToken) {
       fetchOrganizations(accessToken, setOrganizations);
+      projectListCall(accessToken).then(setProjects).catch(console.error);
     }
   }, [accessToken, userID, userRole]);
 
@@ -643,6 +648,7 @@ function CreateKeyPageContent() {
                     <NewUsagePage
                       teams={(teams as Team[]) ?? []}
                       organizations={(organizations as Organization[]) ?? []}
+                      projects={projects}
                     />
                   ) : (
                     <Usage

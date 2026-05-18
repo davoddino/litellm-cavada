@@ -162,6 +162,7 @@ async def _save_vector_store_to_db_from_rag_ingest(
     ingest_options: Dict[str, Any],
     prisma_client,
     user_api_key_dict: UserAPIKeyAuth,
+    project_team_id: Optional[str] = None,
     file_data: Optional[Tuple[str, bytes, str]] = None,
     file_url: Optional[str] = None,
 ) -> None:
@@ -211,6 +212,7 @@ async def _save_vector_store_to_db_from_rag_ingest(
     custom_vector_store_description = litellm_vector_store_params.get(
         "vector_store_description"
     )
+    project_id = litellm_vector_store_params.get("project_id")
 
     # Extract provider-specific params from vector_store_config to save as litellm_params
     # This ensures params like aws_region_name, embedding_model, etc. are available for search
@@ -262,7 +264,8 @@ async def _save_vector_store_to_db_from_rag_ingest(
                 litellm_params=(
                     provider_specific_params if provider_specific_params else None
                 ),
-                team_id=user_api_key_dict.team_id,
+                team_id=project_team_id or user_api_key_dict.team_id,
+                project_id=project_id,
                 user_id=user_api_key_dict.user_id,
             )
 
@@ -301,6 +304,40 @@ async def _save_vector_store_to_db_from_rag_ingest(
         verbose_proxy_logger.exception(
             f"Failed to save vector store {vector_store_id} to database: {db_error}"
         )
+
+
+def _get_litellm_vector_store_params(
+    ingest_options: Dict[str, Any],
+) -> Dict[str, Any]:
+    params = ingest_options.get("litellm_vector_store_params", {})
+    return params if isinstance(params, dict) else {}
+
+
+def _get_vector_store_product_context(
+    ingest_options: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str]]:
+    params = _get_litellm_vector_store_params(ingest_options)
+    company_id = params.get("company_id")
+    project_id = params.get("project_id")
+    return company_id, project_id
+
+
+def _strip_product_context_from_ingest_options(
+    ingest_options: Dict[str, Any],
+) -> Dict[str, Any]:
+    params = _get_litellm_vector_store_params(ingest_options)
+    if not params:
+        return ingest_options
+
+    stripped_params = dict(params)
+    stripped_params.pop("company_id", None)
+    stripped_params.pop("project_id", None)
+    if stripped_params == params:
+        return ingest_options
+
+    provider_ingest_options = dict(ingest_options)
+    provider_ingest_options["litellm_vector_store_params"] = stripped_params
+    return provider_ingest_options
 
 
 async def parse_rag_ingest_request(
@@ -469,6 +506,20 @@ async def rag_ingest(
             user_api_key_dict=user_api_key_dict,
         )
 
+        company_id, project_id = _get_vector_store_product_context(ingest_options)
+        project_team_id: Optional[str] = None
+        if company_id is not None or project_id is not None:
+            from litellm.proxy.vector_store_endpoints.management_endpoints import (
+                _resolve_vector_store_project_context,
+            )
+
+            project_team_id, _, _ = await _resolve_vector_store_project_context(
+                prisma_client=prisma_client,
+                project_id=project_id,
+                company_id=company_id,
+                user_api_key_dict=user_api_key_dict,
+            )
+
         # Add litellm data
         request_data: Dict[str, Any] = {}
         request_data = await add_litellm_data_to_request(
@@ -484,7 +535,7 @@ async def rag_ingest(
 
         # Call ingest
         response = await litellm.aingest(
-            ingest_options=ingest_options,
+            ingest_options=_strip_product_context_from_ingest_options(ingest_options),
             file_data=file_data,
             file_url=file_url,
             file_id=file_id,
@@ -503,6 +554,7 @@ async def rag_ingest(
                 ingest_options=ingest_options,
                 prisma_client=prisma_client,
                 user_api_key_dict=user_api_key_dict,
+                project_team_id=project_team_id,
                 file_data=file_data,
                 file_url=file_url,
             )

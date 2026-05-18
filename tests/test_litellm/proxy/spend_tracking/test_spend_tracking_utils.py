@@ -829,6 +829,34 @@ def test_get_logging_payload_includes_agent_id_from_kwargs():
 
 @patch("litellm.proxy.proxy_server.master_key", None)
 @patch("litellm.proxy.proxy_server.general_settings", {})
+def test_get_logging_payload_includes_project_id_from_auth_metadata():
+    """Project spend rows use the canonical key/auth project context."""
+    kwargs = {
+        "model": "gpt-4",
+        "custom_llm_provider": "openai",
+        "litellm_params": {
+            "metadata": {
+                "user_api_key": "sk-test-key",
+                "user_api_key_project_id": "project-123",
+            }
+        },
+    }
+    response_obj = {
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    }
+
+    payload = get_logging_payload(
+        kwargs=kwargs,
+        response_obj=response_obj,
+        start_time=datetime.datetime.now(timezone.utc),
+        end_time=datetime.datetime.now(timezone.utc),
+    )
+
+    assert payload["project_id"] == "project-123"
+
+
+@patch("litellm.proxy.proxy_server.master_key", None)
+@patch("litellm.proxy.proxy_server.general_settings", {})
 def test_get_logging_payload_includes_overhead_in_spend_logs_metadata():
     """
     Test that get_logging_payload extracts litellm_overhead_time_ms from hidden_params

@@ -2,10 +2,11 @@ import os
 import sys
 import traceback
 from litellm._uuid import uuid
+from types import SimpleNamespace
 from unittest import mock
 
 from dotenv import load_dotenv
-from fastapi import Request
+from fastapi import HTTPException, Request
 
 load_dotenv()
 import time
@@ -21,10 +22,16 @@ from litellm.proxy.management_endpoints.team_endpoints import (
     new_team,
 )
 from litellm_enterprise.proxy.management_endpoints.project_endpoints import (
+    _check_user_permission_for_project,
     new_project,
     update_project,
     delete_project,
+    get_project_daily_activity,
+    list_projects,
     project_info,
+    _remove_project_product_alias_fields,
+    _serialize_project_response,
+    _validate_project_company_context,
 )
 from litellm.proxy.proxy_server import (
     LitellmUserRoles,
@@ -40,8 +47,649 @@ from litellm.proxy._types import (
     UpdateProjectRequest,
     DeleteProjectRequest,
     NewTeamRequest,
+    ProxyException,
     UserAPIKeyAuth,
 )
+
+
+def test_project_response_includes_company_id_from_team_relation():
+    team = mock.MagicMock()
+    team.organization_id = "company-123"
+    project = mock.MagicMock()
+    project.model_dump.return_value = {
+        "project_id": "project-123",
+        "project_alias": "Support",
+        "team_id": "team-123",
+        "litellm_team_table": team,
+        "models": [],
+        "spend": 0.0,
+        "blocked": False,
+        "created_by": "admin",
+        "updated_by": "admin",
+    }
+
+    response = _serialize_project_response(project)
+
+    assert response.company_id == "company-123"
+    assert not hasattr(response, "litellm_team_table")
+
+
+def test_project_request_accepts_company_id_and_strips_before_persistence():
+    request = NewProjectRequest(
+        project_alias="Support",
+        team_id="team-123",
+        company_id="company-123",
+    )
+
+    assert request.company_id == "company-123"
+
+    payload = _remove_project_product_alias_fields(
+        {
+            "project_alias": request.project_alias,
+            "team_id": request.team_id,
+            "company_id": request.company_id,
+        }
+    )
+
+    assert payload == {
+        "project_alias": "Support",
+        "team_id": "team-123",
+    }
+
+
+def test_project_company_context_rejects_team_company_mismatch():
+    with pytest.raises(HTTPException) as exc:
+        _validate_project_company_context(
+            requested_company_id="company-999",
+            team_object=SimpleNamespace(
+                team_id="team-123",
+                organization_id="company-123",
+            ),
+        )
+
+    assert exc.value.status_code == 400
+    assert "company_id must match" in exc.value.detail["error"]
+
+
+@pytest.mark.asyncio
+async def test_project_admin_from_team_members_can_manage_project():
+    allowed = await _check_user_permission_for_project(
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            user_id="project-admin",
+            api_key="sk-project-admin",
+        ),
+        team_id="team-123",
+        prisma_client=SimpleNamespace(db=SimpleNamespace()),
+        team_object=SimpleNamespace(
+            team_id="team-123",
+            organization_id="company-123",
+            admins=[],
+            members_with_roles=[
+                {"user_id": "project-admin", "role": "admin"},
+            ],
+        ),
+    )
+
+    assert allowed is True
+
+
+@pytest.mark.asyncio
+async def test_project_member_without_admin_role_cannot_manage_project():
+    fake_membership_table = mock.MagicMock()
+    fake_membership_table.find_unique = mock.AsyncMock(return_value=None)
+
+    allowed = await _check_user_permission_for_project(
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            user_id="project-member",
+            api_key="sk-project-member",
+        ),
+        team_id="team-123",
+        prisma_client=SimpleNamespace(
+            db=SimpleNamespace(
+                litellm_organizationmembership=fake_membership_table,
+            )
+        ),
+        team_object=SimpleNamespace(
+            team_id="team-123",
+            organization_id="company-123",
+            admins=[],
+            members_with_roles=[
+                SimpleNamespace(user_id="project-member", role="user"),
+            ],
+        ),
+    )
+
+    assert allowed is False
+    fake_membership_table.find_unique.assert_awaited_once_with(
+        where={
+            "user_id_organization_id": {
+                "user_id": "project-member",
+                "organization_id": "company-123",
+            }
+        }
+    )
+
+
+def _mock_project_row(
+    *,
+    project_id: str = "project-123",
+    team_id: str = "team-123",
+    company_id: str = "company-123",
+    members_with_roles=None,
+):
+    team = SimpleNamespace(
+        team_id=team_id,
+        organization_id=company_id,
+        members_with_roles=members_with_roles or [],
+        admins=[],
+    )
+    project = SimpleNamespace(
+        project_id=project_id,
+        project_alias="Support",
+        team_id=team_id,
+        company_id=None,
+        litellm_team_table=team,
+    )
+    project.model_dump = lambda: {
+        "project_id": project_id,
+        "project_alias": "Support",
+        "team_id": team_id,
+        "litellm_team_table": team,
+        "models": [],
+        "spend": 0.0,
+        "blocked": False,
+        "created_by": "admin",
+        "updated_by": "admin",
+    }
+    return project
+
+
+@pytest.mark.asyncio
+async def test_project_info_company_admin_can_read_company_project(monkeypatch):
+    project = _mock_project_row(company_id="company-123")
+    fake_project_table = mock.MagicMock()
+    fake_project_table.find_unique = mock.AsyncMock(return_value=project)
+    fake_membership_table = mock.MagicMock()
+    fake_membership_table.find_unique = mock.AsyncMock(
+        return_value=SimpleNamespace(user_role=LitellmUserRoles.ORG_ADMIN.value)
+    )
+    fake_prisma = SimpleNamespace(
+        db=SimpleNamespace(
+            litellm_projecttable=fake_project_table,
+            litellm_organizationmembership=fake_membership_table,
+        )
+    )
+    monkeypatch.setattr(litellm.proxy.proxy_server, "prisma_client", fake_prisma)
+
+    response = await project_info(
+        project_id="project-123",
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            user_id="company-admin",
+            api_key="sk-company-admin",
+        ),
+    )
+
+    assert response.project_id == "project-123"
+    assert response.company_id == "company-123"
+    fake_membership_table.find_unique.assert_awaited_once_with(
+        where={
+            "user_id_organization_id": {
+                "user_id": "company-admin",
+                "organization_id": "company-123",
+            }
+        }
+    )
+
+
+@pytest.mark.asyncio
+async def test_project_info_company_admin_rejects_project_outside_company(monkeypatch):
+    project = _mock_project_row(company_id="company-999")
+    fake_project_table = mock.MagicMock()
+    fake_project_table.find_unique = mock.AsyncMock(return_value=project)
+    fake_membership_table = mock.MagicMock()
+    fake_membership_table.find_unique = mock.AsyncMock(return_value=None)
+    fake_prisma = SimpleNamespace(
+        db=SimpleNamespace(
+            litellm_projecttable=fake_project_table,
+            litellm_organizationmembership=fake_membership_table,
+        )
+    )
+    monkeypatch.setattr(litellm.proxy.proxy_server, "prisma_client", fake_prisma)
+
+    with pytest.raises(ProxyException) as exc:
+        await project_info(
+            project_id="project-999",
+            user_api_key_dict=UserAPIKeyAuth(
+                user_role=LitellmUserRoles.INTERNAL_USER,
+                user_id="company-admin",
+                api_key="sk-company-admin",
+            ),
+        )
+
+    assert exc.value.code == "403"
+
+
+@pytest.mark.asyncio
+async def test_list_projects_company_admin_sees_company_projects(monkeypatch):
+    project = _mock_project_row(company_id="company-123")
+    fake_project_table = mock.MagicMock()
+    fake_project_table.find_many = mock.AsyncMock(return_value=[project])
+    fake_user_table = mock.MagicMock()
+    fake_user_table.find_unique = mock.AsyncMock(
+        return_value=SimpleNamespace(user_id="company-admin", teams=[])
+    )
+    fake_membership_table = mock.MagicMock()
+    fake_membership_table.find_many = mock.AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id="company-123",
+                user_role=LitellmUserRoles.ORG_ADMIN.value,
+            )
+        ]
+    )
+    fake_team_table = mock.MagicMock()
+    fake_team_table.find_many = mock.AsyncMock(
+        return_value=[SimpleNamespace(team_id="team-123")]
+    )
+    fake_prisma = SimpleNamespace(
+        db=SimpleNamespace(
+            litellm_projecttable=fake_project_table,
+            litellm_usertable=fake_user_table,
+            litellm_organizationmembership=fake_membership_table,
+            litellm_teamtable=fake_team_table,
+        )
+    )
+    monkeypatch.setattr(litellm.proxy.proxy_server, "prisma_client", fake_prisma)
+
+    response = await list_projects(
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            user_id="company-admin",
+            api_key="sk-company-admin",
+        ),
+    )
+
+    assert len(response) == 1
+    assert response[0].project_id == "project-123"
+    assert response[0].company_id == "company-123"
+    fake_project_table.find_many.assert_awaited_once()
+    assert fake_project_table.find_many.call_args.kwargs["where"] == {
+        "team_id": {"in": ["team-123"]}
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_projects_accepts_company_filter_for_proxy_admin(monkeypatch):
+    project = _mock_project_row(company_id="company-123")
+    fake_project_table = mock.MagicMock()
+    fake_project_table.find_many = mock.AsyncMock(return_value=[project])
+    fake_team_table = mock.MagicMock()
+    fake_team_table.find_many = mock.AsyncMock(
+        return_value=[SimpleNamespace(team_id="team-123")]
+    )
+    fake_prisma = SimpleNamespace(
+        db=SimpleNamespace(
+            litellm_projecttable=fake_project_table,
+            litellm_teamtable=fake_team_table,
+        )
+    )
+    monkeypatch.setattr(litellm.proxy.proxy_server, "prisma_client", fake_prisma)
+
+    response = await list_projects(
+        company_id="company-123",
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+            user_id="admin",
+            api_key="sk-admin",
+        ),
+    )
+
+    assert response[0].company_id == "company-123"
+    fake_team_table.find_many.assert_awaited_once_with(
+        where={"organization_id": {"in": ["company-123"]}}
+    )
+    assert fake_project_table.find_many.call_args.kwargs["where"] == {
+        "team_id": {"in": ["team-123"]}
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_projects_rejects_conflicting_legacy_company_alias(monkeypatch):
+    fake_prisma = SimpleNamespace(db=SimpleNamespace())
+    monkeypatch.setattr(litellm.proxy.proxy_server, "prisma_client", fake_prisma)
+
+    with pytest.raises(ProxyException) as exc:
+        await list_projects(
+            company_id="company-123",
+            organization_id="company-999",
+            user_api_key_dict=UserAPIKeyAuth(
+                user_role=LitellmUserRoles.PROXY_ADMIN,
+                user_id="admin",
+                api_key="sk-admin",
+            ),
+        )
+
+    assert exc.value.code == "400"
+    assert "company_id/company_ids" in exc.value.message
+
+
+@pytest.mark.asyncio
+async def test_project_daily_activity_uses_project_daily_table_for_admin(monkeypatch):
+    project = SimpleNamespace(
+        project_id="project-123",
+        project_alias="Support",
+        team_id="team-123",
+        company_id=None,
+        litellm_team_table=SimpleNamespace(organization_id="company-123"),
+    )
+
+    fake_project_table = mock.MagicMock()
+    fake_project_table.find_many = mock.AsyncMock(return_value=[project])
+    fake_db = SimpleNamespace(litellm_projecttable=fake_project_table)
+    fake_prisma = SimpleNamespace(db=fake_db)
+    monkeypatch.setattr(litellm.proxy.proxy_server, "prisma_client", fake_prisma)
+
+    daily_activity = mock.AsyncMock(return_value={"results": [], "metadata": {}})
+    monkeypatch.setattr(
+        "litellm_enterprise.proxy.management_endpoints.project_endpoints.get_daily_activity",
+        daily_activity,
+    )
+
+    await get_project_daily_activity(
+        project_ids="project-123",
+        start_date="2026-05-01",
+        end_date="2026-05-17",
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+            user_id="admin",
+            api_key="sk-admin",
+        ),
+    )
+
+    daily_activity.assert_awaited_once()
+    call_kwargs = daily_activity.call_args.kwargs
+    assert call_kwargs["table_name"] == "litellm_dailyprojectspend"
+    assert call_kwargs["entity_id_field"] == "project_id"
+    assert call_kwargs["entity_id"] == ["project-123"]
+    assert call_kwargs["entity_metadata_field"] == {
+        "project-123": {
+            "project_alias": "Support",
+            "company_id": "company-123",
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_project_daily_activity_restricts_non_admin_to_user_projects(
+    monkeypatch,
+):
+    project = SimpleNamespace(
+        project_id="project-123",
+        project_alias="Support",
+        team_id="team-123",
+        company_id="company-123",
+        litellm_team_table=None,
+    )
+
+    fake_project_table = mock.MagicMock()
+    fake_project_table.find_many = mock.AsyncMock(return_value=[project])
+    fake_user_table = mock.MagicMock()
+    fake_user_table.find_unique = mock.AsyncMock(
+        return_value=SimpleNamespace(user_id="user-123", teams=["team-123"])
+    )
+    fake_key_table = mock.MagicMock()
+    fake_key_table.find_many = mock.AsyncMock(
+        return_value=[SimpleNamespace(token="hashed-key-123")]
+    )
+    fake_membership_table = mock.MagicMock()
+    fake_membership_table.find_many = mock.AsyncMock(return_value=[])
+    fake_db = SimpleNamespace(
+        litellm_projecttable=fake_project_table,
+        litellm_usertable=fake_user_table,
+        litellm_verificationtoken=fake_key_table,
+        litellm_organizationmembership=fake_membership_table,
+    )
+    fake_prisma = SimpleNamespace(db=fake_db)
+    monkeypatch.setattr(litellm.proxy.proxy_server, "prisma_client", fake_prisma)
+
+    daily_activity = mock.AsyncMock(return_value={"results": [], "metadata": {}})
+    monkeypatch.setattr(
+        "litellm_enterprise.proxy.management_endpoints.project_endpoints.get_daily_activity",
+        daily_activity,
+    )
+
+    await get_project_daily_activity(
+        start_date="2026-05-01",
+        end_date="2026-05-17",
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            user_id="user-123",
+            api_key="sk-user",
+        ),
+    )
+
+    call_kwargs = daily_activity.call_args.kwargs
+    assert call_kwargs["entity_id"] == ["project-123"]
+    assert call_kwargs["api_key"] == ["hashed-key-123"]
+
+
+@pytest.mark.asyncio
+async def test_project_daily_activity_company_admin_can_view_company_projects(
+    monkeypatch,
+):
+    project = SimpleNamespace(
+        project_id="project-123",
+        project_alias="Support",
+        team_id="team-123",
+        company_id=None,
+        litellm_team_table=SimpleNamespace(organization_id="company-123"),
+    )
+    company_team = SimpleNamespace(team_id="team-123", organization_id="company-123")
+
+    fake_project_table = mock.MagicMock()
+    fake_project_table.find_many = mock.AsyncMock(return_value=[project])
+    fake_user_table = mock.MagicMock()
+    fake_user_table.find_unique = mock.AsyncMock(
+        return_value=SimpleNamespace(user_id="company-admin", teams=[])
+    )
+    fake_team_table = mock.MagicMock()
+    fake_team_table.find_many = mock.AsyncMock(return_value=[company_team])
+    fake_membership_table = mock.MagicMock()
+    fake_membership_table.find_many = mock.AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id="company-123",
+                user_role=LitellmUserRoles.ORG_ADMIN.value,
+            )
+        ]
+    )
+    fake_db = SimpleNamespace(
+        litellm_projecttable=fake_project_table,
+        litellm_usertable=fake_user_table,
+        litellm_teamtable=fake_team_table,
+        litellm_organizationmembership=fake_membership_table,
+    )
+    fake_prisma = SimpleNamespace(db=fake_db)
+    monkeypatch.setattr(litellm.proxy.proxy_server, "prisma_client", fake_prisma)
+
+    daily_activity = mock.AsyncMock(return_value={"results": [], "metadata": {}})
+    monkeypatch.setattr(
+        "litellm_enterprise.proxy.management_endpoints.project_endpoints.get_daily_activity",
+        daily_activity,
+    )
+
+    await get_project_daily_activity(
+        company_id="company-123",
+        start_date="2026-05-01",
+        end_date="2026-05-17",
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            user_id="company-admin",
+            api_key="sk-company-admin",
+        ),
+    )
+
+    call_kwargs = daily_activity.call_args.kwargs
+    assert call_kwargs["entity_id"] == ["project-123"]
+    assert call_kwargs["api_key"] is None
+    assert call_kwargs["entity_metadata_field"] == {
+        "project-123": {
+            "project_alias": "Support",
+            "company_id": "company-123",
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_project_daily_activity_company_admin_can_view_project_in_company(
+    monkeypatch,
+):
+    project = SimpleNamespace(
+        project_id="project-123",
+        project_alias="Support",
+        team_id="team-123",
+        company_id="company-123",
+        litellm_team_table=None,
+    )
+
+    fake_project_table = mock.MagicMock()
+    fake_project_table.find_many = mock.AsyncMock(return_value=[project])
+    fake_user_table = mock.MagicMock()
+    fake_user_table.find_unique = mock.AsyncMock(
+        return_value=SimpleNamespace(user_id="company-admin", teams=[])
+    )
+    fake_membership_table = mock.MagicMock()
+    fake_membership_table.find_many = mock.AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id="company-123",
+                user_role=LitellmUserRoles.ORG_ADMIN.value,
+            )
+        ]
+    )
+    fake_db = SimpleNamespace(
+        litellm_projecttable=fake_project_table,
+        litellm_usertable=fake_user_table,
+        litellm_organizationmembership=fake_membership_table,
+    )
+    fake_prisma = SimpleNamespace(db=fake_db)
+    monkeypatch.setattr(litellm.proxy.proxy_server, "prisma_client", fake_prisma)
+
+    daily_activity = mock.AsyncMock(return_value={"results": [], "metadata": {}})
+    monkeypatch.setattr(
+        "litellm_enterprise.proxy.management_endpoints.project_endpoints.get_daily_activity",
+        daily_activity,
+    )
+
+    await get_project_daily_activity(
+        project_id="project-123",
+        start_date="2026-05-01",
+        end_date="2026-05-17",
+        user_api_key_dict=UserAPIKeyAuth(
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            user_id="company-admin",
+            api_key="sk-company-admin",
+        ),
+    )
+
+    call_kwargs = daily_activity.call_args.kwargs
+    assert call_kwargs["entity_id"] == ["project-123"]
+    assert call_kwargs["api_key"] is None
+
+
+@pytest.mark.asyncio
+async def test_project_daily_activity_company_admin_rejects_project_outside_company(
+    monkeypatch,
+):
+    project = SimpleNamespace(
+        project_id="project-999",
+        project_alias="Other",
+        team_id="team-999",
+        company_id="company-999",
+        litellm_team_table=None,
+    )
+
+    fake_project_table = mock.MagicMock()
+    fake_project_table.find_many = mock.AsyncMock(return_value=[project])
+    fake_user_table = mock.MagicMock()
+    fake_user_table.find_unique = mock.AsyncMock(
+        return_value=SimpleNamespace(user_id="company-admin", teams=[])
+    )
+    fake_membership_table = mock.MagicMock()
+    fake_membership_table.find_many = mock.AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id="company-123",
+                user_role=LitellmUserRoles.ORG_ADMIN.value,
+            )
+        ]
+    )
+    fake_db = SimpleNamespace(
+        litellm_projecttable=fake_project_table,
+        litellm_usertable=fake_user_table,
+        litellm_organizationmembership=fake_membership_table,
+    )
+    fake_prisma = SimpleNamespace(db=fake_db)
+    monkeypatch.setattr(litellm.proxy.proxy_server, "prisma_client", fake_prisma)
+
+    with pytest.raises(HTTPException) as exc:
+        await get_project_daily_activity(
+            project_id="project-999",
+            start_date="2026-05-01",
+            end_date="2026-05-17",
+            user_api_key_dict=UserAPIKeyAuth(
+                user_role=LitellmUserRoles.INTERNAL_USER,
+                user_id="company-admin",
+                api_key="sk-company-admin",
+            ),
+        )
+
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_project_daily_activity_rejects_project_outside_user_teams(monkeypatch):
+    project = SimpleNamespace(
+        project_id="project-123",
+        project_alias="Support",
+        team_id="team-other",
+        company_id="company-123",
+        litellm_team_table=None,
+    )
+
+    fake_project_table = mock.MagicMock()
+    fake_project_table.find_many = mock.AsyncMock(return_value=[project])
+    fake_user_table = mock.MagicMock()
+    fake_user_table.find_unique = mock.AsyncMock(
+        return_value=SimpleNamespace(user_id="user-123", teams=["team-123"])
+    )
+    fake_membership_table = mock.MagicMock()
+    fake_membership_table.find_many = mock.AsyncMock(return_value=[])
+    fake_db = SimpleNamespace(
+        litellm_projecttable=fake_project_table,
+        litellm_usertable=fake_user_table,
+        litellm_organizationmembership=fake_membership_table,
+    )
+    fake_prisma = SimpleNamespace(db=fake_db)
+    monkeypatch.setattr(litellm.proxy.proxy_server, "prisma_client", fake_prisma)
+
+    with pytest.raises(HTTPException) as exc:
+        await get_project_daily_activity(
+            project_ids="project-123",
+            start_date="2026-05-01",
+            end_date="2026-05-17",
+            user_api_key_dict=UserAPIKeyAuth(
+                user_role=LitellmUserRoles.INTERNAL_USER,
+                user_id="user-123",
+                api_key="sk-user",
+            ),
+        )
+
+    assert exc.value.status_code == 403
+
 
 proxy_logging_obj = ProxyLogging(user_api_key_cache=DualCache())
 
@@ -801,7 +1449,9 @@ async def test_list_projects_returns_timestamps():
     from datetime import datetime, timezone
     from unittest.mock import AsyncMock, MagicMock, patch
 
-    from litellm_enterprise.proxy.management_endpoints.project_endpoints import list_projects
+    from litellm_enterprise.proxy.management_endpoints.project_endpoints import (
+        list_projects,
+    )
     from litellm.proxy._types import LiteLLM_ProjectTable
 
     now = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)

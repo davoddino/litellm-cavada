@@ -108,6 +108,13 @@ const getPredefinedTags = (data: any[] | null) => {
   return uniqueTags;
 };
 
+const stripLegacyCreateKeyTenantAliases = (formValues: Record<string, any>) => {
+  delete formValues.org_id;
+  delete formValues.organization_id;
+  delete formValues.organization_ids;
+  delete formValues.organizations;
+};
+
 export const fetchTeamModels = async (
   userID: string,
   userRole: string,
@@ -154,7 +161,6 @@ export const fetchUserModels = async (
   }
 };
 
-
 /**
  * ─────────────────────────────────────────────────────────────────────────
  * @deprecated
@@ -166,14 +172,12 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
   const { accessToken, userId: userID, userRole, premiumUser } = useAuthorized();
   const canEditGuardrails = premiumUser || (userRole != null && rolesWithWriteAccess.includes(userRole));
   const { data: organizations, isLoading: isOrganizationsLoading } = useOrganizations();
-  const { data: projects, isLoading: isProjectsLoading } = useProjects();
+  const { data: projects, isLoading: isProjectsLoading } = useProjects({ includeNonAdmin: true });
   const { data: uiSettingsData } = useUISettings();
   const { data: tagsData } = useTags();
   const enableProjectsUI = Boolean(uiSettingsData?.values?.enable_projects_ui);
   const disableCustomApiKeys = Boolean(uiSettingsData?.values?.disable_custom_api_keys);
-  const tagOptions = tagsData
-    ? Object.values(tagsData).map((tag) => ({ value: tag.name, label: tag.name }))
-    : [];
+  const tagOptions = tagsData ? Object.values(tagsData).map((tag) => ({ value: tag.name, label: tag.name })) : [];
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
   const [isModalVisible, setIsModalVisible] = useState(false);
@@ -207,6 +211,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
   const [routerSettingsKey, setRouterSettingsKey] = useState<number>(0);
   const [agentsList, setAgentsList] = useState<{ agent_id: string; agent_name: string }[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+
   const handleOk = () => {
     setIsModalVisible(false);
     form.resetFields();
@@ -260,7 +265,13 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
   useEffect(() => {
     const fetchGuardrails = async () => {
       try {
-        const response = await getGuardrailsList(accessToken);
+        const guardrailScope =
+          selectedOrganizationId || selectedProjectId
+            ? { companyId: selectedOrganizationId, projectId: selectedProjectId }
+            : undefined;
+        const response = guardrailScope
+          ? await getGuardrailsList(accessToken, guardrailScope)
+          : await getGuardrailsList(accessToken);
         const guardrailNames = response.guardrails.map((g: { guardrail_name: string }) => g.guardrail_name);
         setGuardrailsList(guardrailNames);
       } catch (error) {
@@ -268,6 +279,10 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
       }
     };
 
+    fetchGuardrails();
+  }, [accessToken, selectedOrganizationId, selectedProjectId]);
+
+  useEffect(() => {
     const fetchPolicies = async () => {
       try {
         const response = await getPoliciesList(accessToken);
@@ -287,7 +302,6 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
       }
     };
 
-    fetchGuardrails();
     fetchPolicies();
     fetchPrompts();
   }, [accessToken]);
@@ -525,9 +539,25 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
       }
 
       // Add multi-window budget limits (filter out incomplete entries)
-      const validWindows = budgetLimits.filter((w) => w.budget_duration && w.max_budget !== null && w.max_budget !== undefined);
+      const validWindows = budgetLimits.filter(
+        (w) => w.budget_duration && w.max_budget !== null && w.max_budget !== undefined,
+      );
       if (validWindows.length > 0) {
         formValues.budget_limits = validWindows;
+      }
+
+      stripLegacyCreateKeyTenantAliases(formValues);
+      if (selectedProjectId) {
+        formValues.project_id = selectedProjectId;
+        const project = projects?.find((candidateProject) => candidateProject.project_id === selectedProjectId);
+        const projectTeam = teams?.find((candidateTeam) => candidateTeam.team_id === project?.team_id) || null;
+        const projectCompanyId = project?.company_id ?? projectTeam?.organization_id;
+        if (projectCompanyId) {
+          formValues.company_id = projectCompanyId;
+        }
+        if (project?.team_id) {
+          formValues.team_id = project.team_id;
+        }
       }
 
       let response;
@@ -613,11 +643,17 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
     const project = projects?.find((p) => p.project_id === selectedProjectId);
     if (!project?.team_id) return;
     // If team is already set correctly, skip
-    if (selectedCreateKeyTeam?.team_id === project.team_id) return;
-    const projectTeam = teams.find((t) => t.team_id === project.team_id) || null;
+    const projectTeam = teams?.find((t) => t.team_id === project.team_id) || null;
     if (projectTeam) {
-      setSelectedCreateKeyTeam(projectTeam);
+      if (selectedCreateKeyTeam?.team_id !== project.team_id) {
+        setSelectedCreateKeyTeam(projectTeam);
+      }
       form.setFieldValue("team_id", projectTeam.team_id);
+      const projectCompanyId = project.company_id ?? projectTeam.organization_id;
+      if (projectCompanyId) {
+        setSelectedOrganizationId(projectCompanyId);
+        form.setFieldValue("company_id", projectCompanyId);
+      }
     }
   }, [teams, selectedProjectId, projects]);
 
@@ -778,19 +814,18 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
             <Form.Item
               label={
                 <span>
-                  Organization{" "}
-                  <Tooltip title="The organization this key belongs to. Selecting an organization filters the available teams.">
+                  Company{" "}
+                  <Tooltip title="The company this key belongs to. Selecting a company filters the available teams.">
                     <InfoCircleOutlined style={{ marginLeft: "4px" }} />
                   </Tooltip>
                 </span>
               }
-              name="organization_id"
+              name="company_id"
               className="mt-4"
             >
               <OrganizationDropdown
                 organizations={organizations}
                 loading={isOrganizationsLoading}
-                disabled={userRole !== "Admin"}
                 onChange={(orgId) => {
                   setSelectedOrganizationId(orgId || null);
                   // Clear team and project when org changes
@@ -798,6 +833,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                   setSelectedProjectId(null);
                   form.setFieldValue("team_id", undefined);
                   form.setFieldValue("project_id", undefined);
+                  form.setFieldValue("allowed_vector_store_ids", []);
                 }}
               />
             </Form.Item>
@@ -828,13 +864,14 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                   setSelectedCreateKeyTeam(team);
                   setSelectedProjectId(null);
                   form.setFieldValue("project_id", undefined);
+                  form.setFieldValue("allowed_vector_store_ids", []);
                   // Auto-populate org from team for non-admin users
                   if (team?.organization_id) {
                     setSelectedOrganizationId(team.organization_id);
-                    form.setFieldValue("organization_id", team.organization_id);
+                    form.setFieldValue("company_id", team.organization_id);
                   } else if (!team) {
                     setSelectedOrganizationId(null);
-                    form.setFieldValue("organization_id", undefined);
+                    form.setFieldValue("company_id", undefined);
                   }
                 }}
               />
@@ -855,15 +892,29 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                 <ProjectDropdown
                   projects={projects}
                   teamId={selectedCreateKeyTeam?.team_id}
+                  companyId={selectedOrganizationId}
                   loading={isProjectsLoading || !teams}
                   onChange={(projectId) => {
                     if (!projectId) {
                       setSelectedProjectId(null);
                       setSelectedCreateKeyTeam(null);
                       form.setFieldValue("team_id", undefined);
+                      form.setFieldValue("allowed_vector_store_ids", []);
                       return;
                     }
                     setSelectedProjectId(projectId);
+                    const project = projects?.find((p) => p.project_id === projectId);
+                    const projectTeam = teams?.find((t) => t.team_id === project?.team_id) || null;
+                    if (projectTeam) {
+                      setSelectedCreateKeyTeam(projectTeam);
+                      form.setFieldValue("team_id", projectTeam.team_id);
+                    }
+                    const projectCompanyId = project?.company_id ?? projectTeam?.organization_id;
+                    if (projectCompanyId) {
+                      setSelectedOrganizationId(projectCompanyId);
+                      form.setFieldValue("company_id", projectCompanyId);
+                    }
+                    form.setFieldValue("allowed_vector_store_ids", []);
                   }}
                 />
               </Form.Item>
@@ -1068,10 +1119,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                       </span>
                     }
                   >
-                    <BudgetWindowsEditor
-                      value={budgetLimits}
-                      onChange={setBudgetLimits}
-                    />
+                    <BudgetWindowsEditor value={budgetLimits} onChange={setBudgetLimits} />
                   </Form.Item>
                   <Form.Item
                     className="mt-4"
@@ -1338,6 +1386,8 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                       value={form.getFieldValue("allowed_vector_store_ids")}
                       accessToken={accessToken}
                       placeholder="Select vector stores (optional)"
+                      companyId={selectedOrganizationId}
+                      projectId={selectedProjectId}
                     />
                   </Form.Item>
                   <Form.Item
@@ -1602,7 +1652,9 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
                         excludedFields={[
                           "key_alias",
                           "team_id",
+                          "company_id",
                           "organization_id",
+                          "project_id",
                           "models",
                           "duration",
                           "metadata",

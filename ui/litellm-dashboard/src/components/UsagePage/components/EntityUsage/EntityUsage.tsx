@@ -31,8 +31,9 @@ import { UsageExportHeader } from "../../../EntityUsageExport";
 import type { EntityType } from "../../../EntityUsageExport/types";
 import {
   agentDailyActivityCall,
+  companyDailyActivityCall,
   customerDailyActivityCall,
-  organizationDailyActivityCall,
+  projectDailyActivityCall,
   tagDailyActivityCall,
   teamDailyActivityCall,
   userDailyActivityCall,
@@ -84,6 +85,7 @@ interface EntityUsageProps {
   accessToken: string | null;
   entityType: EntityType;
   entityId?: string | null;
+  companyIds?: string[] | null;
   userID: string | null;
   userRole: string | null;
   entityList: EntityList[] | null;
@@ -94,13 +96,22 @@ interface EntityUsageProps {
 const ENTITY_FETCH_FNS: Record<EntityType, (...args: any[]) => Promise<any>> = {
   tag: tagDailyActivityCall,
   team: teamDailyActivityCall,
-  organization: organizationDailyActivityCall,
+  company: companyDailyActivityCall,
+  organization: companyDailyActivityCall,
+  project: projectDailyActivityCall,
   customer: customerDailyActivityCall,
   agent: agentDailyActivityCall,
   user: userDailyActivityCall,
 };
 
-const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, entityId, entityList, dateValue }) => {
+const EntityUsage: React.FC<EntityUsageProps> = ({
+  accessToken,
+  entityType,
+  entityId,
+  companyIds,
+  entityList,
+  dateValue,
+}) => {
   const { teams } = useTeams();
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [topKeysLimit, setTopKeysLimit] = useState<number>(5);
@@ -126,7 +137,7 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
     cancel,
   } = usePaginatedDailyActivity({
     fetchFn,
-    args: [accessToken, startTime, endTime, entityFilterArg],
+    args: [accessToken, startTime, endTime, entityFilterArg, companyIds ?? null],
     enabled,
   });
 
@@ -216,12 +227,10 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
   };
 
   const getTopAPIKeys = () => {
-    console.log("debugTags", { spendData });
     const keySpend: { [key: string]: KeyMetricWithMetadata } = {};
     spendData.results.forEach((day) => {
       const { breakdown } = day;
       const { entities } = breakdown;
-      console.log("debugTags", { entities });
       const tagDictionary = Object.keys(entities).reduce((acc: { [key: string]: TagUsage[] }, entity) => {
         const { api_key_breakdown } = entities[entity];
         Object.keys(api_key_breakdown).forEach((key) => {
@@ -234,7 +243,6 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
         });
         return acc;
       }, {});
-      console.log("debugTags", { tagDictionary });
       Object.entries(day.breakdown.api_keys || {}).forEach(([key, metrics]) => {
         if (!keySpend[key]) {
           keySpend[key] = {
@@ -255,7 +263,6 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
               tags: tagDictionary[key] || [],
             },
           };
-          console.log("debugTags", { keySpend });
         }
         keySpend[key].metrics.spend += metrics.metrics.spend;
         keySpend[key].metrics.prompt_tokens += metrics.metrics.prompt_tokens;
@@ -328,6 +335,15 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
     if (metadata?.team_alias) {
       return metadata.team_alias;
     }
+    if (metadata?.project_alias) {
+      return metadata.project_alias;
+    }
+    if (metadata?.organization_alias) {
+      return metadata.organization_alias;
+    }
+    if (metadata?.company_id) {
+      return metadata.company_id;
+    }
     return entity;
   };
 
@@ -386,14 +402,19 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
   };
 
   const getFilterLabel = (entityType: string) => {
-    return `Filter by ${entityType}`;
+    return `Filter by ${getEntityDisplayLabel(entityType).toLowerCase()}`;
   };
 
   const getFilterPlaceholder = (entityType: string) => {
-    return `Select ${entityType} to filter...`;
+    return `Select ${getEntityDisplayLabel(entityType).toLowerCase()} to filter...`;
   };
 
-  const capitalizedEntityLabel = entityType.charAt(0).toUpperCase() + entityType.slice(1);
+  const getEntityDisplayLabel = (entityType: string) => {
+    if (entityType === "organization") return "Company";
+    return entityType.charAt(0).toUpperCase() + entityType.slice(1);
+  };
+
+  const capitalizedEntityLabel = getEntityDisplayLabel(entityType);
 
   return (
     <div style={{ width: "100%" }} className="relative">
@@ -472,10 +493,7 @@ const EntityUsage: React.FC<EntityUsageProps> = ({ accessToken, entityType, enti
       {entityType === "team" && (
         <div className="mb-4">
           <Text className="mb-2">Filter by team</Text>
-          <TeamMultiSelect
-            value={selectedTags}
-            onChange={setSelectedTags}
-          />
+          <TeamMultiSelect value={selectedTags} onChange={setSelectedTags} />
         </div>
       )}
       <UsageExportHeader

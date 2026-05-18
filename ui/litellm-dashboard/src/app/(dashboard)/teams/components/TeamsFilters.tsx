@@ -1,10 +1,13 @@
 import { Select, SelectItem } from "@tremor/react";
 import React from "react";
 import { Organization } from "@/components/networking";
+import { ProjectResponse } from "@/app/(dashboard)/hooks/projects/useProjects";
+import { getCompanyDisplayId, getCompanyDisplayName } from "@/components/common_components/OrganizationDropdown";
 
 interface TeamsFiltersProps {
   filters: FilterState;
   organizations: Organization[] | null;
+  projects: ProjectResponse[];
   showFilters: boolean;
   onToggleFilters: (toggle: boolean) => void;
   onChange: <K extends keyof FilterState>(key: K, value: FilterState[K]) => void;
@@ -15,6 +18,7 @@ type FilterState = {
   team_id: string;
   team_alias: string;
   organization_id: string;
+  project_id: string;
   sort_by: string;
   sort_order: "asc" | "desc";
 };
@@ -22,11 +26,19 @@ type FilterState = {
 const TeamsFilters = ({
   filters,
   organizations,
+  projects,
   showFilters,
   onToggleFilters,
   onChange,
   onReset,
 }: TeamsFiltersProps) => {
+  const filteredProjects = React.useMemo(() => {
+    if (!filters.organization_id) {
+      return projects;
+    }
+    return projects.filter((project) => project.company_id === filters.organization_id);
+  }, [filters.organization_id, projects]);
+
   return (
     <div className="flex flex-col space-y-4">
       {/* Search and Filter Controls */}
@@ -69,7 +81,7 @@ const TeamsFilters = ({
             />
           </svg>
           Filters
-          {(filters.team_id || filters.team_alias || filters.organization_id) && (
+          {(filters.team_id || filters.team_alias || filters.organization_id || filters.project_id) && (
             <span data-testid="active-filter-indicator" className="w-2 h-2 rounded-full bg-blue-500"></span>
           )}
         </button>
@@ -118,16 +130,37 @@ const TeamsFilters = ({
             </svg>
           </div>
 
-          {/* Organization Dropdown */}
+          {/* Company Dropdown */}
           <div className="w-64">
             <Select
               value={filters.organization_id || ""}
-              onValueChange={(value) => onChange("organization_id", value)}
-              placeholder="Select Organization"
+              onValueChange={(value) => {
+                onChange("organization_id", value);
+                onChange("project_id", "");
+              }}
+              placeholder="Select Company"
             >
-              {organizations?.map((org) => (
-                <SelectItem key={org.organization_id} value={org.organization_id || ""}>
-                  {org.organization_alias || org.organization_id}
+              {organizations?.map((org) => {
+                const companyId = getCompanyDisplayId(org);
+                return (
+                  <SelectItem key={companyId} value={companyId}>
+                    {getCompanyDisplayName(org)}
+                  </SelectItem>
+                );
+              })}
+            </Select>
+          </div>
+
+          {/* Project Dropdown */}
+          <div className="w-64">
+            <Select
+              value={filters.project_id || ""}
+              onValueChange={(value) => onChange("project_id", value)}
+              placeholder="Select Project"
+            >
+              {filteredProjects?.map((project) => (
+                <SelectItem key={project.project_id} value={project.project_id}>
+                  {project.project_alias || project.project_id}
                 </SelectItem>
               ))}
             </Select>

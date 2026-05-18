@@ -21,7 +21,7 @@ vi.mock("@/app/(dashboard)/hooks/useAuthorized", () => ({
 const mockOrganizations: Organization[] = [
   {
     organization_id: "org-1",
-    organization_alias: "Test Organization 1",
+    organization_alias: "Test Company 1",
     budget_id: "budget-1",
     metadata: {},
     models: ["gpt-3.5-turbo", "gpt-4"],
@@ -41,7 +41,7 @@ const mockOrganizations: Organization[] = [
   },
   {
     organization_id: "org-2",
-    organization_alias: "Test Organization 2",
+    organization_alias: "Test Company 2",
     budget_id: "budget-2",
     metadata: {},
     models: ["claude-3"],

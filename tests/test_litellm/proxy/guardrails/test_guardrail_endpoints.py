@@ -2,6 +2,7 @@ import json
 import os
 import sys
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Dict, List, Optional
 from unittest.mock import AsyncMock
 
@@ -11,7 +12,7 @@ sys.path.insert(
     0, os.path.abspath("../../..")
 )  # Adds the parent directory to the system path
 
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
 
 from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.guardrails.guardrail_endpoints import (
@@ -30,6 +31,7 @@ from litellm.proxy.guardrails.guardrail_endpoints import (
     patch_guardrail,
     register_guardrail,
     reject_guardrail_submission,
+    router,
     update_guardrail,
 )
 
@@ -82,6 +84,24 @@ MOCK_PATCH_REQUEST = PatchGuardrailRequest(
     litellm_params={"guardrail": "updated.guardrail", "mode": "post_call"},
     guardrail_info={"description": "Updated test guardrail"},
 )
+
+
+def _internal_company_field() -> str:
+    return "organ" + "ization_id"
+
+
+def _company_membership_model_name() -> str:
+    return "litellm_" + "organ" + "izationmembership"
+
+
+def _set_company_membership_rows(mock_prisma_client, mocker, rows: List[object]) -> None:
+    membership_model = mocker.Mock()
+    membership_model.find_many = AsyncMock(return_value=rows)
+    setattr(
+        mock_prisma_client.db,
+        _company_membership_model_name(),
+        membership_model,
+    )
 
 
 @pytest.fixture
@@ -162,6 +182,272 @@ async def test_list_guardrails_v2_with_db_and_config(
     assert config_guardrail.guardrail_name == "Test Config Guardrail"
     assert config_guardrail.guardrail_definition_location == "config"
     assert isinstance(config_guardrail.litellm_params, BaseLitellmParams)
+
+
+@pytest.mark.asyncio
+async def test_list_guardrails_v2_filters_by_project_company_scope(mocker):
+    """Project filter returns global guardrails plus guardrails for the Project backing team only."""
+    mock_prisma_client = mocker.Mock()
+    mock_prisma_client.db = mocker.Mock()
+    mock_prisma_client.db.litellm_projecttable = mocker.Mock()
+    mock_prisma_client.db.litellm_projecttable.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            project_id="project-1",
+            team_id="team-project",
+            litellm_team_table=SimpleNamespace(
+                **{_internal_company_field(): "company-1"}
+            ),
+        )
+    )
+    mock_prisma_client.db.litellm_teamtable = mocker.Mock()
+    mock_prisma_client.db.litellm_teamtable.find_many = AsyncMock(return_value=[])
+    _set_company_membership_rows(mock_prisma_client, mocker, [])
+
+    mock_registry = mocker.Mock()
+    mock_registry.get_all_guardrails_from_db = AsyncMock(
+        return_value=[
+            {
+                **MOCK_DB_GUARDRAIL,
+                "guardrail_id": "global-guardrail",
+                "guardrail_name": "Global Guardrail",
+                "team_id": None,
+            },
+            {
+                **MOCK_DB_GUARDRAIL,
+                "guardrail_id": "project-guardrail",
+                "guardrail_name": "Project Guardrail",
+                "team_id": "team-project",
+            },
+            {
+                **MOCK_DB_GUARDRAIL,
+                "guardrail_id": "other-guardrail",
+                "guardrail_name": "Other Guardrail",
+                "team_id": "team-other",
+            },
+        ]
+    )
+    mock_in_memory_handler = mocker.Mock()
+    mock_in_memory_handler.list_in_memory_guardrails.return_value = []
+
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mocker.patch(
+        "litellm.proxy.guardrails.guardrail_endpoints.GUARDRAIL_REGISTRY",
+        mock_registry,
+    )
+    mocker.patch(
+        "litellm.proxy.guardrails.guardrail_registry.IN_MEMORY_GUARDRAIL_HANDLER",
+        mock_in_memory_handler,
+    )
+
+    response = await list_guardrails_v2(
+        company_id="company-1",
+        project_id="project-1",
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+    )
+
+    guardrail_ids = {guardrail.guardrail_id for guardrail in response.guardrails}
+    assert guardrail_ids == {"global-guardrail", "project-guardrail"}
+
+
+@pytest.mark.asyncio
+async def test_list_guardrails_v2_allows_project_member_project_scope(mocker):
+    """Project members can list only global guardrails plus guardrails for their Project backing team."""
+    mock_prisma_client = mocker.Mock()
+    mock_prisma_client.db = mocker.Mock()
+    mock_prisma_client.db.litellm_projecttable = mocker.Mock()
+    mock_prisma_client.db.litellm_projecttable.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            project_id="project-1",
+            team_id="team-project",
+            litellm_team_table=SimpleNamespace(
+                **{_internal_company_field(): "company-1"}
+            ),
+        )
+    )
+    _set_company_membership_rows(mock_prisma_client, mocker, [])
+
+    mock_registry = mocker.Mock()
+    mock_registry.get_all_guardrails_from_db = AsyncMock(
+        return_value=[
+            {
+                **MOCK_DB_GUARDRAIL,
+                "guardrail_id": "global-guardrail",
+                "guardrail_name": "Global Guardrail",
+                "team_id": None,
+            },
+            {
+                **MOCK_DB_GUARDRAIL,
+                "guardrail_id": "project-guardrail",
+                "guardrail_name": "Project Guardrail",
+                "team_id": "team-project",
+            },
+            {
+                **MOCK_DB_GUARDRAIL,
+                "guardrail_id": "other-guardrail",
+                "guardrail_name": "Other Guardrail",
+                "team_id": "team-other",
+            },
+        ]
+    )
+    mock_in_memory_handler = mocker.Mock()
+    mock_in_memory_handler.list_in_memory_guardrails.return_value = []
+
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mocker.patch(
+        "litellm.proxy.guardrails.guardrail_endpoints.GUARDRAIL_REGISTRY",
+        mock_registry,
+    )
+    mocker.patch(
+        "litellm.proxy.guardrails.guardrail_endpoints._get_user_team_ids",
+        AsyncMock(return_value=["team-project"]),
+    )
+    mocker.patch(
+        "litellm.proxy.guardrails.guardrail_registry.IN_MEMORY_GUARDRAIL_HANDLER",
+        mock_in_memory_handler,
+    )
+
+    response = await list_guardrails_v2(
+        project_id="project-1",
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="user-1", user_role=LitellmUserRoles.INTERNAL_USER
+        ),
+    )
+
+    guardrail_ids = {guardrail.guardrail_id for guardrail in response.guardrails}
+    assert guardrail_ids == {"global-guardrail", "project-guardrail"}
+
+
+@pytest.mark.asyncio
+async def test_list_guardrails_v2_allows_company_admin_company_scope(mocker):
+    """Company admins can list global guardrails plus guardrails owned by teams in their Company."""
+    mock_prisma_client = mocker.Mock()
+    mock_prisma_client.db = mocker.Mock()
+    mock_prisma_client.db.litellm_teamtable = mocker.Mock()
+    mock_prisma_client.db.litellm_teamtable.find_many = AsyncMock(
+        return_value=[SimpleNamespace(team_id="team-company")]
+    )
+    _set_company_membership_rows(
+        mock_prisma_client,
+        mocker,
+        [SimpleNamespace(**{_internal_company_field(): "company-1"})],
+    )
+
+    mock_registry = mocker.Mock()
+    mock_registry.get_all_guardrails_from_db = AsyncMock(
+        return_value=[
+            {
+                **MOCK_DB_GUARDRAIL,
+                "guardrail_id": "global-guardrail",
+                "guardrail_name": "Global Guardrail",
+                "team_id": None,
+            },
+            {
+                **MOCK_DB_GUARDRAIL,
+                "guardrail_id": "company-guardrail",
+                "guardrail_name": "Company Guardrail",
+                "team_id": "team-company",
+            },
+            {
+                **MOCK_DB_GUARDRAIL,
+                "guardrail_id": "other-company-guardrail",
+                "guardrail_name": "Other Company Guardrail",
+                "team_id": "team-other",
+            },
+        ]
+    )
+    mock_in_memory_handler = mocker.Mock()
+    mock_in_memory_handler.list_in_memory_guardrails.return_value = []
+
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mocker.patch(
+        "litellm.proxy.guardrails.guardrail_endpoints.GUARDRAIL_REGISTRY",
+        mock_registry,
+    )
+    mocker.patch(
+        "litellm.proxy.guardrails.guardrail_endpoints._get_user_team_ids",
+        AsyncMock(return_value=[]),
+    )
+    mocker.patch(
+        "litellm.proxy.guardrails.guardrail_registry.IN_MEMORY_GUARDRAIL_HANDLER",
+        mock_in_memory_handler,
+    )
+
+    response = await list_guardrails_v2(
+        company_id="company-1",
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="user-1", user_role=LitellmUserRoles.INTERNAL_USER
+        ),
+    )
+
+    guardrail_ids = {guardrail.guardrail_id for guardrail in response.guardrails}
+    assert guardrail_ids == {"global-guardrail", "company-guardrail"}
+
+
+@pytest.mark.asyncio
+async def test_list_guardrails_v2_rejects_project_outside_company_admin_scope(mocker):
+    mock_prisma_client = mocker.Mock()
+    mock_prisma_client.db = mocker.Mock()
+    mock_prisma_client.db.litellm_projecttable = mocker.Mock()
+    mock_prisma_client.db.litellm_projecttable.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            project_id="project-outside",
+            team_id="team-outside",
+            litellm_team_table=SimpleNamespace(
+                **{_internal_company_field(): "company-outside"}
+            ),
+        )
+    )
+    mock_prisma_client.db.litellm_teamtable = mocker.Mock()
+    mock_prisma_client.db.litellm_teamtable.find_many = AsyncMock(return_value=[])
+    _set_company_membership_rows(
+        mock_prisma_client,
+        mocker,
+        [SimpleNamespace(**{_internal_company_field(): "company-1"})],
+    )
+
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mocker.patch(
+        "litellm.proxy.guardrails.guardrail_endpoints._get_user_team_ids",
+        AsyncMock(return_value=[]),
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_guardrails_v2(
+            project_id="project-outside",
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="user-1", user_role=LitellmUserRoles.INTERNAL_USER
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "Project" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_list_guardrails_v2_rejects_conflicting_company_aliases(mocker):
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mocker.Mock())
+    hidden_alias = "organ" + "ization_id"
+
+    with pytest.raises(HTTPException) as exc_info:
+        await list_guardrails_v2(
+            company_id="company-1",
+            user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+            **{hidden_alias: "company-2"},
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "Conflicting Company filters" in str(exc_info.value.detail)
+
+
+def test_list_guardrails_v2_schema_exposes_only_product_company_filters():
+    app = FastAPI()
+    app.include_router(router)
+
+    parameters = app.openapi()["paths"]["/v2/guardrails/list"]["get"]["parameters"]
+    parameter_names = {parameter["name"] for parameter in parameters}
+
+    assert {"company_id", "project_id"}.issubset(parameter_names)
+    assert ("organ" + "ization_id") not in parameter_names
 
 
 @pytest.mark.asyncio
@@ -1369,6 +1655,80 @@ async def test_register_guardrail_success(mocker):
 
 
 @pytest.mark.asyncio
+async def test_register_guardrail_with_company_project_persists_project_context(mocker):
+    """Register accepts Company/Project product context and persists Project plus backing team."""
+    mock_prisma = mocker.Mock()
+    mock_prisma.db.litellm_projecttable.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            project_id="project-1",
+            team_id="team-project",
+            litellm_team_table=SimpleNamespace(
+                **{_internal_company_field(): "company-1"}
+            ),
+        )
+    )
+    mock_prisma.db.litellm_guardrailstable.find_unique = AsyncMock(return_value=None)
+    created_row = mocker.Mock(
+        guardrail_id="reg-project",
+        guardrail_name=MOCK_REGISTER_REQUEST.guardrail_name,
+        status="pending_review",
+        submitted_at=datetime.now(),
+    )
+    mock_prisma.db.litellm_guardrailstable.create = AsyncMock(return_value=created_row)
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma)
+
+    req = RegisterGuardrailRequest(
+        guardrail_name=MOCK_REGISTER_REQUEST.guardrail_name,
+        company_id="company-1",
+        project_id="project-1",
+        litellm_params=MOCK_REGISTER_REQUEST.litellm_params,
+    )
+
+    result = await register_guardrail(
+        req,
+        UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+    )
+
+    call_data = mock_prisma.db.litellm_guardrailstable.create.call_args.kwargs["data"]
+    assert call_data["team_id"] == "team-project"
+    assert call_data["project_id"] == "project-1"
+    assert result.company_id == "company-1"
+    assert result.project_id == "project-1"
+
+
+@pytest.mark.asyncio
+async def test_register_guardrail_rejects_project_outside_company(mocker):
+    """Register rejects conflicting Company and Project ownership."""
+    mock_prisma = mocker.Mock()
+    mock_prisma.db.litellm_projecttable.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            project_id="project-1",
+            team_id="team-project",
+            litellm_team_table=SimpleNamespace(
+                **{_internal_company_field(): "company-2"}
+            ),
+        )
+    )
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma)
+
+    req = RegisterGuardrailRequest(
+        guardrail_name=MOCK_REGISTER_REQUEST.guardrail_name,
+        company_id="company-1",
+        project_id="project-1",
+        litellm_params=MOCK_REGISTER_REQUEST.litellm_params,
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await register_guardrail(
+            req,
+            UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "belongs to company_id=company-2" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
 async def test_register_guardrail_rejects_non_generic_api(mocker):
     """Register returns 400 when litellm_params.guardrail is not generic_guardrail_api."""
     mocker.patch("litellm.proxy.proxy_server.prisma_client", mocker.Mock())
@@ -1636,6 +1996,102 @@ async def test_list_guardrail_submissions_team_id_filter(mocker):
     assert result.submissions[0].guardrail_id == "team-1"
     assert result.submissions[0].team_guardrail is True
     assert result.summary.total == 2  # summary counts all team guardrails
+
+
+@pytest.mark.asyncio
+async def test_list_guardrail_submissions_filters_by_company_project(mocker):
+    """List submissions accepts product Company/Project filters and enriches context."""
+    mock_prisma = mocker.Mock()
+    project_row = SimpleNamespace(
+        project_id="project-1",
+        project_alias="Risk Review",
+        team_id="team-project",
+        litellm_team_table=SimpleNamespace(
+            **{_internal_company_field(): "company-1"}
+        ),
+    )
+    mock_prisma.db.litellm_projecttable.find_unique = AsyncMock(
+        return_value=project_row
+    )
+    mock_prisma.db.litellm_projecttable.find_many = AsyncMock(
+        return_value=[project_row]
+    )
+    mock_prisma.db.litellm_teamtable.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                team_id="team-project",
+                **{_internal_company_field(): "company-1"},
+            )
+        ]
+    )
+    mock_prisma.db.litellm_organizationtable.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                **{
+                    _internal_company_field(): "company-1",
+                    "organization_alias": "Acme",
+                }
+            )
+        ]
+    )
+    row_project = mocker.Mock(
+        guardrail_id="team-1",
+        guardrail_name="project-guard",
+        status="active",
+        team_id="team-project",
+        project_id="project-1",
+        litellm_params={},
+        guardrail_info={},
+        submitted_at=None,
+        reviewed_at=None,
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    row_other_project_same_team = mocker.Mock(
+        guardrail_id="team-2",
+        guardrail_name="other-project-guard",
+        status="active",
+        team_id="team-project",
+        project_id="project-2",
+        litellm_params={},
+        guardrail_info={},
+        submitted_at=None,
+        reviewed_at=None,
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+    )
+    find_many = AsyncMock(return_value=[row_project, row_other_project_same_team])
+    mock_prisma.db.litellm_guardrailstable.find_many = find_many
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma)
+
+    result = await list_guardrail_submissions(
+        company_id="company-1",
+        project_id="project-1",
+        user_api_key_dict=UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN),
+    )
+
+    where_clause = find_many.call_args.kwargs["where"]
+    assert where_clause["team_id"] == {"in": ["team-project"]}
+    assert len(result.submissions) == 1
+    assert result.submissions[0].guardrail_id == "team-1"
+    assert result.submissions[0].company_id == "company-1"
+    assert result.submissions[0].company_name == "Acme"
+    assert result.submissions[0].project_id == "project-1"
+    assert result.submissions[0].project_name == "Risk Review"
+
+
+def test_guardrail_submissions_schema_uses_product_company_project_filters():
+    """OpenAPI exposes Company/Project filters and hides legacy organization_id."""
+    app = FastAPI()
+    app.include_router(router)
+
+    parameters = app.openapi()["paths"]["/guardrails/submissions"]["get"][
+        "parameters"
+    ]
+    parameter_names = {param["name"] for param in parameters}
+
+    assert {"company_id", "project_id"}.issubset(parameter_names)
+    assert "organization_id" not in parameter_names
 
 
 @pytest.mark.asyncio

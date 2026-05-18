@@ -1,5 +1,6 @@
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -9,11 +10,117 @@ sys.path.insert(
 )  # Adds the parent directory to the system path
 
 from litellm.proxy.management_endpoints.common_daily_activity import (
+    _PRISMA_TO_PG_TABLE,
     _is_user_agent_tag,
     get_api_key_metadata,
     get_daily_activity,
     get_daily_activity_aggregated,
 )
+
+
+def _daily_spend_record(entity_field: str, entity_id: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        **{
+            entity_field: entity_id,
+            "date": "2026-05-18",
+            "api_key": "runtime-key-hash",
+            "model": "gpt-4",
+            "model_group": "gpt-4",
+            "custom_llm_provider": "openai",
+            "mcp_namespaced_tool_name": None,
+            "endpoint": "/v1/chat/completions",
+            "spend": 0.25,
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "api_requests": 1,
+            "successful_requests": 1,
+            "failed_requests": 0,
+        }
+    )
+
+
+def _daily_activity_prisma(table_name: str, record: SimpleNamespace) -> MagicMock:
+    mock_prisma = MagicMock()
+    mock_prisma.db = MagicMock()
+    mock_table = MagicMock()
+    mock_table.count = AsyncMock(return_value=1)
+    mock_table.find_many = AsyncMock(return_value=[record])
+    setattr(mock_prisma.db, table_name, mock_table)
+    mock_prisma.db.litellm_verificationtoken = MagicMock()
+    mock_prisma.db.litellm_verificationtoken.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                token="runtime-key-hash",
+                key_alias="Runtime Key",
+                team_id="team-runtime",
+            )
+        ]
+    )
+    return mock_prisma
+
+
+def test_project_daily_table_is_available_for_aggregated_activity():
+    assert _PRISMA_TO_PG_TABLE["litellm_dailyprojectspend"] == (
+        "LiteLLM_DailyProjectSpend"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_daily_activity_returns_runtime_project_spend_for_product_filter():
+    record = _daily_spend_record("project_id", "project-123")
+    mock_prisma = _daily_activity_prisma("litellm_dailyprojectspend", record)
+
+    result = await get_daily_activity(
+        prisma_client=mock_prisma,
+        table_name="litellm_dailyprojectspend",
+        entity_id_field="project_id",
+        entity_id=["project-123"],
+        entity_metadata_field={"project-123": {"project_alias": "Support Project"}},
+        start_date="2026-05-18",
+        end_date="2026-05-18",
+        model=None,
+        api_key="runtime-key-hash",
+        page=1,
+        page_size=10,
+    )
+
+    where = mock_prisma.db.litellm_dailyprojectspend.find_many.call_args.kwargs[
+        "where"
+    ]
+    assert where["project_id"] == {"in": ["project-123"]}
+    assert where["api_key"] == "runtime-key-hash"
+    assert result.metadata.total_spend == 0.25
+    assert result.metadata.total_api_requests == 1
+
+
+@pytest.mark.asyncio
+async def test_get_daily_activity_returns_runtime_company_spend_for_product_filter():
+    record = _daily_spend_record("organization_id", "company-123")
+    mock_prisma = _daily_activity_prisma("litellm_dailyorganizationspend", record)
+
+    result = await get_daily_activity(
+        prisma_client=mock_prisma,
+        table_name="litellm_dailyorganizationspend",
+        entity_id_field="organization_id",
+        entity_id=["company-123"],
+        entity_metadata_field={"company-123": {"organization_alias": "Acme Company"}},
+        start_date="2026-05-18",
+        end_date="2026-05-18",
+        model=None,
+        api_key="runtime-key-hash",
+        page=1,
+        page_size=10,
+    )
+
+    where = mock_prisma.db.litellm_dailyorganizationspend.find_many.call_args.kwargs[
+        "where"
+    ]
+    assert where["organization_id"] == {"in": ["company-123"]}
+    assert where["api_key"] == "runtime-key-hash"
+    assert result.metadata.total_spend == 0.25
+    assert result.metadata.total_api_requests == 1
 
 
 @pytest.mark.asyncio

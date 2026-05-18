@@ -13,6 +13,10 @@ export interface AgentObjectPermission {
 export interface Agent {
   agent_id: string;
   agent_name: string;
+  company_id?: string | null;
+  company_name?: string | null;
+  project_id?: string | null;
+  project_name?: string | null;
   litellm_params: {
     model: string;
     [key: string]: any;

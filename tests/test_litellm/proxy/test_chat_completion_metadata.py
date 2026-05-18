@@ -16,7 +16,11 @@ async def test_chat_completion_metadata_population():
         mock_read_body.return_value = {"model": "gpt-3.5-turbo", "messages": []}
 
         user_api_key_dict = UserAPIKeyAuth(
-            user_id="test_user_id", team_id="test_team_id", org_id="test_org_id"
+            user_id="test_user_id",
+            team_id="test_team_id",
+            org_id="test_org_id",
+            project_id="test_project_id",
+            project_alias="Test Project",
         )
 
         fastapi_response = MagicMock(spec=Response)
@@ -48,6 +52,12 @@ async def test_chat_completion_metadata_population():
             assert data_arg["metadata"]["user_api_key_user_id"] == "test_user_id"
             assert data_arg["metadata"]["user_api_key_team_id"] == "test_team_id"
             assert data_arg["metadata"]["user_api_key_org_id"] == "test_org_id"
+            assert (
+                data_arg["metadata"]["user_api_key_project_id"] == "test_project_id"
+            )
+            assert (
+                data_arg["metadata"]["user_api_key_project_alias"] == "Test Project"
+            )
 
 
 @pytest.mark.asyncio
@@ -69,6 +79,8 @@ async def test_embedding_metadata_population():
             mock_user_auth.user_id = "test_user_id_emb"
             mock_user_auth.team_id = "test_team_id_emb"
             mock_user_auth.org_id = "test_org_id_emb"
+            mock_user_auth.project_id = "test_project_id_emb"
+            mock_user_auth.project_alias = "Embedding Project"
 
             # Create a mock Request object
             mock_request = MagicMock(spec=Request)
@@ -105,6 +117,14 @@ async def test_embedding_metadata_population():
                     data_arg["metadata"]["user_api_key_team_id"] == "test_team_id_emb"
                 )
                 assert data_arg["metadata"]["user_api_key_org_id"] == "test_org_id_emb"
+                assert (
+                    data_arg["metadata"]["user_api_key_project_id"]
+                    == "test_project_id_emb"
+                )
+                assert (
+                    data_arg["metadata"]["user_api_key_project_alias"]
+                    == "Embedding Project"
+                )
 
 
 @pytest.mark.asyncio
@@ -121,7 +141,11 @@ async def test_completion_metadata_population():
         }
 
         user_api_key_dict = UserAPIKeyAuth(
-            user_id="test_user_id_2", team_id="test_team_id_2", org_id="test_org_id_2"
+            user_id="test_user_id_2",
+            team_id="test_team_id_2",
+            org_id="test_org_id_2",
+            project_id="test_project_id_2",
+            project_alias="Completion Project",
         )
 
         fastapi_response = MagicMock(spec=Response)
@@ -152,3 +176,10 @@ async def test_completion_metadata_population():
             assert data_arg["metadata"]["user_api_key_user_id"] == "test_user_id_2"
             assert data_arg["metadata"]["user_api_key_team_id"] == "test_team_id_2"
             assert data_arg["metadata"]["user_api_key_org_id"] == "test_org_id_2"
+            assert (
+                data_arg["metadata"]["user_api_key_project_id"] == "test_project_id_2"
+            )
+            assert (
+                data_arg["metadata"]["user_api_key_project_alias"]
+                == "Completion Project"
+            )

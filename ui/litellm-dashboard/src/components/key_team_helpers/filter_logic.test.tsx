@@ -16,7 +16,9 @@ const mockKey = {
   token: "abc123",
   key_alias: "aaaaa",
   team_id: null,
-  organization_id: null,
+  company_id: "company-1",
+  organization_id: "company-1",
+  project_id: "project-1",
 };
 
 const defaultProps = {
@@ -53,9 +55,12 @@ describe("useFilterLogic – filteredTotalCount", () => {
       result.current.handleFilterChange({ "Key Alias": "aaaaa" });
     });
 
-    await waitFor(() => {
-      expect(result.current.filteredTotalCount).toBe(1);
-    }, { timeout: 500 });
+    await waitFor(
+      () => {
+        expect(result.current.filteredTotalCount).toBe(1);
+      },
+      { timeout: 500 },
+    );
   });
 
   it("should reflect the filtered total_count even when it differs from the full key count", async () => {
@@ -67,9 +72,12 @@ describe("useFilterLogic – filteredTotalCount", () => {
       result.current.handleFilterChange({ "Team ID": "team-x" });
     });
 
-    await waitFor(() => {
-      expect(result.current.filteredTotalCount).toBe(7);
-    }, { timeout: 500 });
+    await waitFor(
+      () => {
+        expect(result.current.filteredTotalCount).toBe(7);
+      },
+      { timeout: 500 },
+    );
   });
 
   it("should reset filteredTotalCount to null when handleFilterReset is called", async () => {
@@ -81,9 +89,12 @@ describe("useFilterLogic – filteredTotalCount", () => {
       result.current.handleFilterChange({ "Key Alias": "aaaaa" });
     });
 
-    await waitFor(() => {
-      expect(result.current.filteredTotalCount).toBe(1);
-    }, { timeout: 500 });
+    await waitFor(
+      () => {
+        expect(result.current.filteredTotalCount).toBe(1);
+      },
+      { timeout: 500 },
+    );
 
     act(() => {
       result.current.handleFilterReset();
@@ -102,20 +113,88 @@ describe("useFilterLogic – filteredTotalCount", () => {
       result.current.handleFilterChange({ "Key Alias": "my-alias" });
     });
 
-    await waitFor(() => {
-      expect(keyListCall).toHaveBeenCalledWith(
-        expect.any(String), // accessToken
-        null,              // organizationID (empty → null)
-        null,              // teamID (empty → null)
-        "my-alias",        // selectedKeyAlias ← the filter value
-        null,              // userID
-        null,              // keyHash
-        1,                 // page (resets to 1 on filter change)
-        expect.any(Number),// pageSize (defaultPageSize)
-        expect.anything(), // sortBy
-        expect.anything(), // sortOrder
-      );
-    }, { timeout: 500 });
+    await waitFor(
+      () => {
+        expect(keyListCall).toHaveBeenCalledWith(
+          expect.any(String), // accessToken
+          null, // organizationID (empty → null)
+          null, // teamID (empty → null)
+          "my-alias", // selectedKeyAlias ← the filter value
+          null, // userID
+          null, // keyHash
+          1, // page (resets to 1 on filter change)
+          expect.any(Number), // pageSize (defaultPageSize)
+          expect.anything(), // sortBy
+          expect.anything(), // sortOrder
+          null, // expand
+          null, // status
+          null, // projectID
+        );
+      },
+      { timeout: 500 },
+    );
+  });
+
+  it("should pass the Project ID value to keyListCall", async () => {
+    vi.mocked(keyListCall).mockResolvedValue(makeApiResponse({ total_count: 1 }));
+
+    const { result } = renderHook(() => useFilterLogic(defaultProps));
+
+    act(() => {
+      result.current.handleFilterChange({ "Project ID": "project-1" });
+    });
+
+    await waitFor(
+      () => {
+        expect(keyListCall).toHaveBeenCalledWith(
+          expect.any(String),
+          null,
+          null,
+          null,
+          null,
+          null,
+          1,
+          expect.any(Number),
+          expect.anything(),
+          expect.anything(),
+          null,
+          null,
+          "project-1",
+        );
+      },
+      { timeout: 500 },
+    );
+  });
+
+  it("should pass the Company ID value to keyListCall", async () => {
+    vi.mocked(keyListCall).mockResolvedValue(makeApiResponse({ total_count: 1 }));
+
+    const { result } = renderHook(() => useFilterLogic(defaultProps));
+
+    act(() => {
+      result.current.handleFilterChange({ "Company ID": "company-1" });
+    });
+
+    await waitFor(
+      () => {
+        expect(keyListCall).toHaveBeenCalledWith(
+          expect.any(String),
+          "company-1",
+          null,
+          null,
+          null,
+          null,
+          1,
+          expect.any(Number),
+          expect.anything(),
+          expect.anything(),
+          null,
+          null,
+          null,
+        );
+      },
+      { timeout: 500 },
+    );
   });
 
   it("should not update filteredTotalCount when keyListCall throws", async () => {
@@ -127,9 +206,12 @@ describe("useFilterLogic – filteredTotalCount", () => {
       result.current.handleFilterChange({ "Key Alias": "bad-alias" });
     });
 
-    await waitFor(() => {
-      expect(keyListCall).toHaveBeenCalled();
-    }, { timeout: 500 });
+    await waitFor(
+      () => {
+        expect(keyListCall).toHaveBeenCalled();
+      },
+      { timeout: 500 },
+    );
 
     expect(result.current.filteredTotalCount).toBeNull();
   });

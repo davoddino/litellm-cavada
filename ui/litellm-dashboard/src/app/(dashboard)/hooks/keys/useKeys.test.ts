@@ -425,6 +425,46 @@ describe("useKeys", () => {
     expect(result.current.data?.keys[0].project_id).toBe("project-1");
   });
 
+  it("should pass companyID as company_id and not organization_id", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockKeysResponse,
+    });
+
+    const { result } = renderHook(
+      () => useKeys(1, 10, { companyID: "company-1" }),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    const callUrl = mockFetch.mock.calls[0][0];
+    expect(callUrl).toContain("company_id=company-1");
+    expect(callUrl).not.toContain("organization_id=");
+  });
+
+  it("should map legacy organizationID option to company_id and not organization_id", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockKeysResponse,
+    });
+
+    const { result } = renderHook(
+      () => useKeys(1, 10, { organizationID: "company-legacy-1" }),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
+    });
+
+    const callUrl = mockFetch.mock.calls[0][0];
+    expect(callUrl).toContain("company_id=company-legacy-1");
+    expect(callUrl).not.toContain("organization_id=");
+  });
+
   it("should pass both projectID and teamID filters to the API", async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -739,7 +779,7 @@ describe("useDeletedKeys", () => {
     });
 
     const options = {
-      organizationID: "org-1",
+      companyID: "org-1",
       teamID: "team-1",
       selectedKeyAlias: "test-alias",
     };
@@ -753,7 +793,7 @@ describe("useDeletedKeys", () => {
 
     const callUrl = mockFetch.mock.calls[0][0];
     expect(callUrl).toContain("status=deleted");
-    expect(callUrl).toContain("organization_id=org-1");
+    expect(callUrl).toContain("company_id=org-1");
     expect(callUrl).toContain("team_id=team-1");
     expect(callUrl).toContain("key_alias=test-alias");
     expect(result.current.data).toEqual(mockKeysResponse);

@@ -61,6 +61,7 @@ export function EditProjectModal({
 
       form.setFieldsValue({
         project_alias: project.project_alias ?? "",
+        company_id: project.company_id ?? undefined,
         team_id: project.team_id ?? "",
         description: project.description ?? "",
         models: project.models ?? [],

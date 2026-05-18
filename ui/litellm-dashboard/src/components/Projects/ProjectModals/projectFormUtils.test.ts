@@ -4,6 +4,7 @@ import { ProjectFormValues } from "./ProjectBaseForm";
 
 const baseValues: ProjectFormValues = {
   project_alias: "My Project",
+  company_id: "company-1",
   team_id: "team-1",
   models: [],
   isBlocked: false,
@@ -13,6 +14,7 @@ describe("buildProjectApiParams", () => {
   it("should map basic fields to the API shape", () => {
     const result = buildProjectApiParams(baseValues);
     expect(result.project_alias).toBe("My Project");
+    expect(result.company_id).toBe("company-1");
     expect(result.blocked).toBe(false);
     expect(result.models).toEqual([]);
   });

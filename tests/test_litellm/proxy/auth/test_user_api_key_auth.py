@@ -20,6 +20,8 @@ from litellm.proxy._types import (
     LiteLLM_JWTAuth,
     LiteLLM_BudgetTable,
     LiteLLM_EndUserTable,
+    LiteLLM_ProjectTableCachedObj,
+    LiteLLM_TeamTableCachedObj,
     LiteLLM_UserTable,
     LitellmUserRoles,
     ProxyErrorTypes,
@@ -3197,6 +3199,203 @@ async def test_centralized_common_checks_team_404_does_not_zero_other_contexts()
         assert kwargs["user_object"] is fetched_user
         assert kwargs["end_user_object"] is fetched_end_user
         assert kwargs["project_object"] is fetched_project
+    finally:
+        for k, v in originals.items():
+            setattr(_proxy_server_mod, k, v)
+
+
+def _mock_prisma_with_project_rows(project_rows):
+    prisma_client = MagicMock()
+    prisma_client.db = MagicMock()
+    prisma_client.db.litellm_projecttable = MagicMock()
+    prisma_client.db.litellm_projecttable.find_many = AsyncMock(
+        return_value=project_rows
+    )
+    return prisma_client
+
+
+def _project_cached_obj(
+    *,
+    project_id: str,
+    team_id: str,
+    project_alias: str = "Support Project",
+):
+    return LiteLLM_ProjectTableCachedObj(
+        project_id=project_id,
+        project_alias=project_alias,
+        team_id=team_id,
+        metadata={"product": "cavada"},
+        created_by="admin",
+        updated_by="admin",
+    )
+
+
+@pytest.mark.asyncio
+async def test_centralized_common_checks_derives_usage_attribution_from_project_team():
+    """A key scoped only to a Project backing team must still carry
+    Company/Project attribution into spend-log metadata."""
+    import litellm.proxy.proxy_server as _proxy_server_mod
+    from fastapi import Request
+    from starlette.datastructures import URL
+
+    from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
+    from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
+
+    token = UserAPIKeyAuth(
+        api_key="hashed-key",
+        user_id="u",
+        team_id="team-project",
+    )
+    request = Request(scope={"type": "http"})
+    request._url = URL(url="/chat/completions")
+    request._body = json.dumps({"model": "gpt-4o"}).encode()
+
+    team = LiteLLM_TeamTableCachedObj(
+        team_id="team-project",
+        organization_id="company-123",
+        team_alias="Project Backing Team",
+    )
+    project = _project_cached_obj(
+        project_id="project-123",
+        team_id="team-project",
+    )
+
+    attrs = _proxy_attrs_for_centralized_checks(user_custom_auth=None)
+    attrs["prisma_client"] = _mock_prisma_with_project_rows([project])
+    originals = {a: getattr(_proxy_server_mod, a, None) for a in attrs}
+    try:
+        for k, v in attrs.items():
+            setattr(_proxy_server_mod, k, v)
+        with (
+            patch(
+                "litellm.proxy.auth.user_api_key_auth.get_team_object",
+                new_callable=AsyncMock,
+                return_value=team,
+            ),
+            patch(
+                "litellm.proxy.auth.user_api_key_auth.common_checks",
+                new_callable=AsyncMock,
+            ) as mock_checks,
+        ):
+            await _run_centralized_common_checks(
+                user_api_key_auth_obj=token,
+                request=request,
+                request_data={"model": "gpt-4o"},
+                route="/chat/completions",
+            )
+
+        mock_checks.assert_awaited_once()
+        assert mock_checks.call_args.kwargs["project_object"].project_id == "project-123"
+        assert token.org_id == "company-123"
+        assert token.project_id == "project-123"
+        assert token.project_alias == "Support Project"
+
+        metadata = dict(
+            LiteLLMProxyRequestSetup.get_sanitized_user_information_from_key(token)
+        )
+        metadata["user_api_key"] = token.api_key
+        payload = get_logging_payload(
+            kwargs={
+                "model": "gpt-4o",
+                "custom_llm_provider": "openai",
+                "litellm_params": {"metadata": metadata},
+            },
+            response_obj={
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                }
+            },
+            start_time=datetime.now(),
+            end_time=datetime.now(),
+        )
+
+        assert payload["organization_id"] == "company-123"
+        assert payload["project_id"] == "project-123"
+    finally:
+        for k, v in originals.items():
+            setattr(_proxy_server_mod, k, v)
+
+
+@pytest.mark.asyncio
+async def test_centralized_common_checks_leaves_ambiguous_team_project_unattributed():
+    """If a legacy team maps to multiple Projects, do not invent Project usage."""
+    import litellm.proxy.proxy_server as _proxy_server_mod
+    from fastapi import Request
+    from starlette.datastructures import URL
+
+    from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
+    from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
+
+    token = UserAPIKeyAuth(
+        api_key="hashed-key",
+        user_id="u",
+        team_id="legacy-team",
+    )
+    request = Request(scope={"type": "http"})
+    request._url = URL(url="/chat/completions")
+    request._body = json.dumps({"model": "gpt-4o"}).encode()
+
+    team = LiteLLM_TeamTableCachedObj(
+        team_id="legacy-team",
+        organization_id="company-123",
+    )
+    attrs = _proxy_attrs_for_centralized_checks(user_custom_auth=None)
+    attrs["prisma_client"] = _mock_prisma_with_project_rows(
+        [
+            _project_cached_obj(project_id="project-1", team_id="legacy-team"),
+            _project_cached_obj(project_id="project-2", team_id="legacy-team"),
+        ]
+    )
+    originals = {a: getattr(_proxy_server_mod, a, None) for a in attrs}
+    try:
+        for k, v in attrs.items():
+            setattr(_proxy_server_mod, k, v)
+        with (
+            patch(
+                "litellm.proxy.auth.user_api_key_auth.get_team_object",
+                new_callable=AsyncMock,
+                return_value=team,
+            ),
+            patch(
+                "litellm.proxy.auth.user_api_key_auth.common_checks",
+                new_callable=AsyncMock,
+            ),
+        ):
+            await _run_centralized_common_checks(
+                user_api_key_auth_obj=token,
+                request=request,
+                request_data={"model": "gpt-4o"},
+                route="/chat/completions",
+            )
+
+        assert token.org_id == "company-123"
+        assert token.project_id is None
+
+        metadata = dict(
+            LiteLLMProxyRequestSetup.get_sanitized_user_information_from_key(token)
+        )
+        metadata["user_api_key"] = token.api_key
+        payload = get_logging_payload(
+            kwargs={
+                "model": "gpt-4o",
+                "custom_llm_provider": "openai",
+                "litellm_params": {"metadata": metadata},
+            },
+            response_obj={
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                }
+            },
+            start_time=datetime.now(),
+            end_time=datetime.now(),
+        )
+
+        assert payload["organization_id"] == "company-123"
+        assert payload["project_id"] == ""
     finally:
         for k, v in originals.items():
             setattr(_proxy_server_mod, k, v)

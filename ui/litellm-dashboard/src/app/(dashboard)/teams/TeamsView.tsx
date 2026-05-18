@@ -19,6 +19,7 @@ import useFetchTeams from "@/app/(dashboard)/teams/hooks/useFetchTeams";
 import TeamsTable from "@/app/(dashboard)/teams/components/TeamsTable/TeamsTable";
 import DeleteTeamModal from "@/app/(dashboard)/teams/components/modals/DeleteTeamModal";
 import CreateTeamModal from "@/app/(dashboard)/teams/components/modals/CreateTeamModal";
+import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
 
 interface TeamProps {
   teams: Team[] | null;
@@ -34,6 +35,7 @@ interface FilterState {
   team_id: string;
   team_alias: string;
   organization_id: string;
+  project_id: string;
   sort_by: string;
   sort_order: "asc" | "desc";
 }
@@ -63,6 +65,7 @@ const TeamsView: React.FC<TeamProps> = ({
     team_id: "",
     team_alias: "",
     organization_id: "",
+    project_id: "",
     sort_by: "created_at",
     sort_order: "desc",
   });
@@ -84,6 +87,7 @@ const TeamsView: React.FC<TeamProps> = ({
   const [loggingSettings, setLoggingSettings] = useState<any[]>([]);
   const [modelAliases, setModelAliases] = useState<{ [key: string]: string }>({});
   const { lastRefreshed, onRefreshClick: handleRefreshClick } = useFetchTeams({ currentOrg, setTeams });
+  const { data: projects = [] } = useProjects({ includeNonAdmin: true });
 
   useEffect(() => {
     const fetchTeamInfo = () => {
@@ -184,6 +188,11 @@ const TeamsView: React.FC<TeamProps> = ({
         null,
         newFilters.team_id || null,
         newFilters.team_alias || null,
+        1,
+        10,
+        null,
+        null,
+        newFilters.project_id || null,
       )
         .then((response) => {
           if (response && response.teams) {
@@ -211,6 +220,11 @@ const TeamsView: React.FC<TeamProps> = ({
         null,
         filters.team_id || null,
         filters.team_alias || null,
+        1,
+        10,
+        sortBy,
+        sortOrder,
+        filters.project_id || null,
       )
         .then((response) => {
           if (response && response.teams) {
@@ -228,6 +242,7 @@ const TeamsView: React.FC<TeamProps> = ({
       team_id: "",
       team_alias: "",
       organization_id: "",
+      project_id: "",
       sort_by: "created_at",
       sort_order: "desc",
     });
@@ -306,6 +321,7 @@ const TeamsView: React.FC<TeamProps> = ({
                           <TeamsFilters
                             filters={filters}
                             organizations={organizations}
+                            projects={projects}
                             showFilters={showFilters}
                             onToggleFilters={setShowFilters}
                             onChange={handleFilterChange}

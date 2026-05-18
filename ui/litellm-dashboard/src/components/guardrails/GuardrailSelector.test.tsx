@@ -54,4 +54,27 @@ describe("GuardrailSelector", () => {
       expect(networking.getGuardrailsList).toHaveBeenCalledWith(mockAccessToken);
     });
   });
+
+  it("should pass Company and Project context when loading guardrails", async () => {
+    vi.mocked(networking.getGuardrailsList).mockResolvedValue({
+      guardrails: [],
+    });
+
+    render(
+      <GuardrailSelector
+        accessToken={mockAccessToken}
+        onChange={mockOnChange}
+        value={[]}
+        companyId="company-123"
+        projectId="project-456"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(networking.getGuardrailsList).toHaveBeenCalledWith(mockAccessToken, {
+        companyId: "company-123",
+        projectId: "project-456",
+      });
+    });
+  });
 });

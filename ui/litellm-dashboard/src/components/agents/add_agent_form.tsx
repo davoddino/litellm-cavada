@@ -18,6 +18,10 @@ import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import { getModelDisplayName } from "../key_team_helpers/fetch_available_models_team_key";
 import { Team } from "../key_team_helpers/key_list";
 import TeamDropdown from "../common_components/team_dropdown";
+import OrganizationDropdown from "../common_components/OrganizationDropdown";
+import ProjectDropdown from "../common_components/ProjectDropdown";
+import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
+import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
 import AgentFormFields from "./agent_form_fields";
 import DynamicAgentFormFields, { buildDynamicAgentData } from "./dynamic_agent_form_fields";
 import { getDefaultFormValues, buildAgentDataFromForm } from "./agent_config";
@@ -46,6 +50,9 @@ const AddAgentForm: React.FC<AddAgentFormProps> = ({
 }) => {
   const { userId, userRole } = useAuthorized();
   const [form] = Form.useForm();
+  const selectedCompanyId = Form.useWatch("company_id", form);
+  const { data: companies = [], isLoading: isCompaniesLoading } = useOrganizations();
+  const { data: projects = [], isLoading: isProjectsLoading } = useProjects({ includeNonAdmin: true });
   const [currentStep, setCurrentStep] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [agentType, setAgentType] = useState<string>("a2a");
@@ -281,6 +288,14 @@ const AddAgentForm: React.FC<AddAgentFormProps> = ({
       }
 
       const selectedTeamId = values.team_id || null;
+      const selectedCompanyId = values.company_id || null;
+      const selectedProjectId = values.project_id || null;
+      if (selectedCompanyId) {
+        agentData.company_id = selectedCompanyId;
+      }
+      if (selectedProjectId) {
+        agentData.project_id = selectedProjectId;
+      }
       if (selectedTeamId) {
         agentData.team_id = selectedTeamId;
       }
@@ -298,6 +313,8 @@ const AddAgentForm: React.FC<AddAgentFormProps> = ({
           newKeyModels,
           undefined,
           selectedTeamId,
+          selectedCompanyId,
+          selectedProjectId,
         );
         setCreatedKeyValue(keyResponse.key || null);
       } else if (keyAssignOption === "existing_key") {
@@ -717,6 +734,30 @@ const AddAgentForm: React.FC<AddAgentFormProps> = ({
             {agentName}
           </Tag>
         </div>
+
+        <Form.Item
+          label={<span className="text-sm font-medium text-gray-700">Company</span>}
+          name="company_id"
+          tooltip="Assign this agent to a Company."
+        >
+          <OrganizationDropdown
+            organizations={companies}
+            loading={isCompaniesLoading}
+            onChange={() => form.setFieldValue("project_id", undefined)}
+          />
+        </Form.Item>
+
+        <Form.Item
+          label={<span className="text-sm font-medium text-gray-700">Project</span>}
+          name="project_id"
+          tooltip="Optionally scope this agent to a Project within the selected Company."
+        >
+          <ProjectDropdown
+            projects={projects}
+            companyId={selectedCompanyId}
+            loading={isProjectsLoading}
+          />
+        </Form.Item>
 
         <Form.Item
           label={<span className="text-sm font-medium text-gray-700">Assign to Team</span>}

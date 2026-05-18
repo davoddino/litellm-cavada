@@ -33,6 +33,13 @@ vi.mock("@/app/(dashboard)/hooks/projects/useProjects", () => ({
   useProjects: vi.fn().mockReturnValue({ data: [], isLoading: false }),
 }));
 
+vi.mock("@/app/(dashboard)/hooks/uiSettings/useUISettings", () => ({
+  useUISettings: vi.fn().mockReturnValue({
+    data: { values: { enable_projects_ui: true } },
+    isLoading: false,
+  }),
+}));
+
 vi.mock("../networking", () => ({
   keyDeleteCall: vi.fn().mockResolvedValue({}),
   keyUpdateCall: vi.fn().mockResolvedValue({}),
@@ -62,6 +69,7 @@ describe("KeyInfoView", () => {
       teams: [],
       setTeams: vi.fn(),
     });
+    vi.mocked(useProjects).mockReturnValue({ data: [], isLoading: false } as any);
   });
   const MOCK_KEY_DATA: KeyResponse = {
     token: "test-token-123",
@@ -152,9 +160,9 @@ describe("KeyInfoView", () => {
     renderWithProviders(
       <KeyInfoView
         keyData={MOCK_KEY_DATA}
-        onClose={() => { }}
+        onClose={() => {}}
         keyId={"test-key-id"}
-        onKeyDataUpdate={() => { }}
+        onKeyDataUpdate={() => {}}
         teams={[]}
       />,
     );
@@ -163,15 +171,67 @@ describe("KeyInfoView", () => {
     });
   });
 
+  it("should display company and project names from key response", async () => {
+    vi.mocked(useAuthorized).mockReturnValue(baseUseAuthorizedMock);
+    vi.mocked(useProjects).mockReturnValue({
+      data: [
+        {
+          project_id: "project-1",
+          project_alias: "Fallback Project",
+          company_id: "company-1",
+          description: null,
+          team_id: "team-1",
+          budget_id: null,
+          metadata: null,
+          models: [],
+          spend: 0,
+          model_spend: null,
+          model_rpm_limit: null,
+          model_tpm_limit: null,
+          blocked: false,
+          object_permission_id: null,
+          created_at: "2026-01-01T00:00:00Z",
+          created_by: "user-1",
+          updated_at: "2026-01-01T00:00:00Z",
+          updated_by: "user-1",
+          litellm_budget_table: null,
+        },
+      ],
+      isLoading: false,
+    } as any);
+
+    renderWithProviders(
+      <KeyInfoView
+        keyData={{
+          ...MOCK_KEY_DATA,
+          company_id: "company-1",
+          company_name: "Acme Company",
+          project_id: "project-1",
+          project_name: "Atlas Project",
+        }}
+        onClose={() => {}}
+        keyId={"test-key-id"}
+        onKeyDataUpdate={() => {}}
+        teams={[]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Acme Company")).toBeInTheDocument();
+      expect(screen.getByText("Atlas Project (project-1)")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+  });
+
   it("should not render tags in metadata textarea", async () => {
     vi.mocked(useAuthorized).mockReturnValue(baseUseAuthorizedMock);
 
     const { container } = renderWithProviders(
       <KeyInfoView
         keyData={MOCK_KEY_DATA}
-        onClose={() => { }}
+        onClose={() => {}}
         keyId={"test-key-id"}
-        onKeyDataUpdate={() => { }}
+        onKeyDataUpdate={() => {}}
         teams={[]}
       />,
     );
@@ -197,7 +257,7 @@ describe("KeyInfoView", () => {
 
     const keyData = { ...MOCK_KEY_DATA, user_id: "other-user-id" };
     renderWithProviders(
-      <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+      <KeyInfoView keyData={keyData} onClose={() => {}} keyId={"test-key-id"} onKeyDataUpdate={() => {}} teams={[]} />,
     );
 
     await waitFor(() => {
@@ -242,7 +302,7 @@ describe("KeyInfoView", () => {
 
     const keyData = { ...MOCK_KEY_DATA, team_id: teamId, user_id: "other-user-id" };
     renderWithProviders(
-      <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+      <KeyInfoView keyData={keyData} onClose={() => {}} keyId={"test-key-id"} onKeyDataUpdate={() => {}} teams={[]} />,
     );
 
     await waitFor(() => {
@@ -266,7 +326,7 @@ describe("KeyInfoView", () => {
     const ownerUserId = "owner-user-id";
     const keyData = { ...MOCK_KEY_DATA, user_id: ownerUserId };
     renderWithProviders(
-      <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+      <KeyInfoView keyData={keyData} onClose={() => {}} keyId={"test-key-id"} onKeyDataUpdate={() => {}} teams={[]} />,
     );
 
     await waitFor(() => {
@@ -289,7 +349,7 @@ describe("KeyInfoView", () => {
 
     const keyData = { ...MOCK_KEY_DATA, user_id: "owner-user-id" };
     renderWithProviders(
-      <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+      <KeyInfoView keyData={keyData} onClose={() => {}} keyId={"test-key-id"} onKeyDataUpdate={() => {}} teams={[]} />,
     );
 
     await waitFor(() => {
@@ -313,7 +373,7 @@ describe("KeyInfoView", () => {
     const ownerUserId = "internal-viewer-user-id";
     const keyData = { ...MOCK_KEY_DATA, user_id: ownerUserId };
     renderWithProviders(
-      <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+      <KeyInfoView keyData={keyData} onClose={() => {}} keyId={"test-key-id"} onKeyDataUpdate={() => {}} teams={[]} />,
     );
 
     await waitFor(() => {
@@ -357,7 +417,7 @@ describe("KeyInfoView", () => {
 
     const keyData = { ...MOCK_KEY_DATA, team_id: "non-matching-team-id", user_id: "other-user-id" };
     renderWithProviders(
-      <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+      <KeyInfoView keyData={keyData} onClose={() => {}} keyId={"test-key-id"} onKeyDataUpdate={() => {}} teams={[]} />,
     );
 
     await waitFor(() => {
@@ -375,7 +435,7 @@ describe("KeyInfoView", () => {
         keyData={MOCK_KEY_DATA}
         onClose={onCloseMock}
         keyId={"test-key-id"}
-        onKeyDataUpdate={() => { }}
+        onKeyDataUpdate={() => {}}
         teams={[]}
       />,
     );
@@ -390,17 +450,10 @@ describe("KeyInfoView", () => {
     expect(onCloseMock).toHaveBeenCalledTimes(1);
   });
 
-
   describe("'Edit Settings' button visibility in the Settings tab", () => {
     const renderAndOpenSettingsTab = async (keyData = MOCK_KEY_DATA) => {
       renderWithProviders(
-        <KeyInfoView
-          keyData={keyData}
-          onClose={() => {}}
-          keyId="test-key-id"
-          onKeyDataUpdate={() => {}}
-          teams={[]}
-        />,
+        <KeyInfoView keyData={keyData} onClose={() => {}} keyId="test-key-id" onKeyDataUpdate={() => {}} teams={[]} />,
       );
       await waitFor(() => {
         expect(screen.getByRole("tab", { name: /settings/i })).toBeInTheDocument();
@@ -490,7 +543,6 @@ describe("KeyInfoView", () => {
     });
   });
 
-
   it("should display guardrails when present", async () => {
     vi.mocked(useAuthorized).mockReturnValue(baseUseAuthorizedMock);
 
@@ -505,9 +557,9 @@ describe("KeyInfoView", () => {
     renderWithProviders(
       <KeyInfoView
         keyData={keyDataWithGuardrails}
-        onClose={() => { }}
+        onClose={() => {}}
         keyId={"test-key-id"}
-        onKeyDataUpdate={() => { }}
+        onKeyDataUpdate={() => {}}
         teams={[]}
       />,
     );
@@ -531,9 +583,9 @@ describe("KeyInfoView", () => {
     renderWithProviders(
       <KeyInfoView
         keyData={keyDataWithPolicies}
-        onClose={() => { }}
+        onClose={() => {}}
         keyId={"test-key-id"}
-        onKeyDataUpdate={() => { }}
+        onKeyDataUpdate={() => {}}
         teams={[]}
       />,
     );
@@ -549,9 +601,9 @@ describe("KeyInfoView", () => {
     renderWithProviders(
       <KeyInfoView
         keyData={undefined}
-        onClose={() => { }}
+        onClose={() => {}}
         keyId={"test-key-id"}
-        onKeyDataUpdate={() => { }}
+        onKeyDataUpdate={() => {}}
         teams={[]}
       />,
     );
@@ -571,7 +623,13 @@ describe("KeyInfoView", () => {
       });
 
       renderWithProviders(
-        <KeyInfoView keyData={MOCK_KEY_DATA} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+        <KeyInfoView
+          keyData={MOCK_KEY_DATA}
+          onClose={() => {}}
+          keyId={"test-key-id"}
+          onKeyDataUpdate={() => {}}
+          teams={[]}
+        />,
       );
 
       await waitFor(() => {
@@ -606,7 +664,13 @@ describe("KeyInfoView", () => {
 
       const keyData = { ...MOCK_KEY_DATA, team_id: teamId, user_id: "other-user-id" };
       renderWithProviders(
-        <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+        <KeyInfoView
+          keyData={keyData}
+          onClose={() => {}}
+          keyId={"test-key-id"}
+          onKeyDataUpdate={() => {}}
+          teams={[]}
+        />,
       );
 
       await waitFor(() => {
@@ -624,7 +688,13 @@ describe("KeyInfoView", () => {
 
       const keyData = { ...MOCK_KEY_DATA, user_id: "owner-user-id" };
       renderWithProviders(
-        <KeyInfoView keyData={keyData} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+        <KeyInfoView
+          keyData={keyData}
+          onClose={() => {}}
+          keyId={"test-key-id"}
+          onKeyDataUpdate={() => {}}
+          teams={[]}
+        />,
       );
 
       await waitFor(() => {
@@ -643,7 +713,13 @@ describe("KeyInfoView", () => {
       });
 
       renderWithProviders(
-        <KeyInfoView keyData={MOCK_KEY_DATA} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+        <KeyInfoView
+          keyData={MOCK_KEY_DATA}
+          onClose={() => {}}
+          keyId={"test-key-id"}
+          onKeyDataUpdate={() => {}}
+          teams={[]}
+        />,
       );
 
       await waitFor(() => {
@@ -668,7 +744,13 @@ describe("KeyInfoView", () => {
 
       const keyDataWithSpend = { ...MOCK_KEY_DATA, spend: 5.0 };
       renderWithProviders(
-        <KeyInfoView keyData={keyDataWithSpend} onClose={() => { }} keyId={"test-key-id"} onKeyDataUpdate={() => { }} teams={[]} />,
+        <KeyInfoView
+          keyData={keyDataWithSpend}
+          onClose={() => {}}
+          keyId={"test-key-id"}
+          onKeyDataUpdate={() => {}}
+          teams={[]}
+        />,
       );
 
       await waitFor(() => {
@@ -701,13 +783,7 @@ describe("KeyInfoView", () => {
         userRole: "proxy_admin",
       });
       renderWithProviders(
-        <KeyInfoView
-          keyData={keyData}
-          onClose={() => {}}
-          keyId="test-key-id"
-          onKeyDataUpdate={() => {}}
-          teams={[]}
-        />,
+        <KeyInfoView keyData={keyData} onClose={() => {}} keyId="test-key-id" onKeyDataUpdate={() => {}} teams={[]} />,
       );
       await userEvent.click(screen.getByRole("tab", { name: /settings/i }));
       await userEvent.click(screen.getByRole("button", { name: /edit settings/i }));
@@ -752,10 +828,7 @@ describe("KeyInfoView", () => {
       await enterEditMode(keyData);
       await editViewMocks.onSubmit!({ key: keyData.token, token: keyData.token, policies: [] });
 
-      expect(keyUpdateCall).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ policies: [] }),
-      );
+      expect(keyUpdateCall).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ policies: [] }));
     });
 
     it("should keep an empty policies field when the previous value lives only at the top level of keyData", async () => {
@@ -771,10 +844,7 @@ describe("KeyInfoView", () => {
       await enterEditMode(keyData);
       await editViewMocks.onSubmit!({ key: keyData.token, token: keyData.token, policies: [] });
 
-      expect(keyUpdateCall).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ policies: [] }),
-      );
+      expect(keyUpdateCall).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ policies: [] }));
     });
   });
 });

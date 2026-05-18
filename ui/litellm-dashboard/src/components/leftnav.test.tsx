@@ -80,7 +80,7 @@ describe("Sidebar (leftnav)", () => {
       "Guardrails Monitor",
       "Teams",
       "Internal Users",
-      "Organizations",
+      "Companies",
       "Access Groups",
       "Budgets",
       "API Reference",
@@ -183,7 +183,7 @@ describe("Sidebar (leftnav)", () => {
     });
   });
 
-  it("should show Organizations tab for organization admins", () => {
+  it("should show Companies tab for company admins", () => {
     mockUseAuthorized.mockReturnValueOnce({
       userId: "org-admin-user-id",
       accessToken: "test-access-token",
@@ -199,7 +199,7 @@ describe("Sidebar (leftnav)", () => {
       data: [
         {
           organization_id: "org-1",
-          organization_name: "Test Organization",
+          organization_name: "Test Company",
           spend: 0,
           max_budget: null,
           models: [],
@@ -219,6 +219,13 @@ describe("Sidebar (leftnav)", () => {
 
     renderWithProviders(<Sidebar {...defaultProps} />);
 
-    expect(screen.getByText("Organizations")).toBeInTheDocument();
+    expect(screen.getByText("Companies")).toBeInTheDocument();
+  });
+
+  it("should link Companies to the product companies route", () => {
+    renderWithProviders(<Sidebar {...defaultProps} />);
+
+    const companiesLink = screen.getByRole("link", { name: "Companies" });
+    expect(companiesLink).toHaveAttribute("href", "/companies");
   });
 });

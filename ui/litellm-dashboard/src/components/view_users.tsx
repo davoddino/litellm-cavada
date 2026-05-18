@@ -20,6 +20,8 @@ import { isAdminRole, isProxyAdminRole } from "@/utils/roles";
 import { useDebouncedState } from "@tanstack/react-pacer/debouncer";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Typography } from "antd";
+import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
+import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
 import DeleteResourceModal from "./common_components/DeleteResourceModal";
 import NotificationsManager from "./molecules/notifications_manager";
 import { modelAvailableCall, userDeleteCall } from "./networking";
@@ -48,6 +50,8 @@ interface FilterState {
   user_role: string;
   sso_user_id: string;
   team: string;
+  company_id: string;
+  project_id: string;
   model: string;
   min_spend: number | null;
   max_spend: number | null;
@@ -63,6 +67,8 @@ const initialFilters: FilterState = {
   user_role: "",
   sso_user_id: "",
   team: "",
+  company_id: "",
+  project_id: "",
   model: "",
   min_spend: null,
   max_spend: null,
@@ -89,6 +95,8 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({ accessToken, toke
   const [isBulkEditModalVisible, setIsBulkEditModalVisible] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [userModels, setUserModels] = useState<string[]>([]);
+  const { data: organizations = [] } = useOrganizations();
+  const { data: projects = [] } = useProjects({ includeNonAdmin: true });
 
   const handleDelete = (user: UserInfo) => {
     setUserToDelete(user);
@@ -262,7 +270,12 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({ accessToken, toke
         debouncedFilters.sso_user_id || null,
         debouncedFilters.sort_by,
         debouncedFilters.sort_order,
-        orgAdminOrgIds ? orgAdminOrgIds.map((o) => o.organization_id) : null,
+        debouncedFilters.company_id
+          ? [debouncedFilters.company_id]
+          : orgAdminOrgIds
+            ? orgAdminOrgIds.map((o) => o.organization_id)
+            : null,
+        debouncedFilters.project_id ? [debouncedFilters.project_id] : null,
       );
     },
     enabled: Boolean(accessToken && token && userRole && userID),
@@ -362,6 +375,8 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({ accessToken, toke
                 updateFilters={updateFilters}
                 initialFilters={initialFilters}
                 teams={teams}
+                organizations={organizations}
+                projects={projects}
                 userListResponse={userListResponse}
                 currentPage={currentPage}
                 handlePageChange={handlePageChange}
@@ -410,6 +425,8 @@ const ViewUserDashboard: React.FC<ViewUserDashboardProps> = ({ accessToken, toke
           updateFilters={updateFilters}
           initialFilters={initialFilters}
           teams={teams}
+          organizations={organizations}
+          projects={projects}
           userListResponse={userListResponse}
           currentPage={currentPage}
           handlePageChange={handlePageChange}

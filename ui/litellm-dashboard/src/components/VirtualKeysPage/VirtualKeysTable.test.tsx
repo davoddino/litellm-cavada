@@ -1,7 +1,7 @@
 import { act, screen, waitFor, fireEvent } from "@testing-library/react";
 import { vi, it, expect, beforeEach, MockedFunction } from "vitest";
 import { renderWithProviders } from "../../../tests/test-utils";
-import { VirtualKeysTable } from "./VirtualKeysTable";
+import { getVirtualKeyProjectFilterOptions, VirtualKeysTable } from "./VirtualKeysTable";
 import { KeyResponse, Team } from "../key_team_helpers/key_list";
 import { Organization } from "../networking";
 import { KeysResponse, useKeys } from "@/app/(dashboard)/hooks/keys/useKeys";
@@ -37,7 +37,7 @@ vi.mock("./key_team_helpers/filter_helpers", () => ({
   fetchAllOrganizations: vi.fn().mockResolvedValue([
     {
       organization_id: "org-1",
-      organization_alias: "Test Organization",
+      organization_alias: "Test Company",
     },
   ]),
 }));
@@ -62,8 +62,22 @@ vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
   useOrganizations: vi.fn().mockReturnValue({
     data: [
       {
+        company_id: "org-1",
+        company_name: "Test Company",
         organization_id: "org-1",
-        organization_alias: "Test Organization",
+        organization_alias: "",
+      },
+    ],
+  }),
+}));
+
+vi.mock("@/app/(dashboard)/hooks/projects/useProjects", () => ({
+  useProjects: vi.fn().mockReturnValue({
+    data: [
+      {
+        project_id: "project-1",
+        project_alias: "Support Project",
+        company_id: "org-1",
       },
     ],
   }),
@@ -91,6 +105,8 @@ const mockKey: KeyResponse = {
   config: {},
   user_id: "user-1",
   team_id: "team-1",
+  project_id: "project-1",
+  project_name: null,
   max_parallel_requests: 10,
   metadata: {},
   tpm_limit: 1000,
@@ -106,6 +122,8 @@ const mockKey: KeyResponse = {
   soft_budget_cooldown: false,
   blocked: false,
   litellm_budget_table: {},
+  company_id: null,
+  company_name: null,
   organization_id: "org-1",
   created_at: "2024-11-01T10:00:00Z",
   created_by: "user-1",
@@ -157,7 +175,7 @@ const mockTeam: Team = {
 
 const mockOrganization: Organization = {
   organization_id: "org-1",
-  organization_alias: "Test Organization",
+  organization_alias: "Test Company",
   budget_id: "budget-1",
   metadata: {},
   models: ["gpt-3.5-turbo", "gpt-4"],
@@ -198,7 +216,8 @@ beforeEach(() => {
   mockUseFilterLogic.mockReturnValue({
     filters: {
       "Team ID": "team-1",
-      "Organization ID": "org-1",
+      "Company ID": "org-1",
+      "Project ID": "project-1",
       "Key Alias": "Test Key Alias",
       "User ID": "user-1",
       "User Email": "user@example.com",
@@ -253,8 +272,110 @@ it("should display key information correctly", async () => {
   await waitFor(() => {
     expect(screen.getByText("Test Key Alias")).toBeInTheDocument();
     expect(screen.getByText("Test Team")).toBeInTheDocument();
+    expect(screen.getByText("project-1")).toBeInTheDocument();
     expect(screen.getByText("5.5000")).toBeInTheDocument();
   });
+});
+
+it("should display company and project names when key responses include them", async () => {
+  const keyWithTenantNames = {
+    ...mockKey,
+    company_id: "org-1",
+    company_name: "Engineering Company",
+    project_name: "Support Project",
+  };
+
+  mockUseFilterLogic.mockReturnValue({
+    filters: {
+      "Team ID": "",
+      "Company ID": "",
+      "Project ID": "",
+      "Key Alias": "",
+      "User ID": "",
+      "Sort By": "created_at",
+      "Sort Order": "desc",
+    },
+    filteredKeys: [keyWithTenantNames],
+    filteredTotalCount: null,
+    allTeams: [mockTeam],
+    allOrganizations: [mockOrganization],
+    handleFilterChange: vi.fn(),
+    handleFilterReset: vi.fn(),
+  });
+
+  renderWithProviders(
+    <VirtualKeysTable
+      teams={[mockTeam]}
+      organizations={[mockOrganization]}
+      onSortChange={vi.fn()}
+      currentSort={{ sortBy: "created_at", sortOrder: "desc" }}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByText("Engineering Company")).toBeInTheDocument();
+    expect(screen.getByText("Support Project (project-1)")).toBeInTheDocument();
+  });
+});
+
+it("should display company names from Company selector data when key response only has company_id", async () => {
+  const keyWithCompanyId = {
+    ...mockKey,
+    company_id: "org-1",
+    company_name: null,
+    organization_id: null,
+  };
+
+  mockUseFilterLogic.mockReturnValue({
+    filters: {
+      "Team ID": "",
+      "Company ID": "",
+      "Project ID": "",
+      "Key Alias": "",
+      "User ID": "",
+      "Sort By": "created_at",
+      "Sort Order": "desc",
+    },
+    filteredKeys: [keyWithCompanyId],
+    filteredTotalCount: null,
+    allTeams: [mockTeam],
+    allOrganizations: [mockOrganization],
+    handleFilterChange: vi.fn(),
+    handleFilterReset: vi.fn(),
+  });
+
+  renderWithProviders(
+    <VirtualKeysTable
+      teams={[mockTeam]}
+      organizations={[mockOrganization]}
+      onSortChange={vi.fn()}
+      currentSort={{ sortBy: "created_at", sortOrder: "desc" }}
+    />,
+  );
+
+  await waitFor(() => {
+    expect(screen.getByText("Test Company")).toBeInTheDocument();
+  });
+});
+
+it("should build Project filter options from Project list beyond the current key page", () => {
+  const options = getVirtualKeyProjectFilterOptions({
+    projects: [
+      {
+        project_id: "project-outside-page",
+        project_alias: "Billing Project",
+      },
+    ],
+    keys: [mockKey],
+    searchText: "billing",
+  });
+
+  expect(options).toEqual([
+    {
+      label: "Billing Project (project-outside-page)",
+      value: "project-outside-page",
+    },
+  ]);
 });
 
 it("should display user email correctly", async () => {
@@ -309,7 +430,7 @@ it("should show 'No keys found' message when filteredKeys is empty", () => {
   mockUseFilterLogic.mockReturnValue({
     filters: {
       "Team ID": "",
-      "Organization ID": "",
+      "Company ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
@@ -346,7 +467,7 @@ it("should handle models with more than 3 entries to trigger expansion UI", () =
   mockUseFilterLogic.mockReturnValue({
     filters: {
       "Team ID": "",
-      "Organization ID": "",
+      "Company ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
@@ -394,8 +515,11 @@ it("should render table headers correctly", () => {
   expect(screen.getByText("Key ID")).toBeInTheDocument();
   expect(screen.getByText("Key Alias")).toBeInTheDocument();
   expect(screen.getByText("Team")).toBeInTheDocument();
+  expect(screen.getByText("Company")).toBeInTheDocument();
+  expect(screen.getByText("Project")).toBeInTheDocument();
   expect(screen.getByText("Models")).toBeInTheDocument();
   expect(screen.getByText("Spend (USD)")).toBeInTheDocument();
+  expect(screen.queryByText("Organization")).not.toBeInTheDocument();
 });
 
 it("should handle column resizing hover events", () => {
@@ -483,7 +607,7 @@ it("should display 'Default Proxy Admin' for user_id when value is 'default_user
   mockUseFilterLogic.mockReturnValue({
     filters: {
       "Team ID": "",
-      "Organization ID": "",
+      "Company ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
@@ -522,7 +646,7 @@ it("should display 'Default Proxy Admin' for created_by when value is 'default_u
   mockUseFilterLogic.mockReturnValue({
     filters: {
       "Team ID": "",
-      "Organization ID": "",
+      "Company ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
@@ -554,7 +678,6 @@ it("should display 'Default Proxy Admin' for created_by when value is 'default_u
   });
 });
 
-
 it("should display created_by_user email in 'Created By' column when available", async () => {
   const keyWithCreatedByUser = {
     ...mockKey,
@@ -569,7 +692,7 @@ it("should display created_by_user email in 'Created By' column when available",
   mockUseFilterLogic.mockReturnValue({
     filters: {
       "Team ID": "",
-      "Organization ID": "",
+      "Company ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
@@ -613,7 +736,7 @@ it("should display created_by_user alias over email when both available", async 
   mockUseFilterLogic.mockReturnValue({
     filters: {
       "Team ID": "",
-      "Organization ID": "",
+      "Company ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
@@ -652,7 +775,7 @@ it("should render table without crashing when models is null", async () => {
   mockUseFilterLogic.mockReturnValue({
     filters: {
       "Team ID": "",
-      "Organization ID": "",
+      "Company ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
@@ -692,7 +815,7 @@ it("should render table without crashing when models is undefined", async () => 
   mockUseFilterLogic.mockReturnValue({
     filters: {
       "Team ID": "",
-      "Organization ID": "",
+      "Company ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
@@ -767,7 +890,7 @@ it("should display 'Unknown' for last_active when value is null", async () => {
   mockUseFilterLogic.mockReturnValue({
     filters: {
       "Team ID": "",
-      "Organization ID": "",
+      "Company ID": "",
       "Key Alias": "",
       "User ID": "",
       "Sort By": "created_at",
@@ -819,7 +942,14 @@ describe("pagination display – total count and page count", () => {
     } as any);
 
     mockUseFilterLogic.mockReturnValue({
-      filters: { "Team ID": "", "Organization ID": "", "Key Alias": "", "User ID": "", "Sort By": "created_at", "Sort Order": "desc" },
+      filters: {
+        "Team ID": "",
+        "Company ID": "",
+        "Key Alias": "",
+        "User ID": "",
+        "Sort By": "created_at",
+        "Sort Order": "desc",
+      },
       filteredKeys: [mockKey],
       filteredTotalCount: null,
       allTeams: [mockTeam],
@@ -850,7 +980,14 @@ describe("pagination display – total count and page count", () => {
     } as any);
 
     mockUseFilterLogic.mockReturnValue({
-      filters: { "Team ID": "", "Organization ID": "", "Key Alias": "aaaaa", "User ID": "", "Sort By": "created_at", "Sort Order": "desc" },
+      filters: {
+        "Team ID": "",
+        "Company ID": "",
+        "Key Alias": "aaaaa",
+        "User ID": "",
+        "Sort By": "created_at",
+        "Sort Order": "desc",
+      },
       filteredKeys: [mockKey],
       filteredTotalCount: 1,
       allTeams: [mockTeam],
@@ -881,7 +1018,14 @@ describe("pagination display – total count and page count", () => {
     } as any);
 
     mockUseFilterLogic.mockReturnValue({
-      filters: { "Team ID": "", "Organization ID": "", "Key Alias": "aaaaa", "User ID": "", "Sort By": "created_at", "Sort Order": "desc" },
+      filters: {
+        "Team ID": "",
+        "Company ID": "",
+        "Key Alias": "aaaaa",
+        "User ID": "",
+        "Sort By": "created_at",
+        "Sort Order": "desc",
+      },
       filteredKeys: [mockKey],
       filteredTotalCount: 1,
       allTeams: [mockTeam],
@@ -980,7 +1124,7 @@ describe("Status column reflects key.blocked / scim_blocked metadata", () => {
     mockUseFilterLogic.mockReturnValue({
       filters: {
         "Team ID": "",
-        "Organization ID": "",
+        "Company ID": "",
         "Key Alias": "",
         "User ID": "",
         "Sort By": "created_at",
@@ -997,9 +1141,7 @@ describe("Status column reflects key.blocked / scim_blocked metadata", () => {
     renderWithProviders(<VirtualKeysTable {...defaultMockProps} />);
 
     await waitFor(() => {
-      expect(screen.getByTestId(`key-status-${mockKey.token_id}`)).toHaveTextContent(
-        "Active",
-      );
+      expect(screen.getByTestId(`key-status-${mockKey.token_id}`)).toHaveTextContent("Active");
     });
   });
 
@@ -1007,7 +1149,7 @@ describe("Status column reflects key.blocked / scim_blocked metadata", () => {
     mockUseFilterLogic.mockReturnValue({
       filters: {
         "Team ID": "",
-        "Organization ID": "",
+        "Company ID": "",
         "Key Alias": "",
         "User ID": "",
         "Sort By": "created_at",
@@ -1024,9 +1166,7 @@ describe("Status column reflects key.blocked / scim_blocked metadata", () => {
     renderWithProviders(<VirtualKeysTable {...defaultMockProps} />);
 
     await waitFor(() => {
-      expect(screen.getByTestId(`key-status-${mockKey.token_id}`)).toHaveTextContent(
-        "Blocked",
-      );
+      expect(screen.getByTestId(`key-status-${mockKey.token_id}`)).toHaveTextContent("Blocked");
     });
     expect(screen.queryByText(/Blocked by SCIM/i)).not.toBeInTheDocument();
   });
@@ -1035,15 +1175,13 @@ describe("Status column reflects key.blocked / scim_blocked metadata", () => {
     mockUseFilterLogic.mockReturnValue({
       filters: {
         "Team ID": "",
-        "Organization ID": "",
+        "Company ID": "",
         "Key Alias": "",
         "User ID": "",
         "Sort By": "created_at",
         "Sort Order": "desc",
       },
-      filteredKeys: [
-        { ...mockKey, blocked: true, metadata: { scim_blocked: true } },
-      ],
+      filteredKeys: [{ ...mockKey, blocked: true, metadata: { scim_blocked: true } }],
       filteredTotalCount: null,
       allTeams: [mockTeam],
       allOrganizations: [mockOrganization],

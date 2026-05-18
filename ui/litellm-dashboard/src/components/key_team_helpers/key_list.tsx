@@ -11,6 +11,10 @@ export interface Team {
   tpm_limit: number | null;
   rpm_limit: number | null;
   organization_id: string;
+  company_id?: string | null;
+  company_name?: string | null;
+  project_ids?: string[];
+  project_names?: string[];
   created_at: string;
   keys: KeyResponse[];
   members_with_roles: Member[];
@@ -35,6 +39,8 @@ export interface KeyResponse {
   user_id: string;
   team_id: string | null;
   project_id: string | null;
+  project_alias?: string | null;
+  project_name?: string | null;
   max_parallel_requests: number;
   metadata: Record<string, unknown>;
   tpm_limit: number;
@@ -50,6 +56,9 @@ export interface KeyResponse {
   soft_budget_cooldown: boolean;
   blocked: boolean;
   litellm_budget_table: Record<string, unknown>;
+  company_id?: string | null;
+  company_name?: string | null;
+  organization_alias?: string | null;
   organization_id: string | null;
   org_id?: string | null;
   created_at: string;

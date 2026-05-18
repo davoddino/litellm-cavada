@@ -527,9 +527,10 @@ describe("teamListCall", () => {
     });
 
     const options = {
-      organizationID: "org-1",
+      companyID: "org-1",
       teamID: "team-1",
       team_alias: "Test Team",
+      projectID: "project-1",
       userID: "user-1",
       sortBy: "created_at",
       sortOrder: "desc",
@@ -538,9 +539,10 @@ describe("teamListCall", () => {
     await teamListCall("test-access-token", 1, 10, options);
 
     const callUrl = (global.fetch as any).mock.calls[0][0];
-    expect(callUrl).toContain("organization_id=org-1");
+    expect(callUrl).toContain("company_id=org-1");
     expect(callUrl).toContain("team_id=team-1");
     expect(callUrl).toContain("team_alias=Test+Team"); // URL encoding converts spaces to +
+    expect(callUrl).toContain("project_id=project-1");
     expect(callUrl).toContain("user_id=user-1");
     expect(callUrl).toContain("sort_by=created_at");
     expect(callUrl).toContain("sort_order=desc");
@@ -565,6 +567,7 @@ describe("teamListCall", () => {
     await teamListCall("test-access-token", 1, 10, options);
 
     const callUrl = (global.fetch as any).mock.calls[0][0];
+    expect(callUrl).not.toContain("company_id");
     expect(callUrl).not.toContain("organization_id");
     expect(callUrl).not.toContain("team_id");
     expect(callUrl).toContain("user_id=user-1");
@@ -760,7 +763,7 @@ describe("useDeletedTeams", () => {
     });
 
     const options = {
-      organizationID: "org-1",
+      companyID: "org-1",
       teamID: "team-1",
       userID: "user-1",
     };
@@ -772,7 +775,7 @@ describe("useDeletedTeams", () => {
     });
 
     const callUrl = (global.fetch as any).mock.calls[0][0];
-    expect(callUrl).toContain("organization_id=org-1");
+    expect(callUrl).toContain("company_id=org-1");
     expect(callUrl).toContain("team_id=team-1");
     expect(callUrl).toContain("user_id=user-1");
     expect(callUrl).toContain("status=deleted");

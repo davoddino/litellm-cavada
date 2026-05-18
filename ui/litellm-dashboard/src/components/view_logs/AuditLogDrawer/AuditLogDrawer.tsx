@@ -17,7 +17,7 @@ const TABLE_NAME_DISPLAY: Record<string, string> = {
   LiteLLM_VerificationToken: "Keys",
   LiteLLM_TeamTable: "Teams",
   LiteLLM_UserTable: "Users",
-  LiteLLM_OrganizationTable: "Organizations",
+  LiteLLM_OrganizationTable: "Companies",
   LiteLLM_ProxyModelTable: "Models",
 };
 

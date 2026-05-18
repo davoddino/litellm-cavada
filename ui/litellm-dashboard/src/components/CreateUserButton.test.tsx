@@ -5,12 +5,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { CreateUserButton } from "./CreateUserButton";
 import * as networking from "./networking";
 import NotificationsManager from "./molecules/notifications_manager";
+import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
+import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
 
 vi.mock("./networking", () => ({
   userCreateCall: vi.fn(),
   modelAvailableCall: vi.fn().mockResolvedValue({ data: [] }),
   invitationCreateCall: vi.fn(),
   organizationMemberAddCall: vi.fn(),
+  getGlobalLitellmHeaderName: vi.fn().mockReturnValue("Authorization"),
   getProxyUISettings: vi.fn().mockResolvedValue({
     PROXY_BASE_URL: null,
     PROXY_LOGOUT_URL: null,
@@ -20,12 +23,26 @@ vi.mock("./networking", () => ({
   getProxyBaseUrl: vi.fn().mockReturnValue("http://localhost"),
 }));
 
+vi.mock("./common_components/team_dropdown", () => ({
+  default: () => <select aria-label="Team" />,
+}));
+
 vi.mock("./bulk_create_users_button", () => ({
   default: () => <div data-testid="bulk-create-users">Bulk Create Users</div>,
 }));
 
 vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
-  useOrganizations: vi.fn().mockReturnValue({ data: [], isLoading: false }),
+  useOrganizations: vi.fn().mockReturnValue({
+    data: [{ organization_id: "company-1", organization_alias: "Company One" }],
+    isLoading: false,
+  }),
+}));
+
+vi.mock("@/app/(dashboard)/hooks/projects/useProjects", () => ({
+  useProjects: vi.fn().mockReturnValue({
+    data: [{ project_id: "project-1", project_alias: "Project One", company_id: "company-1" }],
+    isLoading: false,
+  }),
 }));
 
 const mockUserCreateCall = vi.mocked(networking.userCreateCall);
@@ -33,6 +50,8 @@ const mockInvitationCreateCall = vi.mocked(networking.invitationCreateCall);
 const mockGetProxyUISettings = vi.mocked(networking.getProxyUISettings);
 const mockOrganizationMemberAddCall = vi.mocked(networking.organizationMemberAddCall);
 const mockNotificationsManager = vi.mocked(NotificationsManager);
+const mockUseOrganizations = vi.mocked(useOrganizations);
+const mockUseProjects = vi.mocked(useProjects);
 
 const createQueryClient = () =>
   new QueryClient({
@@ -54,6 +73,14 @@ function renderWithProviders(ui: React.ReactElement) {
 describe("CreateUserButton", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUseOrganizations.mockReturnValue({
+      data: [{ organization_id: "company-1", organization_alias: "Company One" }],
+      isLoading: false,
+    } as any);
+    mockUseProjects.mockReturnValue({
+      data: [{ project_id: "project-1", project_alias: "Project One", company_id: "company-1" }],
+      isLoading: false,
+    } as any);
     mockGetProxyUISettings.mockResolvedValue({
       PROXY_BASE_URL: null,
       PROXY_LOGOUT_URL: null,
@@ -274,19 +301,28 @@ describe("CreateUserButton", () => {
     });
   });
 
-  describe("organizations", () => {
-    it("should send organizations list in POST body when organizations are selected", async () => {
+  describe("companies", () => {
+    it("should send company_ids in POST body when companies are selected", async () => {
       const { useOrganizations } = await import("@/app/(dashboard)/hooks/organizations/useOrganizations");
       vi.mocked(useOrganizations).mockReturnValue({
-        data: [{ organization_id: "org-1", organization_alias: "My Org" }],
+        data: [{
+          company_id: "company-product",
+          company_name: "Product Company",
+          organization_id: "company-product",
+          organization_alias: "",
+        }],
+        isLoading: false,
+      } as any);
+      mockUseProjects.mockReturnValue({
+        data: [{ project_id: "project-product", project_alias: "Product Project", company_id: "company-product" }],
         isLoading: false,
       } as any);
 
       const user = userEvent.setup();
-      mockUserCreateCall.mockResolvedValue({ data: { user_id: "org-user" } });
+      mockUserCreateCall.mockResolvedValue({ data: { user_id: "company-user" } });
       mockInvitationCreateCall.mockResolvedValue({
-        id: "inv-org",
-        user_id: "org-user",
+        id: "inv-company",
+        user_id: "company-user",
         has_user_setup_sso: false,
       } as any);
 
@@ -300,28 +336,31 @@ describe("CreateUserButton", () => {
       await user.click(screen.getByRole("button", { name: /\+ invite user/i }));
 
       const dialog = screen.getByRole("dialog", { name: /invite user/i });
-      await user.type(within(dialog).getByLabelText(/user email/i), "org@example.com");
+      await user.type(within(dialog).getByLabelText(/user email/i), "company@example.com");
       await user.click(within(dialog).getByRole("combobox", { name: /global proxy role/i }));
       await user.click(screen.getByText("User"));
 
-      // Select org from the dropdown
-      const orgSelect = within(dialog).getByRole("combobox", { name: /organization/i });
+      const orgSelect = within(dialog).getByRole("combobox", { name: /company/i });
       await user.click(orgSelect);
-      await user.click(screen.getByText("My Org (org-1)"));
+      await user.click(screen.getByText("Product Company (company-product)"));
 
       await user.click(within(dialog).getByRole("button", { name: /invite user/i }));
 
       await waitFor(() => {
         expect(mockUserCreateCall).toHaveBeenCalledWith("token", null, expect.objectContaining({
-          organizations: ["org-1"],
+          company_ids: ["company-product"],
         }));
       });
+      const createPayload = mockUserCreateCall.mock.calls[mockUserCreateCall.mock.calls.length - 1][2];
+      expect(createPayload).not.toHaveProperty("organization_id");
+      expect(createPayload).not.toHaveProperty("organization_ids");
+      expect(createPayload).not.toHaveProperty("organizations");
     });
 
     it("should not call organizationMemberAddCall after user creation", async () => {
       const { useOrganizations } = await import("@/app/(dashboard)/hooks/organizations/useOrganizations");
       vi.mocked(useOrganizations).mockReturnValue({
-        data: [{ organization_id: "org-1", organization_alias: "My Org" }],
+        data: [{ organization_id: "org-1", organization_alias: "My Company" }],
         isLoading: false,
       } as any);
 
@@ -458,6 +497,55 @@ describe("CreateUserButton", () => {
           send_invite_email: false,
         }));
       });
+    });
+
+    it("should send selected company and project ids when inviting a user", async () => {
+      const user = userEvent.setup();
+      mockUserCreateCall.mockResolvedValue({ data: { user_id: "tenant-user" } });
+      mockInvitationCreateCall.mockResolvedValue({
+        id: "inv-tenant",
+        user_id: "tenant-user",
+        has_user_setup_sso: false,
+      } as any);
+
+      renderWithProviders(
+        <CreateUserButton {...defaultProps} possibleUIRoles={{ proxy_user: { ui_label: "User", description: "" } }} />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /\+ invite user/i })).toBeInTheDocument();
+      });
+      await user.click(screen.getByRole("button", { name: /\+ invite user/i }));
+
+      const dialog = screen.getByRole("dialog", { name: /invite user/i });
+      expect(within(dialog).queryByText(/organization/i)).not.toBeInTheDocument();
+      await user.type(within(dialog).getByLabelText(/user email/i), "tenant@example.com");
+      await user.click(within(dialog).getByRole("combobox", { name: /global proxy role/i }));
+      await user.click(screen.getByText("User"));
+      await user.click(within(dialog).getByRole("combobox", { name: /company/i }));
+      await user.click(await screen.findByText("Company One (company-1)"));
+      await user.click(within(dialog).getByRole("combobox", { name: /project/i }));
+      await user.click(await screen.findByText("Project One (project-1)"));
+      await user.click(within(dialog).getByRole("button", { name: /invite user/i }));
+
+      await waitFor(() => {
+        expect(mockUserCreateCall).toHaveBeenCalledWith(
+          "token",
+          null,
+          expect.objectContaining({
+            company_ids: ["company-1"],
+            project_ids: ["project-1"],
+          }),
+        );
+      });
+      const createPayload = mockUserCreateCall.mock.calls[mockUserCreateCall.mock.calls.length - 1][2];
+      expect(createPayload).toMatchObject({
+        company_ids: ["company-1"],
+        project_ids: ["project-1"],
+      });
+      expect(createPayload).not.toHaveProperty("organization_id");
+      expect(createPayload).not.toHaveProperty("organization_ids");
+      expect(createPayload).not.toHaveProperty("organizations");
     });
 
     it("should keep the checkbox checked by default when the modal is opened in standalone mode", async () => {

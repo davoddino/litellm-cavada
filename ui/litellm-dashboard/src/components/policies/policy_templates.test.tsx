@@ -46,6 +46,13 @@ describe("PolicyTemplates", () => {
     expect(await screen.findByText("Policy Templates")).toBeInTheDocument();
   });
 
+  it("should describe policy templates with Company and Project product copy", async () => {
+    vi.mocked(networking.getPolicyTemplates).mockResolvedValue([]);
+    renderWithProviders(<PolicyTemplates {...defaultProps} />);
+    expect(await screen.findByText(/guardrails for Companies and Projects/i)).toBeInTheDocument();
+    expect(screen.queryByText(/organization/i)).not.toBeInTheDocument();
+  });
+
   it("should not show the template grid while fetching", () => {
     vi.mocked(networking.getPolicyTemplates).mockReturnValue(new Promise(() => {}));
     renderWithProviders(<PolicyTemplates {...defaultProps} />);

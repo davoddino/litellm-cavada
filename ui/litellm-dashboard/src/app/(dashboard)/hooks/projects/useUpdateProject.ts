@@ -12,6 +12,7 @@ import { ProjectResponse, projectKeys } from "./useProjects";
 
 export interface ProjectUpdateParams {
   project_alias?: string;
+  company_id?: string;
   description?: string;
   team_id?: string;
   models?: string[];

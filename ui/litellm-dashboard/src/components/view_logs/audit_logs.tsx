@@ -27,7 +27,7 @@ const TABLE_NAME_DISPLAY: Record<string, string> = {
   LiteLLM_VerificationToken: "Keys",
   LiteLLM_TeamTable: "Teams",
   LiteLLM_UserTable: "Users",
-  LiteLLM_OrganizationTable: "Organizations",
+  LiteLLM_OrganizationTable: "Companies",
   LiteLLM_ProxyModelTable: "Models",
 };
 
@@ -254,7 +254,7 @@ export default function AuditLogs({
                 { label: "Keys", value: "LiteLLM_VerificationToken" },
                 { label: "Teams", value: "LiteLLM_TeamTable" },
                 { label: "Users", value: "LiteLLM_UserTable" },
-                { label: "Organizations", value: "LiteLLM_OrganizationTable" },
+                { label: "Companies", value: "LiteLLM_OrganizationTable" },
                 { label: "Models", value: "LiteLLM_ProxyModelTable" },
               ]}
               onChange={(val) => { setTableName(val); resetPage(); }}

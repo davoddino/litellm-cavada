@@ -75,6 +75,674 @@ def _strip_password_from_response(response) -> None:
             response["data"].__dict__.pop("password", None)
 
 
+def _resolve_company_ids_filter(
+    company_ids: Optional[str],
+    organization_ids: Optional[str],
+) -> Optional[str]:
+    company_ids = company_ids if isinstance(company_ids, str) else None
+    organization_ids = organization_ids if isinstance(organization_ids, str) else None
+    if company_ids and organization_ids and company_ids != organization_ids:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "company_ids and organization_ids refer to the same tenant list and must match when both are provided."
+            },
+        )
+    return company_ids or organization_ids
+
+
+def _field_from_obj(row: Any, field_name: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(field_name)
+    return getattr(row, field_name, None)
+
+
+def _model_to_dict(row: Any) -> Dict[str, Any]:
+    if isinstance(row, dict):
+        return dict(row)
+    if isinstance(row, BaseModel):
+        return row.model_dump()
+    if hasattr(row, "model_dump"):
+        return row.model_dump()
+    if hasattr(row, "dict"):
+        return row.dict()
+    return dict(row)
+
+
+def _unique_non_empty(values: Optional[List[Any]]) -> List[str]:
+    seen: set[str] = set()
+    result: List[str] = []
+    for value in values or []:
+        if value is None:
+            continue
+        value_str = str(value).strip()
+        if not value_str or value_str in seen:
+            continue
+        seen.add(value_str)
+        result.append(value_str)
+    return result
+
+
+def _team_ids_from_user_dict(user_dict: Dict[str, Any]) -> List[str]:
+    team_ids: List[str] = []
+    for team_id in user_dict.get("teams") or []:
+        if isinstance(team_id, str):
+            team_ids.append(team_id)
+    return _unique_non_empty(team_ids)
+
+
+async def _get_company_name_map(
+    prisma_client: Any,
+    company_ids: List[str],
+) -> Dict[str, str]:
+    if not company_ids:
+        return {}
+
+    companies = await prisma_client.db.litellm_organizationtable.find_many(
+        where={"organization_id": {"in": company_ids}},
+    )
+    company_names: Dict[str, str] = {}
+    for company in companies:
+        company_id = _field_from_obj(company, "organization_id")
+        if not company_id:
+            continue
+        company_names[company_id] = (
+            _field_from_obj(company, "organization_alias") or company_id
+        )
+    return company_names
+
+
+async def _validate_company_ids_exist(
+    prisma_client: Any,
+    company_ids: List[str],
+) -> None:
+    if not company_ids:
+        return
+
+    company_names = await _get_company_name_map(
+        prisma_client=prisma_client,
+        company_ids=company_ids,
+    )
+    missing = [company_id for company_id in company_ids if company_id not in company_names]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": f"Company not found for company_id(s)={missing}"},
+        )
+
+
+async def _get_user_company_membership_ids(
+    prisma_client: Any,
+    user_id: str,
+) -> List[str]:
+    memberships = await prisma_client.db.litellm_organizationmembership.find_many(
+        where={"user_id": user_id},
+    )
+    return _unique_non_empty(
+        [_field_from_obj(membership, "organization_id") for membership in memberships]
+    )
+
+
+async def _get_company_admin_ids_for_user(
+    prisma_client: Any,
+    user_id: Optional[str],
+) -> List[str]:
+    if user_id is None:
+        return []
+    memberships = await prisma_client.db.litellm_organizationmembership.find_many(
+        where={
+            "user_id": user_id,
+            "user_role": LitellmUserRoles.ORG_ADMIN.value,
+        },
+    )
+    return _unique_non_empty(
+        [_field_from_obj(membership, "organization_id") for membership in memberships]
+    )
+
+
+def _is_proxy_admin(user_api_key_dict: UserAPIKeyAuth) -> bool:
+    return user_api_key_dict.user_role in (
+        LitellmUserRoles.PROXY_ADMIN,
+        LitellmUserRoles.PROXY_ADMIN.value,
+    )
+
+
+def _team_member_role_for_user(team: Any, user_id: Optional[str]) -> Optional[str]:
+    if user_id is None:
+        return None
+    for member in _field_from_obj(team, "members_with_roles") or []:
+        if _field_from_obj(member, "user_id") == user_id:
+            role = _field_from_obj(member, "role")
+            return str(role) if role is not None else None
+    return None
+
+
+async def _get_project_team_ids_for_user_role(
+    prisma_client: Any,
+    user_id: Optional[str],
+    team_ids: List[str],
+    *,
+    require_admin: bool,
+) -> List[str]:
+    normalized_team_ids = _unique_non_empty(team_ids)
+    if user_id is None or not normalized_team_ids:
+        return []
+
+    teams = await prisma_client.db.litellm_teamtable.find_many(
+        where={"team_id": {"in": normalized_team_ids}},
+    )
+    allowed_team_ids: List[str] = []
+    for team in teams:
+        role = _team_member_role_for_user(team=team, user_id=user_id)
+        if role is None:
+            continue
+        if require_admin and role != "admin":
+            continue
+        team_id = _field_from_obj(team, "team_id")
+        if team_id:
+            allowed_team_ids.append(team_id)
+    return _unique_non_empty(allowed_team_ids)
+
+
+async def _assert_project_context_access(
+    prisma_client: Any,
+    user_api_key_dict: UserAPIKeyAuth,
+    project_context: Dict[str, List[str]],
+    *,
+    require_admin: bool,
+) -> None:
+    team_ids = project_context.get("team_ids") or []
+    if not team_ids or _is_proxy_admin(user_api_key_dict):
+        return
+
+    allowed_team_ids = await _get_project_team_ids_for_user_role(
+        prisma_client=prisma_client,
+        user_id=user_api_key_dict.user_id,
+        team_ids=team_ids,
+        require_admin=require_admin,
+    )
+    missing_team_ids = [
+        team_id for team_id in team_ids if team_id not in allowed_team_ids
+    ]
+    if missing_team_ids:
+        required_role = "project admin" if require_admin else "project member"
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": (
+                    f"You do not have {required_role} access to "
+                    f"project team_id(s)={missing_team_ids}."
+                )
+            },
+        )
+
+
+async def _target_user_shares_project_with_caller(
+    prisma_client: Any,
+    caller_user_id: Optional[str],
+    target_user: Any,
+) -> bool:
+    if caller_user_id is None or target_user is None:
+        return False
+
+    caller_user = await prisma_client.db.litellm_usertable.find_unique(
+        where={"user_id": caller_user_id}
+    )
+    caller_team_ids = _unique_non_empty(
+        list(getattr(caller_user, "teams", []) or [])
+        if caller_user is not None
+        else []
+    )
+    target_team_ids = _unique_non_empty(list(getattr(target_user, "teams", []) or []))
+    shared_team_ids = [
+        team_id for team_id in caller_team_ids if team_id in target_team_ids
+    ]
+    if not shared_team_ids:
+        return False
+
+    project_rows = await prisma_client.db.litellm_projecttable.find_many(
+        where={"team_id": {"in": shared_team_ids}},
+    )
+    return bool(project_rows)
+
+
+async def _user_company_project_context(
+    prisma_client: Any,
+    user_dicts: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, List[str]]]:
+    user_ids = _unique_non_empty([user_dict.get("user_id") for user_dict in user_dicts])
+    all_team_ids = _unique_non_empty(
+        [
+            team_id
+            for user_dict in user_dicts
+            for team_id in _team_ids_from_user_dict(user_dict)
+        ]
+    )
+
+    memberships_by_user: Dict[str, List[str]] = {user_id: [] for user_id in user_ids}
+    if user_ids:
+        memberships = await prisma_client.db.litellm_organizationmembership.find_many(
+            where={"user_id": {"in": user_ids}},
+        )
+        for membership in memberships:
+            user_id = _field_from_obj(membership, "user_id")
+            company_id = _field_from_obj(membership, "organization_id")
+            if user_id and company_id:
+                memberships_by_user.setdefault(user_id, []).append(company_id)
+
+    team_company_map: Dict[str, str] = {}
+    if all_team_ids:
+        teams = await prisma_client.db.litellm_teamtable.find_many(
+            where={"team_id": {"in": all_team_ids}},
+        )
+        for team in teams:
+            team_id = _field_from_obj(team, "team_id")
+            company_id = _field_from_obj(team, "organization_id")
+            if team_id and company_id:
+                team_company_map[team_id] = company_id
+
+    project_ids_by_team: Dict[str, List[str]] = {}
+    project_names_by_team: Dict[str, List[str]] = {}
+    if all_team_ids:
+        projects = await prisma_client.db.litellm_projecttable.find_many(
+            where={"team_id": {"in": all_team_ids}},
+        )
+        for project in projects:
+            team_id = _field_from_obj(project, "team_id")
+            project_id = _field_from_obj(project, "project_id")
+            if not team_id or not project_id:
+                continue
+            project_ids_by_team.setdefault(team_id, []).append(project_id)
+            project_names_by_team.setdefault(team_id, []).append(
+                _field_from_obj(project, "project_alias") or project_id
+            )
+
+    all_company_ids = _unique_non_empty(
+        [
+            company_id
+            for company_ids in memberships_by_user.values()
+            for company_id in company_ids
+        ]
+        + list(team_company_map.values())
+    )
+    company_names = await _get_company_name_map(
+        prisma_client=prisma_client,
+        company_ids=all_company_ids,
+    )
+
+    context: Dict[str, Dict[str, List[str]]] = {}
+    for user_dict in user_dicts:
+        user_id = user_dict.get("user_id")
+        team_ids = _team_ids_from_user_dict(user_dict)
+        company_ids = _unique_non_empty(
+            memberships_by_user.get(user_id, [])
+            + [team_company_map[team_id] for team_id in team_ids if team_id in team_company_map]
+        )
+        project_ids = _unique_non_empty(
+            [
+                project_id
+                for team_id in team_ids
+                for project_id in project_ids_by_team.get(team_id, [])
+            ]
+        )
+        project_names = _unique_non_empty(
+            [
+                project_name
+                for team_id in team_ids
+                for project_name in project_names_by_team.get(team_id, [])
+            ]
+        )
+        context[user_id] = {
+            "company_ids": company_ids,
+            "company_names": [
+                company_names.get(company_id, company_id) for company_id in company_ids
+            ],
+            "project_ids": project_ids,
+            "project_names": project_names,
+        }
+    return context
+
+
+async def _enrich_user_dict_with_company_project_context(
+    user_dict: Dict[str, Any],
+    prisma_client: Any,
+) -> Dict[str, Any]:
+    user_id = user_dict.get("user_id")
+    if user_id:
+        user_row = await prisma_client.db.litellm_usertable.find_unique(
+            where={"user_id": user_id},
+        )
+        if user_row is not None:
+            db_user_dict = _model_to_dict(user_row)
+            db_user_dict.update(user_dict)
+            if not db_user_dict.get("teams"):
+                db_user_dict["teams"] = _model_to_dict(user_row).get("teams") or []
+            user_dict = db_user_dict
+    context = await _user_company_project_context(
+        prisma_client=prisma_client,
+        user_dicts=[user_dict],
+    )
+    user_dict.update(context.get(user_dict.get("user_id"), {}))
+    return user_dict
+
+
+async def _project_context_for_project_ids(
+    prisma_client: Any,
+    project_ids: Optional[List[str]],
+) -> Dict[str, List[str]]:
+    normalized_project_ids = _unique_non_empty(project_ids)
+    if not normalized_project_ids:
+        return {"project_ids": [], "project_names": [], "team_ids": [], "company_ids": []}
+
+    projects = await prisma_client.db.litellm_projecttable.find_many(
+        where={"project_id": {"in": normalized_project_ids}},
+        include={"litellm_team_table": True},
+    )
+    found_project_ids = _unique_non_empty(
+        [_field_from_obj(project, "project_id") for project in projects]
+    )
+    missing = [
+        project_id
+        for project_id in normalized_project_ids
+        if project_id not in found_project_ids
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": f"Project not found for project_id(s)={missing}"},
+        )
+
+    project_names: List[str] = []
+    team_ids: List[str] = []
+    company_ids: List[str] = []
+    for project in projects:
+        project_id = _field_from_obj(project, "project_id")
+        project_names.append(_field_from_obj(project, "project_alias") or project_id)
+
+        team_id = _field_from_obj(project, "team_id")
+        if team_id:
+            team_ids.append(team_id)
+
+        team_obj = _field_from_obj(project, "litellm_team_table")
+        company_id = _field_from_obj(team_obj, "organization_id")
+        if company_id:
+            company_ids.append(company_id)
+
+    return {
+        "project_ids": found_project_ids,
+        "project_names": _unique_non_empty(project_names),
+        "team_ids": _unique_non_empty(team_ids),
+        "company_ids": _unique_non_empty(company_ids),
+    }
+
+
+def _merge_company_ids_with_project_context(
+    company_ids: Optional[List[str]],
+    organization_ids: Optional[List[str]],
+    project_company_ids: List[str],
+) -> List[str]:
+    normalized_company_ids = _unique_non_empty(company_ids or organization_ids)
+    missing_project_companies = [
+        company_id
+        for company_id in project_company_ids
+        if normalized_company_ids and company_id not in normalized_company_ids
+    ]
+    if missing_project_companies:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "project_ids must belong to one of the selected company_ids. "
+                f"Missing company_id(s)={missing_project_companies}"
+            },
+        )
+    return _unique_non_empty(normalized_company_ids + project_company_ids)
+
+
+async def _ensure_user_company_memberships(
+    prisma_client: Any,
+    user_id: str,
+    company_ids: List[str],
+) -> None:
+    await _validate_company_ids_exist(
+        prisma_client=prisma_client,
+        company_ids=company_ids,
+    )
+    for company_id in company_ids:
+        existing_membership = (
+            await prisma_client.db.litellm_organizationmembership.find_unique(
+                where={
+                    "user_id_organization_id": {
+                        "user_id": user_id,
+                        "organization_id": company_id,
+                    }
+                },
+            )
+        )
+        if existing_membership is not None:
+            continue
+        await prisma_client.db.litellm_organizationmembership.create(
+            data={
+                "user_id": user_id,
+                "organization_id": company_id,
+                "user_role": LitellmUserRoles.INTERNAL_USER.value,
+            }
+        )
+
+
+async def _replace_user_company_memberships(
+    prisma_client: Any,
+    user_id: str,
+    company_ids: List[str],
+) -> None:
+    await _validate_company_ids_exist(
+        prisma_client=prisma_client,
+        company_ids=company_ids,
+    )
+    existing_memberships = (
+        await prisma_client.db.litellm_organizationmembership.find_many(
+            where={"user_id": user_id},
+        )
+    )
+    for membership in existing_memberships:
+        organization_id = _field_from_obj(membership, "organization_id")
+        if not organization_id:
+            continue
+        if organization_id in company_ids:
+            continue
+        await prisma_client.db.litellm_organizationmembership.delete(
+            where={
+                "user_id_organization_id": {
+                    "user_id": user_id,
+                    "organization_id": organization_id,
+                }
+            }
+        )
+    await _ensure_user_company_memberships(
+        prisma_client=prisma_client,
+        user_id=user_id,
+        company_ids=company_ids,
+    )
+
+
+async def _sync_user_project_team_memberships(
+    user_id: str,
+    user_email: Optional[str],
+    requested_project_team_ids: List[str],
+    prisma_client: Any,
+    user_api_key_dict: UserAPIKeyAuth,
+) -> None:
+    existing_user = await prisma_client.db.litellm_usertable.find_unique(
+        where={"user_id": user_id}
+    )
+    existing_team_ids = _unique_non_empty(
+        list(getattr(existing_user, "teams", []) or [])
+    )
+    existing_projects = (
+        await prisma_client.db.litellm_projecttable.find_many(
+            where={"team_id": {"in": existing_team_ids}},
+        )
+        if existing_team_ids
+        else []
+    )
+    existing_project_team_ids = _unique_non_empty(
+        [_field_from_obj(project, "team_id") for project in existing_projects]
+    )
+
+    target_project_team_ids = _unique_non_empty(requested_project_team_ids)
+    teams_to_add = [
+        team_id for team_id in target_project_team_ids if team_id not in existing_team_ids
+    ]
+    teams_to_remove = [
+        team_id
+        for team_id in existing_project_team_ids
+        if team_id not in target_project_team_ids
+    ]
+
+    for team_id in teams_to_add:
+        await _add_user_to_team(
+            user_id=user_id,
+            team_id=team_id,
+            user_api_key_dict=user_api_key_dict,
+            user_email=user_email,
+            max_budget_in_team=None,
+            user_role="user",
+        )
+
+    if teams_to_remove:
+        from litellm.proxy.management_endpoints.team_endpoints import team_member_delete
+
+        for team_id in teams_to_remove:
+            await team_member_delete(
+                data=TeamMemberDeleteRequest(team_id=team_id, user_id=user_id),
+                user_api_key_dict=user_api_key_dict,
+            )
+
+
+async def _assert_user_context_update_allowed(
+    prisma_client: Any,
+    user_api_key_dict: UserAPIKeyAuth,
+    target_user_id: str,
+    requested_company_ids: List[str],
+    existing_company_ids: List[str],
+    project_context: Dict[str, List[str]],
+    *,
+    company_membership_was_set: bool,
+) -> None:
+    if _is_proxy_admin(user_api_key_dict):
+        return
+
+    caller_admin_company_ids = await _get_company_admin_ids_for_user(
+        prisma_client=prisma_client,
+        user_id=user_api_key_dict.user_id,
+    )
+
+    project_role_company_ids: set[str] = set()
+    if project_context.get("team_ids"):
+        project_company_ids = set(project_context.get("company_ids") or [])
+        companies_missing_admin = [
+            company_id
+            for company_id in project_company_ids
+            if company_id not in caller_admin_company_ids
+        ]
+        if companies_missing_admin:
+            await _assert_project_context_access(
+                prisma_client=prisma_client,
+                user_api_key_dict=user_api_key_dict,
+                project_context=project_context,
+                require_admin=True,
+            )
+            project_role_company_ids = project_company_ids
+
+    if company_membership_was_set:
+        affected_company_ids = _unique_non_empty(
+            requested_company_ids + existing_company_ids
+        )
+        unauthorized = [
+            company_id
+            for company_id in affected_company_ids
+            if company_id not in caller_admin_company_ids
+            and company_id not in project_role_company_ids
+        ]
+        if unauthorized:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": (
+                        "You do not have company admin access to "
+                        f"company_id(s)={unauthorized}."
+                    )
+                },
+            )
+
+    if (
+        not company_membership_was_set
+        and project_context.get("team_ids")
+        and not caller_admin_company_ids
+    ):
+        await _assert_project_context_access(
+            prisma_client=prisma_client,
+            user_api_key_dict=user_api_key_dict,
+            project_context=project_context,
+            require_admin=True,
+        )
+
+
+async def _assert_user_context_create_allowed(
+    prisma_client: Any,
+    user_api_key_dict: UserAPIKeyAuth,
+    requested_company_ids: List[str],
+    project_context: Dict[str, List[str]],
+    *,
+    company_membership_was_set: bool,
+    project_membership_was_set: bool,
+) -> None:
+    if _is_proxy_admin(user_api_key_dict):
+        return
+    if not company_membership_was_set and not project_membership_was_set:
+        return
+
+    caller_admin_company_ids = await _get_company_admin_ids_for_user(
+        prisma_client=prisma_client,
+        user_id=user_api_key_dict.user_id,
+    )
+    project_company_ids = set(project_context.get("company_ids") or [])
+
+    company_ids_requiring_company_admin = [
+        company_id
+        for company_id in requested_company_ids
+        if company_id not in project_company_ids
+    ]
+    unauthorized_company_ids = [
+        company_id
+        for company_id in company_ids_requiring_company_admin
+        if company_id not in caller_admin_company_ids
+    ]
+    if unauthorized_company_ids:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": (
+                    "You do not have company admin access to "
+                    f"company_id(s)={unauthorized_company_ids}."
+                )
+            },
+        )
+
+    if project_context.get("team_ids"):
+        companies_missing_admin = [
+            company_id
+            for company_id in project_company_ids
+            if company_id not in caller_admin_company_ids
+        ]
+        if companies_missing_admin:
+            await _assert_project_context_access(
+                prisma_client=prisma_client,
+                user_api_key_dict=user_api_key_dict,
+                project_context=project_context,
+                require_admin=True,
+            )
+
+
 def _update_internal_new_user_params(data_json: dict, data: NewUserRequest) -> dict:
     if "user_id" in data_json and data_json["user_id"] is None:
         data_json["user_id"] = str(uuid.uuid4())
@@ -395,7 +1063,8 @@ async def new_user(
     - sso_user_id: Optional[str] - The id of the user in the SSO provider.
     - object_permission: Optional[LiteLLM_ObjectPermissionBase] - internal user-specific object permission. Example - {"vector_stores": ["vector_store_1", "vector_store_2"]}. IF null or {} then no object permission.
     - prompts: Optional[List[str]] - List of allowed prompts for the user. If specified, the user will only be able to use these specific prompts.
-    - organizations: List[str] - List of organization id's the user is a member of
+    - company_ids: List[str] - List of company IDs the user is a member of.
+    - project_ids: List[str] - List of project IDs the user is a member of through backing project teams.
     - budget_limits: Optional[list] - List of concurrent budget windows for the user. Each window specifies a budget_limit, time_period, and optional budget_duration. Example - [{"budget_limit": 10.0, "time_period": "1d"}, {"budget_limit": 50.0, "time_period": "7d"}].
     Returns:
     - key: (str) The generated api key for the user
@@ -460,13 +1129,41 @@ async def new_user(
         teams = data.teams
         if teams is None:
             teams = check_if_default_team_set()
+        company_ids = cast(Optional[List[str]], data_json.pop("company_ids", None))
+        data_json.pop("company_id", None)
+        data_json.pop("companies", None)
         organization_ids = cast(
             Optional[List[str]], data_json.pop("organizations", None)
+        )
+        data_json.pop("organization_id", None)
+        data_json.pop("organization_ids", None)
+        project_ids = cast(Optional[List[str]], data_json.pop("project_ids", None))
+        data_json.pop("project_id", None)
+        company_membership_was_set = (
+            company_ids is not None or organization_ids is not None
+        )
+        project_membership_was_set = project_ids is not None
+        project_context = await _project_context_for_project_ids(
+            prisma_client=prisma_client,
+            project_ids=project_ids,
+        )
+        organization_ids = _merge_company_ids_with_project_context(
+            company_ids=company_ids,
+            organization_ids=organization_ids,
+            project_company_ids=project_context["company_ids"],
+        )
+        await _assert_user_context_create_allowed(
+            prisma_client=prisma_client,
+            user_api_key_dict=user_api_key_dict,
+            requested_company_ids=organization_ids,
+            project_context=project_context,
+            company_membership_was_set=company_membership_was_set,
+            project_membership_was_set=project_membership_was_set,
         )
 
         response = await generate_key_helper_fn(request_type="user", **data_json)
         # Admin UI Logic
-        # Add User to Team and Organization
+        # Add User to Team and Company membership.
         # if team_id passed add this user to the team
         _team_id = data_json.get("team_id", None)
         if _team_id is not None:
@@ -490,11 +1187,25 @@ async def new_user(
         user_id = cast(Optional[str], response.get("user_id", None))
 
         if organization_ids is not None and user_id is not None:
-            await _add_user_to_organizations(
+            await _ensure_user_company_memberships(
+                prisma_client=prisma_client,
                 user_id=user_id,
-                organizations=organization_ids,
+                company_ids=organization_ids,
+            )
+
+        if user_id is not None and project_context["team_ids"]:
+            await _sync_user_project_team_memberships(
+                user_id=user_id,
+                user_email=data.user_email,
+                requested_project_team_ids=project_context["team_ids"],
                 prisma_client=prisma_client,
                 user_api_key_dict=user_api_key_dict,
+            )
+
+        if user_id is not None:
+            response = await _enrich_user_dict_with_company_project_context(
+                user_dict=response,
+                prisma_client=prisma_client,
             )
 
         special_keys = ["token", "token_id"]
@@ -767,7 +1478,13 @@ async def user_info(  # noqa: PLR0915
 
     try:
         user_id = _normalize_user_info_user_id(request=request, user_id=user_id)
-        _enforce_user_info_access(user_id=user_id, user_api_key_dict=user_api_key_dict)
+        deferred_access_error: Optional[HTTPException] = None
+        try:
+            _enforce_user_info_access(
+                user_id=user_id, user_api_key_dict=user_api_key_dict
+            )
+        except HTTPException as e:
+            deferred_access_error = e
 
         if prisma_client is None:
             raise Exception(
@@ -793,6 +1510,13 @@ async def user_info(  # noqa: PLR0915
                 status_code=404,
                 detail=f"User {user_id} not found",
             )
+        if deferred_access_error is not None:
+            authorized_user = await _check_user_info_v2_access(
+                user_api_key_dict=user_api_key_dict,
+                target_user_id=user_id,
+            )
+            if authorized_user is None:
+                raise deferred_access_error
 
         team_list, teams_1 = await _get_user_info_teams(
             prisma_client=prisma_client,
@@ -815,6 +1539,11 @@ async def user_info(  # noqa: PLR0915
             team_list=team_list,
             teams_1=teams_1,
         )
+        if isinstance(response_data.user_info, dict):
+            response_data.user_info = await _enrich_user_dict_with_company_project_context(
+                user_dict=response_data.user_info,
+                prisma_client=prisma_client,
+            )
 
         return response_data
     except Exception as e:
@@ -862,7 +1591,21 @@ async def _check_user_info_v2_access(
     if user_api_key_dict.user_id == target_user_id:
         return await _fetch_target_user()
 
-    # Rule 3: Team admins can look up users in their teams
+    # Rule 3: Company admins can look up users in their companies.
+    if user_api_key_dict.user_id is not None:
+        caller_admin_company_ids = await _get_company_admin_ids_for_user(
+            prisma_client=prisma_client,
+            user_id=user_api_key_dict.user_id,
+        )
+        if caller_admin_company_ids:
+            target_company_ids = await _get_user_company_membership_ids(
+                prisma_client=prisma_client,
+                user_id=target_user_id,
+            )
+            if set(caller_admin_company_ids) & set(target_company_ids):
+                return await _fetch_target_user()
+
+    # Rule 4: Team admins can look up users in their teams
     if user_api_key_dict.user_id is not None:
         # Get caller's teams
         caller_user = await prisma_client.db.litellm_usertable.find_unique(
@@ -886,6 +1629,12 @@ async def _check_user_info_v2_access(
                     # Check if target user is in this team
                     if team.team_id in (target_user.teams or []):
                         return target_user
+            if await _target_user_shares_project_with_caller(
+                prisma_client=prisma_client,
+                caller_user_id=user_api_key_dict.user_id,
+                target_user=target_user,
+            ):
+                return target_user
 
     return None
 
@@ -961,6 +1710,11 @@ async def user_info_v2(
 
         user_data = user_row.model_dump()
 
+        user_data = await _enrich_user_dict_with_company_project_context(
+            user_dict=user_data,
+            prisma_client=prisma_client,
+        )
+
         return UserInfoV2Response(
             user_id=user_data.get("user_id", user_id),
             user_email=user_data.get("user_email"),
@@ -976,6 +1730,10 @@ async def user_info_v2(
             updated_at=user_data.get("updated_at"),
             sso_user_id=user_data.get("sso_user_id"),
             teams=user_data.get("teams") or [],
+            company_ids=user_data.get("company_ids") or [],
+            company_names=user_data.get("company_names") or [],
+            project_ids=user_data.get("project_ids") or [],
+            project_names=user_data.get("project_names") or [],
         )
     except Exception as e:
         verbose_proxy_logger.exception(
@@ -1184,6 +1942,29 @@ async def _update_single_user_helper(
 
     # Convert to data format expected by update logic
     data_json: dict = user_request.model_dump(exclude_unset=True)
+    company_ids = cast(Optional[List[str]], data_json.pop("company_ids", None))
+    data_json.pop("company_id", None)
+    data_json.pop("companies", None)
+    organization_ids = cast(
+        Optional[List[str]], data_json.pop("organizations", None)
+    )
+    data_json.pop("organization_id", None)
+    data_json.pop("organization_ids", None)
+    project_ids = cast(Optional[List[str]], data_json.pop("project_ids", None))
+    data_json.pop("project_id", None)
+    company_membership_was_set = (
+        company_ids is not None or organization_ids is not None
+    )
+    project_membership_was_set = project_ids is not None
+    project_context = await _project_context_for_project_ids(
+        prisma_client=prisma_client,
+        project_ids=project_ids,
+    )
+    requested_company_ids = _merge_company_ids_with_project_context(
+        company_ids=company_ids,
+        organization_ids=organization_ids,
+        project_company_ids=project_context["company_ids"],
+    )
 
     # Apply update transformations (reuse existing logic)
     non_default_values = _update_internal_user_params(
@@ -1207,15 +1988,54 @@ async def _update_single_user_helper(
         existing_user_row = LiteLLM_UserTable(
             **existing_user_row.model_dump(exclude_none=True)
         )
-        if not can_user_call_user_update(
+        existing_company_ids = await _get_user_company_membership_ids(
+            prisma_client=prisma_client,
+            user_id=existing_user_row.user_id,
+        )
+        can_update_user = can_user_call_user_update(
             user_api_key_dict=user_api_key_dict,
             user_info=existing_user_row,
-        ):
+        )
+        if not can_update_user:
+            caller_admin_company_ids = await _get_company_admin_ids_for_user(
+                prisma_client=prisma_client,
+                user_id=user_api_key_dict.user_id,
+            )
+            if set(caller_admin_company_ids) & set(
+                _unique_non_empty(existing_company_ids + requested_company_ids)
+            ):
+                can_update_user = True
+            elif project_membership_was_set and project_context["team_ids"]:
+                allowed_project_team_ids = await _get_project_team_ids_for_user_role(
+                    prisma_client=prisma_client,
+                    user_id=user_api_key_dict.user_id,
+                    team_ids=project_context["team_ids"],
+                    require_admin=True,
+                )
+                if set(project_context["team_ids"]) <= set(allowed_project_team_ids):
+                    can_update_user = True
+
+        if not can_update_user:
             raise HTTPException(
                 status_code=403,
                 detail={
-                    "error": "User does not have permission to update this user. Only PROXY_ADMIN can update other users."
+                    "error": (
+                        "User does not have permission to update this user. "
+                        "Only PROXY_ADMIN, company admins, or project admins "
+                        "for the selected project can update other users."
+                    )
                 },
+            )
+
+        if company_membership_was_set or project_membership_was_set:
+            await _assert_user_context_update_allowed(
+                prisma_client=prisma_client,
+                user_api_key_dict=user_api_key_dict,
+                target_user_id=existing_user_row.user_id,
+                requested_company_ids=requested_company_ids,
+                existing_company_ids=existing_company_ids,
+                project_context=project_context,
+                company_membership_was_set=company_membership_was_set,
             )
     else:
         # Silent-create guard: if the target user doesn't exist, the update
@@ -1325,6 +2145,34 @@ async def _update_single_user_helper(
             status_code=400,
             detail={"error": "Failed to update user"},
         )
+    response_user_id = response.get("user_id")
+    if response_user_id is not None:
+        if company_membership_was_set:
+            await _replace_user_company_memberships(
+                prisma_client=prisma_client,
+                user_id=response_user_id,
+                company_ids=requested_company_ids,
+            )
+        elif project_context["company_ids"]:
+            await _ensure_user_company_memberships(
+                prisma_client=prisma_client,
+                user_id=response_user_id,
+                company_ids=project_context["company_ids"],
+            )
+
+        if project_membership_was_set:
+            await _sync_user_project_team_memberships(
+                user_id=response_user_id,
+                user_email=response.get("user_email"),
+                requested_project_team_ids=project_context["team_ids"],
+                prisma_client=prisma_client,
+                user_api_key_dict=user_api_key_dict,
+            )
+
+        response = await _enrich_user_dict_with_company_project_context(
+            user_dict=response,
+            prisma_client=prisma_client,
+        )
     _strip_password_from_response(response)
     return response
 
@@ -1400,6 +2248,8 @@ async def user_update(
         - key_alias: Optional[str] - [NOT IMPLEMENTED].
         - object_permission: Optional[LiteLLM_ObjectPermissionBase] - internal user-specific object permission. Example - {"vector_stores": ["vector_store_1", "vector_store_2"]}. IF null or {} then no object permission.
         - prompts: Optional[List[str]] - List of allowed prompts for the user. If specified, the user will only be able to use these specific prompts.
+        - company_ids: Optional[List[str]] - List of company IDs the user is a member of.
+        - project_ids: Optional[List[str]] - List of project IDs the user is a member of through backing project teams.
         - budget_limits: Optional[list] - List of concurrent budget windows for the user. Each window specifies a budget_limit, time_period, and optional budget_duration. Example - [{"budget_limit": 10.0, "time_period": "1d"}, {"budget_limit": 50.0, "time_period": "7d"}].
 
     """
@@ -1625,6 +2475,16 @@ async def bulk_user_update(
 
         # Apply update transformations (reuse existing logic)
         data_json: dict = data.user_updates.model_dump(exclude_unset=True)
+        if any(
+            field in data_json
+            for field in ("company_ids", "companies", "organizations", "project_ids")
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "Bulk company/project membership updates require explicit users."
+                },
+            )
         non_default_values = _update_internal_user_params(
             data_json=data_json, data=data.user_updates
         )
@@ -1799,15 +2659,17 @@ def _validate_sort_params(
 async def _authorize_user_list_request(
     user_api_key_dict: UserAPIKeyAuth,
     organization_ids: Optional[str],
+    project_ids: Optional[str],
     prisma_client: Any,
     user_api_key_cache: Any,
     proxy_logging_obj: Any,
 ) -> Optional[str]:
     """
-    Authorize the /user/list request and return the (possibly scoped) organization_ids string.
+    Authorize the /user/list request and return the internal organization_ids string.
 
     - Proxy admins: returns organization_ids unchanged (may be None).
-    - Org admins: returns comma-separated org IDs scoped to their allowed orgs.
+    - Company admins: returns comma-separated internal org IDs scoped to their allowed companies.
+    - Project members/admins: may list users only when scoped by project_ids.
     - Others: raises 403.
     """
     if _user_has_admin_view(user_api_key_dict):
@@ -1817,7 +2679,7 @@ async def _authorize_user_list_request(
         raise HTTPException(
             status_code=403,
             detail={
-                "error": "Only proxy admins and organization admins can list users."
+                "error": "Only proxy admins and company admins can list users."
             },
         )
     try:
@@ -1832,14 +2694,14 @@ async def _authorize_user_list_request(
         raise HTTPException(
             status_code=403,
             detail={
-                "error": "Only proxy admins and organization admins can list users."
+                "error": "Only proxy admins and company admins can list users."
             },
         )
     if caller_user is None:
         raise HTTPException(
             status_code=403,
             detail={
-                "error": "Only proxy admins and organization admins can list users."
+                "error": "Only proxy admins and company admins can list users."
             },
         )
 
@@ -1848,15 +2710,42 @@ async def _authorize_user_list_request(
         for m in (caller_user.organization_memberships or [])
         if m.user_role == LitellmUserRoles.ORG_ADMIN.value
     ]
+    project_id_list = [
+        project_id.strip()
+        for project_id in (project_ids or "").split(",")
+        if project_id.strip()
+    ]
     if not allowed_org_ids:
+        if project_id_list:
+            if organization_ids:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": (
+                            "Only company admins can combine company_ids with "
+                            "project-scoped user listing."
+                        )
+                    },
+                )
+            project_context = await _project_context_for_project_ids(
+                prisma_client=prisma_client,
+                project_ids=project_id_list,
+            )
+            await _assert_project_context_access(
+                prisma_client=prisma_client,
+                user_api_key_dict=user_api_key_dict,
+                project_context=project_context,
+                require_admin=False,
+            )
+            return None
         raise HTTPException(
             status_code=403,
             detail={
-                "error": "Only proxy admins and organization admins can list users."
+                "error": "Only proxy admins, company admins, and project members can list users."
             },
         )
 
-    # If client also sent organization_ids, intersect with allowed orgs
+    # If client also sent company_ids/organization_ids, intersect with allowed companies.
     if organization_ids:
         requested = set(
             oid.strip() for oid in organization_ids.split(",") if oid.strip()
@@ -1866,7 +2755,7 @@ async def _authorize_user_list_request(
             raise HTTPException(
                 status_code=403,
                 detail={
-                    "error": "You do not have org_admin access to the requested organization(s)."
+                    "error": "You do not have company admin access to the requested company/companies."
                 },
             )
         allowed_org_ids = intersection
@@ -1909,7 +2798,16 @@ async def get_users(
     ),
     organization_ids: Optional[str] = fastapi.Query(
         default=None,
-        description="Filter users by organization membership. Comma-separated list of org IDs.",
+        description="Compatibility filter for company membership. Prefer company_ids.",
+        include_in_schema=False,
+    ),
+    company_ids: Optional[str] = fastapi.Query(
+        default=None,
+        description="Filter users by company membership. Comma-separated list of company IDs.",
+    ),
+    project_ids: Optional[str] = fastapi.Query(
+        default=None,
+        description="Filter users by project membership. Comma-separated list of project IDs.",
     ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
@@ -1953,9 +2851,13 @@ async def get_users(
         )
 
     # Server-side authorization: proxy admins see all, org admins see only their org(s)
+    organization_ids = _resolve_company_ids_filter(
+        company_ids=company_ids, organization_ids=organization_ids
+    )
     organization_ids = await _authorize_user_list_request(
         user_api_key_dict=user_api_key_dict,
         organization_ids=organization_ids,
+        project_ids=project_ids,
         prisma_client=prisma_client,
         user_api_key_cache=user_api_key_cache,
         proxy_logging_obj=proxy_logging_obj,
@@ -1992,6 +2894,54 @@ async def get_users(
         where_conditions["teams"] = {
             "has": team  # Array contains for string arrays in Prisma
         }
+
+    project_team_ids: List[str] = []
+    if project_ids is not None and isinstance(project_ids, str):
+        project_id_list = [
+            project_id.strip()
+            for project_id in project_ids.split(",")
+            if project_id.strip()
+        ]
+        project_context = await _project_context_for_project_ids(
+            prisma_client=prisma_client,
+            project_ids=project_id_list,
+        )
+        if organization_ids and project_context["company_ids"]:
+            allowed_company_ids = [
+                oid.strip() for oid in organization_ids.split(",") if oid.strip()
+            ]
+            unauthorized_project_companies = [
+                company_id
+                for company_id in project_context["company_ids"]
+                if company_id not in allowed_company_ids
+            ]
+            if unauthorized_project_companies:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": "You do not have company admin access to the requested project company/companies."
+                    },
+                )
+        project_team_ids = project_context["team_ids"]
+        if not project_team_ids:
+            return {
+                "users": [],
+                "total": 0,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": 0,
+            }
+        if team is not None and isinstance(team, str):
+            if team not in project_team_ids:
+                return {
+                    "users": [],
+                    "total": 0,
+                    "page": page,
+                    "page_size": page_size,
+                    "total_pages": 0,
+                }
+        else:
+            where_conditions["teams"] = {"hasSome": project_team_ids}
 
     if sso_user_ids is not None and isinstance(sso_user_ids, str):
         sso_id_list = [sid.strip() for sid in sso_user_ids.split(",") if sid.strip()]
@@ -2047,10 +2997,17 @@ async def get_users(
     # Prepare response
     user_list: List[LiteLLM_UserTableWithKeyCount] = []
     if users is not None:
+        user_dicts = [user.model_dump() for user in users]
+        user_context = await _user_company_project_context(
+            prisma_client=prisma_client,
+            user_dicts=user_dicts,
+        )
         for user in users:
+            user_dict = user.model_dump()
+            user_dict.update(user_context.get(user.user_id, {}))
             user_list.append(
                 LiteLLM_UserTableWithKeyCount(
-                    **user.model_dump(), key_count=user_key_counts.get(user.user_id, 0)
+                    **user_dict, key_count=user_key_counts.get(user.user_id, 0)
                 )
             )
     else:
@@ -2185,7 +3142,7 @@ async def delete_user(
                         "error": (
                             f"User {user_id} is not within your admin scope. "
                             "Only PROXY_ADMIN may delete users outside your "
-                            "administered organizations."
+                            "administered companies."
                         )
                     },
                 )
@@ -2286,15 +3243,15 @@ async def add_internal_user_to_organization(
     user_role: LitellmUserRoles,
 ):
     """
-    Helper function to add an internal user to an organization
+    Helper function to add an internal user to a company membership.
 
     Adds the user to LiteLLM_OrganizationMembership table
 
-    - Checks if organization_id exists
+    - Checks if company_id exists
 
     Raises:
     - Exception if database not connected
-    - Exception if user_id or organization_id not found
+    - Exception if user_id or company_id not found
     """
     from litellm.proxy.proxy_server import prisma_client
 
@@ -2302,16 +3259,14 @@ async def add_internal_user_to_organization(
         raise Exception("Database not connected")
 
     try:
-        # Check if organization_id exists
+        # Check if company exists through the LiteLLM organization table.
         organization_row = await prisma_client.db.litellm_organizationtable.find_unique(
             where={"organization_id": organization_id}
         )
         if organization_row is None:
-            raise Exception(
-                f"Organization not found, passed organization_id={organization_id}"
-            )
+            raise Exception(f"Company not found, passed company_id={organization_id}")
 
-        # Create a new organization membership entry
+        # Create a new company membership entry through LiteLLM compatibility.
         new_membership = await prisma_client.db.litellm_organizationmembership.create(
             data={
                 "user_id": user_id,
@@ -2389,7 +3344,7 @@ async def _resolve_org_filter_for_user_search(
     raise HTTPException(
         status_code=403,
         detail={
-            "error": "scope_user_search_to_org is enabled. Only proxy admins, organization admins, or team admins can search users."
+            "error": "scope_user_search_to_org is enabled. Only proxy admins, company admins, or team admins can search users."
         },
     )
 

@@ -3,7 +3,16 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders } from "../../../tests/test-utils";
 import { KeyResponse } from "../key_team_helpers/key_list";
+import { getGuardrailsList, vectorStoreListCall } from "../networking";
 import { KeyEditView } from "./key_edit_view";
+
+const { mockUseProjects, mockUseUISettings } = vi.hoisted(() => ({
+  mockUseProjects: vi.fn().mockReturnValue({ data: [], isLoading: false }),
+  mockUseUISettings: vi.fn().mockReturnValue({
+    data: { values: { enable_projects_ui: false } },
+    isLoading: false,
+  }),
+}));
 
 vi.mock("../networking", async () => {
   const actual = await vi.importActual("../networking");
@@ -63,6 +72,44 @@ vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
   }),
 }));
 
+vi.mock("@/app/(dashboard)/hooks/projects/useProjects", () => ({
+  useProjects: mockUseProjects,
+}));
+
+vi.mock("@/app/(dashboard)/hooks/uiSettings/useUISettings", () => ({
+  useUISettings: mockUseUISettings,
+}));
+
+vi.mock("../common_components/ProjectDropdown", () => ({
+  default: ({
+    projects = [],
+    value,
+    onChange,
+    companyId,
+  }: {
+    projects?: Array<{ project_id: string; project_alias?: string | null; company_id?: string | null }>;
+    value?: string;
+    onChange?: (value?: string) => void;
+    companyId?: string | null;
+  }) => {
+    const filteredProjects = companyId ? projects.filter((project) => project.company_id === companyId) : projects;
+    return (
+      <select
+        data-testid="project-dropdown"
+        value={value || ""}
+        onChange={(event) => onChange?.(event.target.value || undefined)}
+      >
+        <option value="">No Project</option>
+        {filteredProjects.map((project) => (
+          <option key={project.project_id} value={project.project_id}>
+            {project.project_alias || project.project_id}
+          </option>
+        ))}
+      </select>
+    );
+  },
+}));
+
 vi.mock("@/app/(dashboard)/hooks/accessGroups/useAccessGroups", () => ({
   useAccessGroups: vi.fn().mockReturnValue({
     data: [
@@ -98,6 +145,7 @@ describe("KeyEditView", () => {
     config: {},
     user_id: "default_user_id",
     team_id: null,
+    project_id: null,
     max_parallel_requests: 10,
     metadata: {
       logging: [],
@@ -211,6 +259,11 @@ describe("KeyEditView", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockUseProjects.mockReturnValue({ data: [], isLoading: false });
+    mockUseUISettings.mockReturnValue({
+      data: { values: { enable_projects_ui: false } },
+      isLoading: false,
+    });
   });
 
   it("should call onCancel when cancel button is clicked", async () => {
@@ -396,6 +449,38 @@ describe("KeyEditView", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Guardrails")).toBeInTheDocument();
+    });
+  });
+
+  it("should load scoped guardrails and vector stores with Company and Project context when editing a key", async () => {
+    renderWithProviders(
+      <KeyEditView
+        keyData={{
+          ...MOCK_KEY_DATA,
+          company_id: "org-1",
+          project_id: "project-1",
+        }}
+        onCancel={() => {}}
+        onSubmit={async () => {}}
+        accessToken={"test-token"}
+        userID={""}
+        userRole={"Admin"}
+        premiumUser={true}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(vi.mocked(getGuardrailsList)).toHaveBeenCalledWith("test-token", {
+        companyId: "org-1",
+        projectId: "project-1",
+      });
+    });
+
+    await waitFor(() => {
+      expect(vi.mocked(vectorStoreListCall)).toHaveBeenCalledWith("test-token", 1, 100, {
+        company_id: "org-1",
+        project_id: "project-1",
+      });
     });
   });
 
@@ -689,8 +774,8 @@ describe("KeyEditView", () => {
     }
   });
 
-  describe("organization dropdown", () => {
-    it("should render the organization dropdown", async () => {
+  describe("company dropdown", () => {
+    it("should render the company dropdown", async () => {
       renderWithProviders(
         <KeyEditView
           keyData={MOCK_KEY_DATA}
@@ -704,11 +789,11 @@ describe("KeyEditView", () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText("Organization")).toBeInTheDocument();
+        expect(screen.getByText("Company")).toBeInTheDocument();
       });
     });
 
-    it("should disable the organization dropdown for non-admin users", async () => {
+    it("should leave the company dropdown enabled for server-side RBAC enforcement", async () => {
       const { container } = renderWithProviders(
         <KeyEditView
           keyData={MOCK_KEY_DATA}
@@ -722,15 +807,15 @@ describe("KeyEditView", () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText("Organization")).toBeInTheDocument();
+        expect(screen.getByText("Company")).toBeInTheDocument();
       });
 
-      const orgFormItem = screen.getByText("Organization").closest(".ant-form-item");
+      const orgFormItem = screen.getByText("Company").closest(".ant-form-item");
       const disabledSelect = orgFormItem?.querySelector(".ant-select-disabled");
-      expect(disabledSelect).toBeTruthy();
+      expect(disabledSelect).toBeFalsy();
     });
 
-    it("should not disable the organization dropdown for admin users", async () => {
+    it("should not disable the company dropdown for admin users", async () => {
       const { container } = renderWithProviders(
         <KeyEditView
           keyData={MOCK_KEY_DATA}
@@ -744,15 +829,15 @@ describe("KeyEditView", () => {
       );
 
       await waitFor(() => {
-        expect(screen.getByText("Organization")).toBeInTheDocument();
+        expect(screen.getByText("Company")).toBeInTheDocument();
       });
 
-      const orgFormItem = screen.getByText("Organization").closest(".ant-form-item");
+      const orgFormItem = screen.getByText("Company").closest(".ant-form-item");
       const disabledSelect = orgFormItem?.querySelector(".ant-select-disabled");
       expect(disabledSelect).toBeFalsy();
     });
 
-    it("should initialize organization from keyData", async () => {
+    it("should initialize company from keyData", async () => {
       const keyWithOrg = {
         ...MOCK_KEY_DATA,
         organization_id: "org-1",
@@ -773,6 +858,172 @@ describe("KeyEditView", () => {
       await waitFor(() => {
         expect(screen.getByText("Engineering")).toBeInTheDocument();
       });
+    });
+
+    it("should submit company_id without legacy organization aliases", async () => {
+      const onSubmitMock = vi.fn().mockResolvedValue(undefined);
+      const keyWithCompanyAliases = {
+        ...MOCK_KEY_DATA,
+        company_id: "org-1",
+        org_id: "org-1",
+        organization_id: "org-1",
+        organization_ids: ["org-1"],
+        organizations: ["org-1"],
+      } as KeyResponse;
+
+      renderWithProviders(
+        <KeyEditView
+          keyData={keyWithCompanyAliases}
+          onCancel={() => {}}
+          onSubmit={onSubmitMock}
+          accessToken=""
+          userID=""
+          userRole="Admin"
+          premiumUser={false}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /save changes/i })).toBeInTheDocument();
+      });
+
+      await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+      await waitFor(() => {
+        expect(onSubmitMock).toHaveBeenCalled();
+      });
+
+      const submittedValues = onSubmitMock.mock.calls[0][0];
+      expect(submittedValues.company_id).toBe("org-1");
+      expect(submittedValues).not.toHaveProperty("org_id");
+      expect(submittedValues).not.toHaveProperty("organization_id");
+      expect(submittedValues).not.toHaveProperty("organization_ids");
+      expect(submittedValues).not.toHaveProperty("organizations");
+    });
+
+    it("should derive company and team from the selected project context", async () => {
+      mockUseUISettings.mockReturnValue({
+        data: { values: { enable_projects_ui: true } },
+        isLoading: false,
+      });
+      mockUseProjects.mockReturnValue({
+        data: [
+          {
+            project_id: "project-1",
+            project_alias: "Support Project",
+            company_id: "org-1",
+            team_id: "team-1",
+            models: [],
+          },
+        ],
+        isLoading: false,
+      });
+
+      const keyWithProject = {
+        ...MOCK_KEY_DATA,
+        project_id: "project-1",
+        company_id: "org-2",
+        organization_id: "org-2",
+        team_id: "team-2",
+      };
+      const onSubmitMock = vi.fn().mockResolvedValue(undefined);
+
+      renderWithProviders(
+        <KeyEditView
+          keyData={keyWithProject}
+          teams={[
+            { team_id: "team-1", team_alias: "Team One", organization_id: "org-1", models: [] },
+            { team_id: "team-2", team_alias: "Team Two", organization_id: "org-2", models: [] },
+          ]}
+          onCancel={() => {}}
+          onSubmit={onSubmitMock}
+          accessToken=""
+          userID=""
+          userRole="Admin"
+          premiumUser={false}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByText("Company is derived from the selected project")).toBeInTheDocument();
+        expect(screen.getByText("Team is derived from the selected project")).toBeInTheDocument();
+      });
+
+      const companyFormItem = screen.getByText("Company").closest(".ant-form-item");
+      const teamFormItem = screen.getByText("Team ID").closest(".ant-form-item");
+      const projectFormItem = screen.getByText("Project").closest(".ant-form-item");
+
+      expect(companyFormItem?.querySelector(".ant-select-disabled")).toBeTruthy();
+      expect(teamFormItem?.querySelector(".ant-select-disabled")).toBeTruthy();
+      expect(projectFormItem?.querySelector(".ant-select-disabled")).toBeFalsy();
+      expect(screen.getByText("Support Project")).toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+      await waitFor(() => {
+        expect(onSubmitMock).toHaveBeenCalled();
+      });
+
+      const submittedValues = onSubmitMock.mock.calls[0][0];
+      expect(submittedValues.project_id).toBe("project-1");
+      expect(submittedValues.company_id).toBe("org-1");
+      expect(submittedValues.team_id).toBe("team-1");
+      expect(submittedValues).not.toHaveProperty("organization_id");
+      expect(submittedValues).not.toHaveProperty("org_id");
+    });
+
+    it("should submit project_id null when an existing project is cleared", async () => {
+      mockUseUISettings.mockReturnValue({
+        data: { values: { enable_projects_ui: true } },
+        isLoading: false,
+      });
+      mockUseProjects.mockReturnValue({
+        data: [
+          {
+            project_id: "project-1",
+            project_alias: "Support Project",
+            company_id: "org-1",
+            team_id: "team-1",
+            models: [],
+          },
+        ],
+        isLoading: false,
+      });
+
+      const onSubmitMock = vi.fn().mockResolvedValue(undefined);
+
+      renderWithProviders(
+        <KeyEditView
+          keyData={{
+            ...MOCK_KEY_DATA,
+            project_id: "project-1",
+            company_id: "org-1",
+            organization_id: "org-1",
+            team_id: "team-1",
+          }}
+          teams={[{ team_id: "team-1", team_alias: "Team One", organization_id: "org-1", models: [] }]}
+          onCancel={() => {}}
+          onSubmit={onSubmitMock}
+          accessToken=""
+          userID=""
+          userRole="Admin"
+          premiumUser={false}
+        />,
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("project-dropdown")).toBeInTheDocument();
+      });
+
+      await userEvent.selectOptions(screen.getByTestId("project-dropdown"), "");
+      await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+      await waitFor(() => {
+        expect(onSubmitMock).toHaveBeenCalled();
+      });
+
+      const submittedValues = onSubmitMock.mock.calls[0][0];
+      expect(submittedValues.project_id).toBeNull();
     });
   });
 });

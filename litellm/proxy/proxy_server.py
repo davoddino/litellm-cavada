@@ -7652,6 +7652,31 @@ class ProxyStartupEvent:
 
 
 #### API ENDPOINTS ####
+def _add_user_api_key_runtime_context_to_metadata(
+    data: dict,
+    user_api_key_dict: Optional[UserAPIKeyAuth],
+) -> None:
+    if user_api_key_dict is None:
+        return
+
+    if not isinstance(data.get("metadata"), dict):
+        data["metadata"] = {}
+
+    metadata = data["metadata"]
+    for auth_attr, metadata_key in (
+        ("user_id", "user_api_key_user_id"),
+        ("team_id", "user_api_key_team_id"),
+        ("org_id", "user_api_key_org_id"),
+        ("organization_alias", "user_api_key_org_alias"),
+        ("project_id", "user_api_key_project_id"),
+        ("project_alias", "user_api_key_project_alias"),
+        ("agent_id", "agent_id"),
+    ):
+        value = getattr(user_api_key_dict, auth_attr, None)
+        if value is not None:
+            metadata[metadata_key] = value
+
+
 @router.get(
     "/v1/models", dependencies=[Depends(user_api_key_auth)], tags=["model management"]
 )
@@ -7917,39 +7942,10 @@ async def chat_completion(  # noqa: PLR0915
     global general_settings, user_debug, proxy_logging_obj, llm_model_list
     global user_temperature, user_request_timeout, user_max_tokens, user_api_base
     data = await _read_request_body(request=request)
-    if user_api_key_dict is not None:
-        if not isinstance(data.get("metadata"), dict):
-            # Covers both missing and JSON-string metadata (multipart /
-            # extra_body); otherwise `data["metadata"][k] = v` below raises
-            # TypeError on a string value and 500s the request.
-            data["metadata"] = {}
-        if (
-            hasattr(user_api_key_dict, "user_id")
-            and user_api_key_dict.user_id is not None
-        ):
-            data["metadata"]["user_api_key_user_id"] = user_api_key_dict.user_id
-        if (
-            hasattr(user_api_key_dict, "team_id")
-            and user_api_key_dict.team_id is not None
-        ):
-            data["metadata"]["user_api_key_team_id"] = user_api_key_dict.team_id
-        if (
-            hasattr(user_api_key_dict, "org_id")
-            and user_api_key_dict.org_id is not None
-        ):
-            data["metadata"]["user_api_key_org_id"] = user_api_key_dict.org_id
-        if (
-            hasattr(user_api_key_dict, "organization_alias")
-            and user_api_key_dict.organization_alias is not None
-        ):
-            data["metadata"][
-                "user_api_key_org_alias"
-            ] = user_api_key_dict.organization_alias
-        if (
-            hasattr(user_api_key_dict, "agent_id")
-            and user_api_key_dict.agent_id is not None
-        ):
-            data["metadata"]["agent_id"] = user_api_key_dict.agent_id
+    _add_user_api_key_runtime_context_to_metadata(
+        data=data,
+        user_api_key_dict=user_api_key_dict,
+    )
 
     base_llm_response_processor = ProxyBaseLLMRequestProcessing(data=data)
     try:
@@ -8102,36 +8098,10 @@ async def completion(  # noqa: PLR0915
     data = {}
     try:
         data = await _read_request_body(request=request)
-        if user_api_key_dict is not None:
-            if data.get("metadata") is None:
-                data["metadata"] = {}
-            if (
-                hasattr(user_api_key_dict, "user_id")
-                and user_api_key_dict.user_id is not None
-            ):
-                data["metadata"]["user_api_key_user_id"] = user_api_key_dict.user_id
-            if (
-                hasattr(user_api_key_dict, "team_id")
-                and user_api_key_dict.team_id is not None
-            ):
-                data["metadata"]["user_api_key_team_id"] = user_api_key_dict.team_id
-            if (
-                hasattr(user_api_key_dict, "org_id")
-                and user_api_key_dict.org_id is not None
-            ):
-                data["metadata"]["user_api_key_org_id"] = user_api_key_dict.org_id
-            if (
-                hasattr(user_api_key_dict, "organization_alias")
-                and user_api_key_dict.organization_alias is not None
-            ):
-                data["metadata"][
-                    "user_api_key_org_alias"
-                ] = user_api_key_dict.organization_alias
-            if (
-                hasattr(user_api_key_dict, "agent_id")
-                and user_api_key_dict.agent_id is not None
-            ):
-                data["metadata"]["agent_id"] = user_api_key_dict.agent_id
+        _add_user_api_key_runtime_context_to_metadata(
+            data=data,
+            user_api_key_dict=user_api_key_dict,
+        )
         base_llm_response_processor = ProxyBaseLLMRequestProcessing(data=data)
         return await base_llm_response_processor.base_process_llm_request(
             request=request,
@@ -8351,36 +8321,10 @@ async def embeddings(  # noqa: PLR0915
                             )
                         data["input"] = input_list
 
-        if user_api_key_dict is not None:
-            if data.get("metadata") is None:
-                data["metadata"] = {}
-            if (
-                hasattr(user_api_key_dict, "user_id")
-                and user_api_key_dict.user_id is not None
-            ):
-                data["metadata"]["user_api_key_user_id"] = user_api_key_dict.user_id
-            if (
-                hasattr(user_api_key_dict, "team_id")
-                and user_api_key_dict.team_id is not None
-            ):
-                data["metadata"]["user_api_key_team_id"] = user_api_key_dict.team_id
-            if (
-                hasattr(user_api_key_dict, "org_id")
-                and user_api_key_dict.org_id is not None
-            ):
-                data["metadata"]["user_api_key_org_id"] = user_api_key_dict.org_id
-            if (
-                hasattr(user_api_key_dict, "organization_alias")
-                and user_api_key_dict.organization_alias is not None
-            ):
-                data["metadata"][
-                    "user_api_key_org_alias"
-                ] = user_api_key_dict.organization_alias
-            if (
-                hasattr(user_api_key_dict, "agent_id")
-                and user_api_key_dict.agent_id is not None
-            ):
-                data["metadata"]["agent_id"] = user_api_key_dict.agent_id
+        _add_user_api_key_runtime_context_to_metadata(
+            data=data,
+            user_api_key_dict=user_api_key_dict,
+        )
 
         # Use unified request processor (same as chat/completions and responses)
         base_llm_response_processor = ProxyBaseLLMRequestProcessing(data=data)
@@ -12205,10 +12149,10 @@ async def async_queue_request(
             # if users are using user_api_key_auth, set `user` in `data`
             data["user"] = user_api_key_dict.user_id
 
-        if not isinstance(data.get("metadata"), dict):
-            # Covers both missing and JSON-string metadata (multipart /
-            # extra_body); see above for the same guard upstream.
-            data["metadata"] = {}
+        _add_user_api_key_runtime_context_to_metadata(
+            data=data,
+            user_api_key_dict=user_api_key_dict,
+        )
         data["metadata"]["user_api_key"] = user_api_key_dict.api_key
         data["metadata"]["user_api_key_metadata"] = user_api_key_dict.metadata
         _headers = _safe_get_request_headers(request).copy()

@@ -70,13 +70,14 @@ describe("useUpdateProject", () => {
     });
     const data = await result.current.mutateAsync({
       projectId: "proj-1",
-      params: { project_alias: "Updated Name" },
+      params: { company_id: "company-1", project_alias: "Updated Name" },
     });
     expect(data).toEqual(updated);
     const [url, init] = (global.fetch as any).mock.calls[0];
     expect(url).toContain("/project/update");
     expect(JSON.parse(init.body)).toMatchObject({
       project_id: "proj-1",
+      company_id: "company-1",
       project_alias: "Updated Name",
     });
   });

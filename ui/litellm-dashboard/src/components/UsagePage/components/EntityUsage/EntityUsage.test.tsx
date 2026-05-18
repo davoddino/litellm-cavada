@@ -17,7 +17,9 @@ beforeAll(() => {
 vi.mock("../../../networking", () => ({
   tagDailyActivityCall: vi.fn(),
   teamDailyActivityCall: vi.fn(),
+  companyDailyActivityCall: vi.fn(),
   organizationDailyActivityCall: vi.fn(),
+  projectDailyActivityCall: vi.fn(),
   customerDailyActivityCall: vi.fn(),
   agentDailyActivityCall: vi.fn(),
   userDailyActivityCall: vi.fn(),
@@ -42,7 +44,31 @@ vi.mock("../../../EntityUsageExport/EntityUsageExportModal", () => ({
 }));
 
 vi.mock("../../../EntityUsageExport", () => ({
-  UsageExportHeader: () => <div>Usage Export Header</div>,
+  UsageExportHeader: ({
+    filterLabel,
+    filterOptions = [],
+    selectedFilters = [],
+    onFiltersChange,
+  }: {
+    filterLabel?: string;
+    filterOptions?: Array<{ label: string; value: string }>;
+    selectedFilters?: string[];
+    onFiltersChange?: (filters: string[]) => void;
+  }) => (
+    <div>
+      <div>Usage Export Header</div>
+      {filterLabel && <div>{filterLabel}</div>}
+      <div data-testid="selected-usage-filters">{selectedFilters.join(",")}</div>
+      {filterOptions.map((option) => (
+        <button
+          key={option.value}
+          aria-label={`Filter ${option.label}`}
+          type="button"
+          onClick={() => onFiltersChange?.([option.value])}
+        />
+      ))}
+    </div>
+  ),
 }));
 
 vi.mock("../../../common_components/team_multi_select", () => ({
@@ -60,7 +86,9 @@ vi.mock("@/app/(dashboard)/hooks/useTeams", () => ({
 describe("EntityUsage", () => {
   const mockTagDailyActivityCall = vi.mocked(networking.tagDailyActivityCall);
   const mockTeamDailyActivityCall = vi.mocked(networking.teamDailyActivityCall);
+  const mockCompanyDailyActivityCall = vi.mocked(networking.companyDailyActivityCall);
   const mockOrganizationDailyActivityCall = vi.mocked(networking.organizationDailyActivityCall);
+  const mockProjectDailyActivityCall = vi.mocked(networking.projectDailyActivityCall);
   const mockCustomerDailyActivityCall = vi.mocked(networking.customerDailyActivityCall);
   const mockAgentDailyActivityCall = vi.mocked(networking.agentDailyActivityCall);
   const mockUserDailyActivityCall = vi.mocked(networking.userDailyActivityCall);
@@ -351,13 +379,17 @@ describe("EntityUsage", () => {
   beforeEach(() => {
     mockTagDailyActivityCall.mockClear();
     mockTeamDailyActivityCall.mockClear();
+    mockCompanyDailyActivityCall.mockClear();
     mockOrganizationDailyActivityCall.mockClear();
+    mockProjectDailyActivityCall.mockClear();
     mockCustomerDailyActivityCall.mockClear();
     mockAgentDailyActivityCall.mockClear();
     mockUserDailyActivityCall.mockClear();
     mockTagDailyActivityCall.mockResolvedValue(mockSpendData);
     mockTeamDailyActivityCall.mockResolvedValue(mockSpendData);
+    mockCompanyDailyActivityCall.mockResolvedValue(mockSpendData);
     mockOrganizationDailyActivityCall.mockResolvedValue(mockSpendData);
+    mockProjectDailyActivityCall.mockResolvedValue(mockSpendData);
     mockCustomerDailyActivityCall.mockResolvedValue(mockSpendData);
     mockAgentDailyActivityCall.mockResolvedValue(mockAgentSpendData);
     mockUserDailyActivityCall.mockResolvedValue(mockSpendData);
@@ -397,19 +429,128 @@ describe("EntityUsage", () => {
     });
   });
 
-  it("should render with organization entity type and call organization API", async () => {
+  it("should render compatibility organization entity type with company product label and company API", async () => {
     render(<EntityUsage {...defaultProps} entityType="organization" />);
 
     await waitFor(() => {
-      expect(mockOrganizationDailyActivityCall).toHaveBeenCalled();
+      expect(mockCompanyDailyActivityCall).toHaveBeenCalled();
     });
+    expect(mockOrganizationDailyActivityCall).not.toHaveBeenCalled();
 
-    expect(screen.getByText("Organization Spend Overview")).toBeInTheDocument();
+    expect(screen.getByText("Company Spend Overview")).toBeInTheDocument();
 
     await waitFor(() => {
       const spendElements = screen.getAllByText("$100.50");
       expect(spendElements.length).toBeGreaterThan(0);
     });
+  });
+
+  it("should render with company entity type and call company API", async () => {
+    render(<EntityUsage {...defaultProps} entityType="company" />);
+
+    await waitFor(() => {
+      expect(mockCompanyDailyActivityCall).toHaveBeenCalled();
+    });
+
+    expect(screen.getByText("Company Spend Overview")).toBeInTheDocument();
+
+    await waitFor(() => {
+      const spendElements = screen.getAllByText("$100.50");
+      expect(spendElements.length).toBeGreaterThan(0);
+    });
+  });
+
+  it("should render with project entity type and call project API", async () => {
+    render(<EntityUsage {...defaultProps} entityType="project" />);
+
+    await waitFor(() => {
+      expect(mockProjectDailyActivityCall).toHaveBeenCalled();
+    });
+
+    expect(screen.getByText("Project Spend Overview")).toBeInTheDocument();
+
+    await waitFor(() => {
+      const spendElements = screen.getAllByText("$100.50");
+      expect(spendElements.length).toBeGreaterThan(0);
+    });
+  });
+
+  it("should pass Company filter context to project usage API", async () => {
+    render(
+      <EntityUsage
+        {...defaultProps}
+        entityType="project"
+        companyIds={["company-123"]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(mockProjectDailyActivityCall).toHaveBeenCalled();
+    });
+
+    const lastCall = mockProjectDailyActivityCall.mock.calls.at(-1);
+    expect(lastCall?.[0]).toBe("test-token");
+    expect(lastCall?.[3]).toBe(1);
+    expect(lastCall?.[4]).toBeNull();
+    expect(lastCall?.[5]).toEqual(["company-123"]);
+  });
+
+  it("should send selected Company filter to company daily activity", async () => {
+    render(
+      <EntityUsage
+        {...defaultProps}
+        entityType="company"
+        entityList={[{ label: "Acme Company", value: "company-123" }]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(mockCompanyDailyActivityCall).toHaveBeenCalled();
+    });
+    mockCompanyDailyActivityCall.mockClear();
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Filter Acme Company" }));
+    });
+
+    await waitFor(() => {
+      expect(mockCompanyDailyActivityCall).toHaveBeenCalled();
+    });
+
+    const lastCall = mockCompanyDailyActivityCall.mock.calls.at(-1);
+    expect(lastCall?.[0]).toBe("test-token");
+    expect(lastCall?.[3]).toBe(1);
+    expect(lastCall?.[4]).toEqual(["company-123"]);
+  });
+
+  it("should send selected Project filter with Company context to project daily activity", async () => {
+    render(
+      <EntityUsage
+        {...defaultProps}
+        entityType="project"
+        companyIds={["company-123"]}
+        entityList={[{ label: "Support Project", value: "project-123" }]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(mockProjectDailyActivityCall).toHaveBeenCalled();
+    });
+    mockProjectDailyActivityCall.mockClear();
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "Filter Support Project" }));
+    });
+
+    await waitFor(() => {
+      expect(mockProjectDailyActivityCall).toHaveBeenCalled();
+    });
+
+    const lastCall = mockProjectDailyActivityCall.mock.calls.at(-1);
+    expect(lastCall?.[0]).toBe("test-token");
+    expect(lastCall?.[3]).toBe(1);
+    expect(lastCall?.[4]).toEqual(["project-123"]);
+    expect(lastCall?.[5]).toEqual(["company-123"]);
   });
 
   it("should render with customer entity type and call customer API", async () => {

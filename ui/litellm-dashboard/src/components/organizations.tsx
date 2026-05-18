@@ -1,4 +1,4 @@
-import OrganizationFilters, { FilterState } from "@/app/(dashboard)/organizations/OrganizationFilters";
+import OrganizationFilters, { FilterState } from "@/app/(dashboard)/companies/OrganizationFilters";
 import { InfoCircleOutlined } from "@ant-design/icons";
 import { ChevronDownIcon, ChevronRightIcon, RefreshIcon } from "@heroicons/react/outline";
 import {
@@ -138,7 +138,7 @@ const OrganizationsTable: React.FC<OrganizationsTableProps> = ({
     try {
       setIsDeleting(true);
       await organizationDeleteCall(accessToken, orgToDelete);
-      NotificationsManager.success("Organization deleted successfully");
+      NotificationsManager.success("Company deleted successfully");
 
       setIsDeleteModalOpen(false);
       setOrgToDelete(null);
@@ -159,8 +159,6 @@ const OrganizationsTable: React.FC<OrganizationsTableProps> = ({
   const handleCreate = async (values: any) => {
     try {
       if (!accessToken) return;
-
-      console.log(`values in organizations new create call: ${JSON.stringify(values)}`);
 
       // Transform allowed_vector_store_ids and allowed_mcp_servers_and_groups into object_permission
       if (
@@ -186,7 +184,7 @@ const OrganizationsTable: React.FC<OrganizationsTableProps> = ({
       }
 
       await organizationCreateCall(accessToken, values);
-      NotificationsManager.success("Organization created successfully");
+      NotificationsManager.success("Company created successfully");
       setIsOrgModalVisible(false);
       form.resetFields();
       // Refresh organizations list
@@ -221,7 +219,7 @@ const OrganizationsTable: React.FC<OrganizationsTableProps> = ({
         <Col numColSpan={1} className="flex flex-col gap-2">
           {(userRole === "Admin" || userRole === "Org Admin") && (
             <Button className="w-fit" onClick={() => setIsOrgModalVisible(true)}>
-              + Create New Organization
+              + Create New Company
             </Button>
           )}
           {selectedOrgId ? (
@@ -241,7 +239,7 @@ const OrganizationsTable: React.FC<OrganizationsTableProps> = ({
             <TabGroup className="gap-2 h-[75vh] w-full">
               <TabList className="flex justify-between mt-2 w-full items-center">
                 <div className="flex">
-                  <Tab>Your Organizations</Tab>
+                  <Tab>Your Companies</Tab>
                 </div>
                 <div className="flex items-center space-x-2">
                   {lastRefreshed && <Text>Last Refreshed: {lastRefreshed}</Text>}
@@ -256,7 +254,7 @@ const OrganizationsTable: React.FC<OrganizationsTableProps> = ({
               </TabList>
               <TabPanels>
                 <TabPanel>
-                  <Text>Click on &ldquo;Organization ID&rdquo; to view organization details.</Text>
+                  <Text>Click on &ldquo;Company ID&rdquo; to view company details.</Text>
                   <Grid numItems={1} className="gap-2 pt-2 pb-2 h-[75vh] w-full mt-2">
                     <Col numColSpan={1}>
                       <Card className="w-full mx-auto flex-auto overflow-hidden overflow-y-auto max-h-[50vh]">
@@ -274,8 +272,8 @@ const OrganizationsTable: React.FC<OrganizationsTableProps> = ({
                         <Table>
                           <TableHead>
                             <TableRow>
-                              <TableHeaderCell>Organization ID</TableHeaderCell>
-                              <TableHeaderCell>Organization Name</TableHeaderCell>
+                              <TableHeaderCell>Company ID</TableHeaderCell>
+                              <TableHeaderCell>Company Name</TableHeaderCell>
                               <TableHeaderCell>Created</TableHeaderCell>
                               <TableHeaderCell>Spend (USD)</TableHeaderCell>
                               <TableHeaderCell>Budget (USD)</TableHeaderCell>
@@ -307,7 +305,7 @@ const OrganizationsTable: React.FC<OrganizationsTableProps> = ({
                                           </Tooltip>
                                         </div>
                                       </TableCell>
-                                      <TableCell>{org.organization_alias}</TableCell>
+                                      <TableCell>{org.company_name || org.organization_alias}</TableCell>
                                       <TableCell>
                                         {org.created_at ? new Date(org.created_at).toLocaleDateString() : "N/A"}
                                       </TableCell>
@@ -431,7 +429,7 @@ const OrganizationsTable: React.FC<OrganizationsTableProps> = ({
                                           <>
                                             <TableIconActionButton
                                               variant="Edit"
-                                              tooltipText="Edit organization"
+                                              tooltipText="Edit company"
                                               onClick={() => {
                                                 setSelectedOrgId(org.organization_id);
                                                 setEditOrg(true);
@@ -439,7 +437,7 @@ const OrganizationsTable: React.FC<OrganizationsTableProps> = ({
                                             />
                                             <TableIconActionButton
                                               variant="Delete"
-                                              tooltipText="Delete organization"
+                                              tooltipText="Delete company"
                                               onClick={() => handleDelete(org.organization_id)}
                                             />
                                           </>
@@ -459,15 +457,15 @@ const OrganizationsTable: React.FC<OrganizationsTableProps> = ({
           )}
         </Col>
       </Grid>
-      <Modal title="Create Organization" visible={isOrgModalVisible} width={800} footer={null} onCancel={handleCancel}>
+      <Modal title="Create Company" visible={isOrgModalVisible} width={800} footer={null} onCancel={handleCancel}>
         <Form form={form} onFinish={handleCreate} labelCol={{ span: 8 }} wrapperCol={{ span: 16 }} labelAlign="left">
           <Form.Item
-            label="Organization Name"
-            name="organization_alias"
+            label="Company Name"
+            name="company_name"
             rules={[
               {
                 required: true,
-                message: "Please input an organization name",
+                message: "Please input a company name",
               },
             ]}
           >
@@ -503,14 +501,14 @@ const OrganizationsTable: React.FC<OrganizationsTableProps> = ({
             label={
               <span>
                 Allowed Vector Stores{" "}
-                <Tooltip title="Select which vector stores this organization can access by default. Leave empty for access to all vector stores">
+                <Tooltip title="Select which vector stores this company can access by default. Leave empty for access to all vector stores">
                   <InfoCircleOutlined style={{ marginLeft: "4px" }} />
                 </Tooltip>
               </span>
             }
             name="allowed_vector_store_ids"
             className="mt-4"
-            help="Select vector stores this organization can access. Leave empty for access to all vector stores"
+            help="Select vector stores this company can access. Leave empty for access to all vector stores"
           >
             <VectorStoreSelector
               onChange={(values) => form.setFieldValue("allowed_vector_store_ids", values)}
@@ -524,14 +522,14 @@ const OrganizationsTable: React.FC<OrganizationsTableProps> = ({
             label={
               <span>
                 Allowed MCP Servers{" "}
-                <Tooltip title="Select which MCP servers and access groups this organization can access by default.">
+                <Tooltip title="Select which MCP servers and access groups this company can access by default.">
                   <InfoCircleOutlined style={{ marginLeft: "4px" }} />
                 </Tooltip>
               </span>
             }
             name="allowed_mcp_servers_and_groups"
             className="mt-4"
-            help="Select MCP servers and access groups this organization can access."
+            help="Select MCP servers and access groups this company can access."
           >
             <MCPServerSelector
               onChange={(values) => form.setFieldValue("allowed_mcp_servers_and_groups", values)}
@@ -546,17 +544,17 @@ const OrganizationsTable: React.FC<OrganizationsTableProps> = ({
           </Form.Item>
 
           <div style={{ textAlign: "right", marginTop: "10px" }}>
-            <Button type="submit">Create Organization</Button>
+            <Button type="submit">Create Company</Button>
           </div>
         </Form>
       </Modal>
 
       <DeleteResourceModal
         isOpen={isDeleteModalOpen}
-        title="Delete Organization?"
-        message="Are you sure you want to delete this organization? This action cannot be undone."
-        resourceInformationTitle="Organization Information"
-        resourceInformation={[{ label: "Organization ID", value: orgToDelete, code: true }]}
+        title="Delete Company?"
+        message="Are you sure you want to delete this company? This action cannot be undone."
+        resourceInformationTitle="Company Information"
+        resourceInformation={[{ label: "Company ID", value: orgToDelete, code: true }]}
         onCancel={cancelDelete}
         onOk={confirmDelete}
         confirmLoading={isDeleting}

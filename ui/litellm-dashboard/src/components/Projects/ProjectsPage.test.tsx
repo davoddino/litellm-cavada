@@ -6,7 +6,12 @@ import { ProjectResponse } from "@/app/(dashboard)/hooks/projects/useProjects";
 
 const mockUseProjects = vi.fn();
 vi.mock("@/app/(dashboard)/hooks/projects/useProjects", () => ({
-  useProjects: () => mockUseProjects(),
+  useProjects: (options?: unknown) => mockUseProjects(options),
+}));
+
+const mockUseOrganizations = vi.fn();
+vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
+  useOrganizations: () => mockUseOrganizations(),
 }));
 
 const mockUseTeams = vi.fn();
@@ -29,6 +34,7 @@ vi.mock("./ProjectDetailsPage", () => ({
 const mockProjects: ProjectResponse[] = [
   {
     project_id: "proj-1",
+    company_id: "company-1",
     project_alias: "Alpha Project",
     description: "First project",
     team_id: "team-1",
@@ -49,6 +55,7 @@ const mockProjects: ProjectResponse[] = [
   },
   {
     project_id: "proj-2",
+    company_id: "company-2",
     project_alias: "Beta Project",
     description: "Second project",
     team_id: "team-2",
@@ -73,6 +80,23 @@ describe("ProjectsPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUseTeams.mockReturnValue({ data: [], isLoading: false });
+    mockUseOrganizations.mockReturnValue({
+      data: [
+        {
+          company_id: "company-1",
+          company_name: "Acme Company",
+          organization_id: "company-1",
+          organization_alias: "Legacy Org",
+        },
+        {
+          company_id: "company-2",
+          company_name: "Beta Company",
+          organization_id: "company-2",
+          organization_alias: "Legacy Org 2",
+        },
+      ],
+      isLoading: false,
+    });
   });
 
   it("should render the Projects heading", () => {
@@ -158,5 +182,21 @@ describe("ProjectsPage", () => {
     mockUseProjects.mockReturnValue({ data: [mockProjects[0]], isLoading: false });
     renderWithProviders(<ProjectsPage />);
     expect(screen.getByText("Engineering")).toBeInTheDocument();
+  });
+
+  it("should render and filter Projects by Company without Organization copy", async () => {
+    const user = userEvent.setup();
+    mockUseProjects.mockReturnValue({ data: mockProjects, isLoading: false });
+    renderWithProviders(<ProjectsPage />);
+
+    expect(screen.getByText("Acme Company")).toBeInTheDocument();
+    expect(screen.queryByText("Legacy Org")).not.toBeInTheDocument();
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("combobox"));
+    const betaCompanyOptions = await screen.findAllByText("Beta Company");
+    await user.click(betaCompanyOptions[betaCompanyOptions.length - 1]);
+
+    expect(mockUseProjects).toHaveBeenLastCalledWith({ companyID: "company-2" });
   });
 });

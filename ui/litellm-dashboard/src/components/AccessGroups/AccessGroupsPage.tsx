@@ -335,7 +335,7 @@ export function AccessGroupsPage() {
             Access Groups
           </Title>
           <Text type="secondary">
-            Manage resource permissions for your organization
+            Manage model, server, and agent access for Companies and Projects
           </Text>
         </Space>
         {canModify && (

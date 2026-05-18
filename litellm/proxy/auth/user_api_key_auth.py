@@ -1731,6 +1731,100 @@ def _team_obj_from_token(valid_token: UserAPIKeyAuth) -> LiteLLM_TeamTableCached
     )
 
 
+def _model_dict_from_row(row: Any) -> dict:
+    if isinstance(row, dict):
+        return row
+    if hasattr(row, "model_dump"):
+        return row.model_dump()
+    return {
+        key: value
+        for key, value in vars(row).items()
+        if not key.startswith("_")
+    }
+
+
+def _project_cached_obj_from_row(row: Any) -> LiteLLM_ProjectTableCachedObj:
+    if isinstance(row, LiteLLM_ProjectTableCachedObj):
+        return row
+    return LiteLLM_ProjectTableCachedObj(**_model_dict_from_row(row))
+
+
+async def _get_single_project_for_team(
+    *,
+    team_id: Optional[str],
+    prisma_client: Optional[PrismaClient],
+) -> Optional[LiteLLM_ProjectTableCachedObj]:
+    if team_id is None or prisma_client is None:
+        return None
+
+    project_rows = await prisma_client.db.litellm_projecttable.find_many(
+        where={"team_id": team_id},
+        take=2,
+    )
+    if len(project_rows) != 1:
+        if len(project_rows) > 1:
+            verbose_proxy_logger.debug(
+                "Multiple projects found for team_id=%s; leaving project attribution unset.",
+                team_id,
+            )
+        return None
+
+    try:
+        return _project_cached_obj_from_row(project_rows[0])
+    except Exception as e:
+        verbose_proxy_logger.debug(
+            "Failed to map project row for team_id=%s into cached project object: %s",
+            team_id,
+            e,
+        )
+        return None
+
+
+async def _apply_team_company_project_attribution(
+    *,
+    user_api_key_auth_obj: UserAPIKeyAuth,
+    team_object: Optional[LiteLLM_TeamTableCachedObj],
+    project_object: Optional[LiteLLM_ProjectTableCachedObj],
+    prisma_client: Optional[PrismaClient],
+) -> Optional[LiteLLM_ProjectTableCachedObj]:
+    if team_object is None:
+        return project_object
+
+    team_company_id = getattr(team_object, "organization_id", None)
+    if team_company_id and user_api_key_auth_obj.org_id is None:
+        user_api_key_auth_obj.org_id = team_company_id
+        user_api_key_auth_obj.company_id = team_company_id
+
+    if user_api_key_auth_obj.project_id is not None:
+        return project_object
+
+    if (
+        user_api_key_auth_obj.org_id is not None
+        and team_company_id is not None
+        and user_api_key_auth_obj.org_id != team_company_id
+    ):
+        verbose_proxy_logger.debug(
+            "Key company_id=%s differs from team company_id=%s for team_id=%s; "
+            "leaving project attribution unset.",
+            user_api_key_auth_obj.org_id,
+            team_company_id,
+            team_object.team_id,
+        )
+        return project_object
+
+    derived_project = await _get_single_project_for_team(
+        team_id=team_object.team_id,
+        prisma_client=prisma_client,
+    )
+    if derived_project is None:
+        return project_object
+
+    user_api_key_auth_obj.project_id = derived_project.project_id
+    user_api_key_auth_obj.project_alias = derived_project.project_alias
+    user_api_key_auth_obj.project_metadata = derived_project.metadata
+    return derived_project
+
+
 @tracer.wrap()
 async def _run_centralized_common_checks(
     user_api_key_auth_obj: UserAPIKeyAuth,
@@ -1970,6 +2064,13 @@ async def _run_centralized_common_checks(
     if project_object is not None:
         user_api_key_auth_obj.project_metadata = project_object.metadata
         user_api_key_auth_obj.project_alias = project_object.project_alias
+
+    project_object = await _apply_team_company_project_attribution(
+        user_api_key_auth_obj=user_api_key_auth_obj,
+        team_object=team_object,
+        project_object=project_object,
+        prisma_client=prisma_client,
+    )
 
     skip_budget_checks = _should_skip_budget_checks(
         request_data=request_data,

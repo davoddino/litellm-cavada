@@ -1,4 +1,5 @@
 import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
+import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
 import AvailableTeamsPanel from "@/components/team/available_teams";
 import TeamInfoView from "@/components/team/TeamInfo";
 import TeamSSOSettings from "@/components/TeamSSOSettings";
@@ -42,6 +43,7 @@ import { KeyIcon, LayersIcon, SearchIcon, UsersIcon } from "lucide-react";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { AntDLoadingSpinner } from "@/components/ui/AntDLoadingSpinner";
 import OrganizationDropdown from "./common_components/OrganizationDropdown";
+import ProjectDropdown from "./common_components/ProjectDropdown";
 import TableIconActionButton from "./common_components/IconActionButton/TableIconActionButtons/TableIconActionButton";
 import { teamListCall as v2TeamListCall, type TeamsResponse } from "@/app/(dashboard)/hooks/teams/useTeams";
 import AccessGroupSelector from "./common_components/AccessGroupSelector";
@@ -82,6 +84,7 @@ interface TeamProps {
 interface FilterState {
   search: string;
   organization_id: string;
+  project_id: string;
   sort_by: string;
   sort_order: "asc" | "desc";
 }
@@ -112,7 +115,6 @@ const getOrganizationModels = (organization: Organization | null, userModels: st
 
   if (organization) {
     if (organization.models.length > 0) {
-      console.log(`organization.models: ${organization.models}`);
       tempModelsToPick = organization.models;
     } else {
       // show all available models if the team has no models set
@@ -189,8 +191,8 @@ const Teams: React.FC<TeamProps> = ({
   organizations,
   premiumUser = false,
 }) => {
-  console.log(`organizations: ${JSON.stringify(organizations)}`);
   const { data: organizationsData } = useOrganizations();
+  const { data: projects = [], isLoading: isProjectsLoading } = useProjects({ includeNonAdmin: true });
   const [isLoading, setIsLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -201,6 +203,7 @@ const Teams: React.FC<TeamProps> = ({
   const [filters, setFilters] = useState<FilterState>({
     search: "",
     organization_id: "",
+    project_id: "",
     sort_by: "created_at",
     sort_order: "desc",
   });
@@ -213,6 +216,7 @@ const Teams: React.FC<TeamProps> = ({
     sortBy?: string;
     sortOrder?: string;
     organizationID?: string;
+    projectID?: string;
     search?: string;
   } = {}) => {
     if (!accessToken) return;
@@ -221,6 +225,7 @@ const Teams: React.FC<TeamProps> = ({
     const sortBy = opts.sortBy ?? filters.sort_by;
     const sortOrder = opts.sortOrder ?? filters.sort_order;
     const organizationID = opts.organizationID ?? filters.organization_id;
+    const projectID = opts.projectID ?? filters.project_id;
     const search = opts.search ?? filters.search;
 
     setIsLoading(true);
@@ -232,6 +237,7 @@ const Teams: React.FC<TeamProps> = ({
         size,
         {
           organizationID: organizationID || null,
+          projectID: projectID || null,
           search: search || null,
           userID: userRole !== "Admin" && userRole !== "Admin Viewer" ? userID : null,
           sortBy: sortBy || null,
@@ -287,19 +293,18 @@ const Teams: React.FC<TeamProps> = ({
     form.setFieldValue("models", []);
   }, [currentOrgForCreateTeam, userModels]);
 
-  // Handle organization preselection when modal opens
+  // Handle company preselection when modal opens
   useEffect(() => {
     if (isTeamModalVisible) {
       const adminOrgs = getAdminOrganizations(userRole, userID, organizations);
 
-      // If there's exactly one organization the user is admin for, preselect it
+      // If there's exactly one company the user is admin for, preselect it
       if (adminOrgs.length === 1) {
         const org = adminOrgs[0];
-        form.setFieldValue("organization_id", org.organization_id);
+        form.setFieldValue("company_id", org.organization_id);
         setCurrentOrgForCreateTeam(org);
       } else {
-        // Reset the organization selection for multiple orgs
-        form.setFieldValue("organization_id", currentOrg?.organization_id || null);
+        form.setFieldValue("company_id", currentOrg?.organization_id || null);
         setCurrentOrgForCreateTeam(currentOrg);
       }
     }
@@ -462,12 +467,13 @@ const Teams: React.FC<TeamProps> = ({
       if (accessToken != null) {
         const newTeamAlias = formValues?.team_alias;
         const existingTeamAliases = teams?.map((t) => t.team_alias) ?? [];
-        let organizationId = formValues?.organization_id || currentOrg?.organization_id;
-        if (organizationId === "" || typeof organizationId !== "string") {
-          formValues.organization_id = null;
+        let companyId = formValues?.company_id || currentOrg?.organization_id;
+        if (companyId === "" || typeof companyId !== "string") {
+          formValues.company_id = null;
         } else {
-          formValues.organization_id = organizationId.trim();
+          formValues.company_id = companyId.trim();
         }
+        delete formValues.organization_id;
 
         // Remove guardrails from top level since it's now in metadata
         if (existingTeamAliases.includes(newTeamAlias)) {
@@ -640,7 +646,11 @@ const Teams: React.FC<TeamProps> = ({
   };
 
   const handleFilterChange = async (key: keyof FilterState, value: string) => {
-    const newFilters = { ...filters, [key]: value };
+    const newFilters = {
+      ...filters,
+      [key]: value,
+      ...(key === "organization_id" ? { project_id: "" } : {}),
+    };
     setFilters(newFilters);
     setCurrentPage(1);
     if (!accessToken) return;
@@ -651,6 +661,7 @@ const Teams: React.FC<TeamProps> = ({
         pageSize,
         {
           organizationID: newFilters.organization_id || null,
+          projectID: newFilters.project_id || null,
           search: newFilters.search || null,
           userID: userRole !== "Admin" && userRole !== "Admin Viewer" ? userID : null,
           sortBy: newFilters.sort_by || null,
@@ -670,12 +681,13 @@ const Teams: React.FC<TeamProps> = ({
     const resetFilters: FilterState = {
       search: "",
       organization_id: "",
+      project_id: "",
       sort_by: "created_at",
       sort_order: "desc",
     };
     setFilters(resetFilters);
     setCurrentPage(1);
-    fetchTeamsV2({ page: 1, organizationID: "", search: "", sortBy: "created_at", sortOrder: "desc" });
+    fetchTeamsV2({ page: 1, organizationID: "", projectID: "", search: "", sortBy: "created_at", sortOrder: "desc" });
   };
 
   const { token } = theme.useToken();
@@ -728,13 +740,35 @@ const Teams: React.FC<TeamProps> = ({
       ),
     },
     {
-      title: "Organization",
+      title: "Company",
       key: "organization",
       width: 160,
       ellipsis: true,
       render: (_: unknown, record: Team) => {
         const orgAlias = getOrganizationAlias(record.organization_id, organizationsData || organizations);
         return record.organization_id ? <Text ellipsis style={{ fontSize: 14 }}>{orgAlias}</Text> : <Text type="secondary">—</Text>;
+      },
+    },
+    {
+      title: "Projects",
+      key: "projects",
+      width: 190,
+      ellipsis: true,
+      render: (_: unknown, record: Team) => {
+        const projectLabels = record.project_names?.length ? record.project_names : record.project_ids || [];
+        if (projectLabels.length === 0) {
+          return <Text type="secondary">—</Text>;
+        }
+        return (
+          <Flex gap={4} wrap="wrap">
+            {projectLabels.slice(0, 2).map((project) => (
+              <Tag key={project} color="blue" style={{ margin: 0 }}>
+                {project}
+              </Tag>
+            ))}
+            {projectLabels.length > 2 && <Tag style={{ margin: 0 }}>+{projectLabels.length - 2}</Tag>}
+          </Flex>
+        );
       },
     },
     {
@@ -953,6 +987,15 @@ const Teams: React.FC<TeamProps> = ({
                   onChange={(value: string) => handleFilterChange("organization_id", value || "")}
                   loading={isLoading}
                 />
+                <div style={{ minWidth: 280 }}>
+                  <ProjectDropdown
+                    projects={projects}
+                    value={filters.project_id || undefined}
+                    companyId={filters.organization_id || null}
+                    onChange={(value) => handleFilterChange("project_id", value || "")}
+                    loading={isProjectsLoading}
+                  />
+                </div>
               </Flex>
               <Pagination
                 current={currentPage}
@@ -1106,11 +1149,11 @@ const Teams: React.FC<TeamProps> = ({
                         <Form.Item
                           label={
                             <span>
-                              Organization{" "}
+                              Company{" "}
                               <Tooltip
                                 title={
                                   <span>
-                                    Organizations can have multiple teams. Learn more about{" "}
+                                    Companies can have multiple teams. Learn more about{" "}
                                     <a
                                       href="https://docs.litellm.ai/docs/proxy/user_management_heirarchy"
                                       target="_blank"
@@ -1130,7 +1173,7 @@ const Teams: React.FC<TeamProps> = ({
                               </Tooltip>
                             </span>
                           }
-                          name="organization_id"
+                          name="company_id"
                           initialValue={currentOrg ? currentOrg.organization_id : null}
                           className="mt-8"
                           rules={
@@ -1138,14 +1181,14 @@ const Teams: React.FC<TeamProps> = ({
                               ? [
                                 {
                                   required: true,
-                                  message: "Please select an organization",
+                                  message: "Please select a company",
                                 },
                               ]
                               : []
                           }
                           help={
                             isSingleOrg
-                              ? "You can only create teams within this organization"
+                              ? "You can only create teams within this company"
                               : isOrgAdmin
                                 ? "required"
                                 : ""
@@ -1155,9 +1198,9 @@ const Teams: React.FC<TeamProps> = ({
                             showSearch
                             allowClear={!isOrgAdmin}
                             disabled={isSingleOrg}
-                            placeholder={hasNoOrgs ? "No organizations available" : "Search or select an Organization"}
+                            placeholder={hasNoOrgs ? "No companies available" : "Search or select a Company"}
                             onChange={(value) => {
-                              form.setFieldValue("organization_id", value);
+                              form.setFieldValue("company_id", value);
                               setCurrentOrgForCreateTeam(
                                 adminOrgs?.find((org) => org.organization_id === value) || null,
                               );
@@ -1178,12 +1221,12 @@ const Teams: React.FC<TeamProps> = ({
                           </Select>
                         </Form.Item>
 
-                        {/* Show message when org admin needs to select organization */}
+                        {/* Show message when company admin needs to select a company */}
                         {isOrgAdmin && !isSingleOrg && adminOrgs.length > 1 && (
                           <div className="mb-8 p-4 bg-blue-50 border border-blue-200 rounded-md">
                             <Text style={{ color: "#1e40af", fontSize: 14 }}>
-                              Please select an organization to create a team for. You can only create teams within
-                              organizations where you are an admin.
+                              Please select a company to create a team for. You can only create teams within
+                              companies where you are an admin.
                             </Text>
                           </div>
                         )}
@@ -1210,10 +1253,10 @@ const Teams: React.FC<TeamProps> = ({
                     <ModelSelect
                       value={form.getFieldValue("models") || []}
                       onChange={(values) => form.setFieldValue("models", values)}
-                      organizationID={form.getFieldValue("organization_id")}
+                      organizationID={form.getFieldValue("company_id")}
                       options={{
                         includeSpecialOptions: true,
-                        showAllProxyModelsOverride: !form.getFieldValue("organization_id"),
+                        showAllProxyModelsOverride: !form.getFieldValue("company_id"),
                       }}
                       context="team"
                       dataTestId="create-team-models-select"

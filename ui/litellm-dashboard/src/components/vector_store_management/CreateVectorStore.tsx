@@ -4,9 +4,12 @@ import { Upload, Button, Select, Form, Alert, Tooltip, Input } from "antd";
 import MessageManager from "@/components/molecules/message_manager";
 import { InboxOutlined, InfoCircleOutlined } from "@ant-design/icons";
 import type { UploadProps } from "antd";
-import { ragIngestCall } from "../networking";
+import { Organization, ragIngestCall } from "../networking";
 import { DocumentUpload, RAGIngestResponse } from "./types";
 import DocumentsTable from "./DocumentsTable";
+import { ProjectResponse } from "@/app/(dashboard)/hooks/projects/useProjects";
+import OrganizationDropdown from "../common_components/OrganizationDropdown";
+import ProjectDropdown from "../common_components/ProjectDropdown";
 import {
   VectorStoreProviders,
   vectorStoreProviderLogoMap,
@@ -22,13 +25,26 @@ const { Dragger } = Upload;
 interface CreateVectorStoreProps {
   accessToken: string | null;
   onSuccess?: (vectorStoreId: string) => void;
+  organizations?: Organization[] | null;
+  organizationsLoading?: boolean;
+  projects?: ProjectResponse[] | null;
+  projectsLoading?: boolean;
 }
 
-const CreateVectorStore: React.FC<CreateVectorStoreProps> = ({ accessToken, onSuccess }) => {
+const CreateVectorStore: React.FC<CreateVectorStoreProps> = ({
+  accessToken,
+  onSuccess,
+  organizations,
+  organizationsLoading,
+  projects,
+  projectsLoading,
+}) => {
   const [form] = Form.useForm();
   const [documents, setDocuments] = useState<DocumentUpload[]>([]);
   const [isCreating, setIsCreating] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState<string>("bedrock");
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string | undefined>();
+  const [selectedProjectId, setSelectedProjectId] = useState<string | undefined>();
   const [vectorStoreName, setVectorStoreName] = useState<string>("");
   const [vectorStoreDescription, setVectorStoreDescription] = useState<string>("");
   const [ingestResults, setIngestResults] = useState<RAGIngestResponse[]>([]);
@@ -96,6 +112,10 @@ const CreateVectorStore: React.FC<CreateVectorStoreProps> = ({ accessToken, onSu
       MessageManager.warning("Please select a provider");
       return;
     }
+    if (!selectedCompanyId || !selectedProjectId) {
+      MessageManager.warning("Please select a Company and Project");
+      return;
+    }
 
     // Validate provider-specific required fields
     const requiredFields = getProviderSpecificFields(selectedProvider).filter((field) => field.required);
@@ -145,7 +165,9 @@ const CreateVectorStore: React.FC<CreateVectorStoreProps> = ({ accessToken, onSu
             vectorStoreId, // Use the same vector store ID for subsequent uploads
             vectorStoreName || undefined,
             vectorStoreDescription || undefined,
-            providerParams
+            providerParams,
+            selectedCompanyId,
+            selectedProjectId
           );
 
           // Store the vector store ID from the first successful ingest
@@ -240,6 +262,36 @@ const CreateVectorStore: React.FC<CreateVectorStoreProps> = ({ accessToken, onSu
           </div>
 
           <Form form={form} layout="vertical">
+            <Form.Item
+              label="Company"
+              required
+            >
+              <OrganizationDropdown
+                organizations={organizations}
+                value={selectedCompanyId}
+                onChange={(value) => {
+                  setSelectedCompanyId(value);
+                  setSelectedProjectId(undefined);
+                }}
+                loading={organizationsLoading}
+                style={{ width: "100%" }}
+              />
+            </Form.Item>
+
+            <Form.Item
+              label="Project"
+              required
+            >
+              <ProjectDropdown
+                projects={projects}
+                value={selectedProjectId}
+                onChange={setSelectedProjectId}
+                companyId={selectedCompanyId}
+                loading={projectsLoading}
+                disabled={!selectedCompanyId}
+              />
+            </Form.Item>
+
             <Form.Item
               label={
                 <span>
@@ -401,7 +453,7 @@ const CreateVectorStore: React.FC<CreateVectorStoreProps> = ({ accessToken, onSu
               size="large"
               onClick={handleCreateVectorStore}
               loading={isCreating}
-              disabled={documents.length === 0 || !selectedProvider}
+              disabled={documents.length === 0 || !selectedProvider || !selectedCompanyId || !selectedProjectId}
             >
               {isCreating ? "Creating Vector Store..." : "Create Vector Store"}
             </Button>

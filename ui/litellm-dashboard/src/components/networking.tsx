@@ -80,10 +80,9 @@ import NotificationsManager from "./molecules/notifications_manager";
 const isLocal = process.env.NODE_ENV === "development";
 // In dev, if NEXT_PUBLIC_USE_REWRITES=true the Next.js dev server proxies API calls
 // to the backend — use relative URLs (null) so rewrites can intercept them.
-const defaultProxyBaseUrl =
-  process.env.NEXT_PUBLIC_BASE_URL
-    ? process.env.NEXT_PUBLIC_BASE_URL
-    : isLocal && process.env.NEXT_PUBLIC_USE_REWRITES !== "true"
+const defaultProxyBaseUrl = process.env.NEXT_PUBLIC_BASE_URL
+  ? process.env.NEXT_PUBLIC_BASE_URL
+  : isLocal && process.env.NEXT_PUBLIC_USE_REWRITES !== "true"
     ? "http://localhost:4000"
     : null;
 const defaultServerRootPath = "/";
@@ -91,23 +90,120 @@ export let serverRootPath = defaultServerRootPath;
 const WORKER_URL_KEY = "litellm_worker_url";
 // If a worker URL is in localStorage, use it as the initial proxyBaseUrl.
 // This survives page navigation and the sessionStorage.clear() in user_dashboard.
-const _rawWorkerUrl =
-  typeof window !== "undefined" ? window.localStorage.getItem(WORKER_URL_KEY) : null;
+const _rawWorkerUrl = typeof window !== "undefined" ? window.localStorage.getItem(WORKER_URL_KEY) : null;
 // Validate stored worker URL — reject non-HTTP schemes to prevent exfiltration
 const _initialWorkerUrl = (() => {
   if (!_rawWorkerUrl) return null;
   try {
     const parsed = new URL(_rawWorkerUrl);
     if (parsed.protocol === "http:" || parsed.protocol === "https:") return _rawWorkerUrl;
-  } catch { /* invalid URL */ }
+  } catch {
+    /* invalid URL */
+  }
   // Invalid URL in storage — clear it
   if (typeof window !== "undefined") window.localStorage.removeItem(WORKER_URL_KEY);
   return null;
 })();
 export let proxyBaseUrl: string | null = _initialWorkerUrl ?? defaultProxyBaseUrl;
 if (isLocal != true) {
-  console.log = function () { };
+  console.log = function () {};
 }
+
+const sanitizeScalarCompanyTenantPayload = (formValues: Record<string, any>): Record<string, any> => {
+  const payload = { ...formValues };
+  const tenantAliases = [payload.company_id, payload.organization_id, payload.org_id].filter(
+    (value) => value !== undefined && value !== null && value !== "",
+  );
+
+  if (tenantAliases.length > 0) {
+    const companyId = tenantAliases[0];
+    if (tenantAliases.some((value) => value !== companyId)) {
+      throw new Error("company_id and organization_id refer to the same tenant and must match when both are provided.");
+    }
+    payload.company_id = companyId;
+  }
+
+  delete payload.org_id;
+  delete payload.organization_id;
+  delete payload.organization_ids;
+  delete payload.organizations;
+  return payload;
+};
+
+const sanitizeKeyTenantPayload = (formValues: Record<string, any>): Record<string, any> =>
+  sanitizeScalarCompanyTenantPayload(formValues);
+
+const sanitizeTeamTenantPayload = (formValues: Record<string, any>): Record<string, any> =>
+  sanitizeScalarCompanyTenantPayload(formValues);
+
+const sanitizeCompanyProjectFilterParams = (params: object): Record<string, any> =>
+  sanitizeScalarCompanyTenantPayload(params as Record<string, any>);
+
+const normalizeStringIdList = (value: any): string[] | null => {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  if (Array.isArray(value)) {
+    return value.filter((item): item is string => typeof item === "string" && item.length > 0);
+  }
+  if (typeof value === "string") {
+    return [value];
+  }
+  return null;
+};
+
+const sameStringIdSet = (left: string[], right: string[]): boolean => {
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  return leftSet.size === rightSet.size && [...leftSet].every((id) => rightSet.has(id));
+};
+
+const resolveCanonicalIdList = (
+  canonicalName: string,
+  compatibilityName: string,
+  values: Array<string[] | null>,
+): string[] | undefined => {
+  const providedValues = values.filter((value): value is string[] => value !== null);
+  if (providedValues.length === 0) {
+    return undefined;
+  }
+  const resolved = providedValues[0];
+  if (providedValues.some((value) => !sameStringIdSet(value, resolved))) {
+    throw new Error(`${canonicalName} and ${compatibilityName} refer to the same tenant list and must match when both are provided.`);
+  }
+  return resolved;
+};
+
+const sanitizeUserMembershipPayload = (formValues: Record<string, any>): Record<string, any> => {
+  const payload = { ...formValues };
+  const companyIds = resolveCanonicalIdList("company_ids", "organization_ids", [
+    normalizeStringIdList(payload.company_ids),
+    normalizeStringIdList(payload.companies),
+    normalizeStringIdList(payload.company_id),
+    normalizeStringIdList(payload.organization_ids),
+    normalizeStringIdList(payload.organizations),
+    normalizeStringIdList(payload.organization_id),
+  ]);
+  const projectIds = resolveCanonicalIdList("project_ids", "project_id", [
+    normalizeStringIdList(payload.project_ids),
+    normalizeStringIdList(payload.project_id),
+  ]);
+
+  if (companyIds !== undefined) {
+    payload.company_ids = companyIds;
+  }
+  if (projectIds !== undefined) {
+    payload.project_ids = projectIds;
+  }
+
+  delete payload.company_id;
+  delete payload.companies;
+  delete payload.organization_id;
+  delete payload.organization_ids;
+  delete payload.organizations;
+  delete payload.project_id;
+  return payload;
+};
 
 const getWindowLocation = () => {
   if (typeof window === "undefined") {
@@ -128,8 +224,8 @@ const updateProxyBaseUrl = (serverRootPath: string, receivedProxyBaseUrl: string
   const resolvedDefaultProxyBaseUrl = process.env.NEXT_PUBLIC_BASE_URL
     ? process.env.NEXT_PUBLIC_BASE_URL
     : isLocal && process.env.NEXT_PUBLIC_USE_REWRITES !== "true"
-    ? "http://localhost:4000"
-    : browserLocation?.origin ?? null;
+      ? "http://localhost:4000"
+      : browserLocation?.origin ?? null;
   let initialProxyBaseUrl = receivedProxyBaseUrl || resolvedDefaultProxyBaseUrl;
   console.log("proxyBaseUrl:", proxyBaseUrl);
   console.log("serverRootPath:", serverRootPath);
@@ -236,6 +332,8 @@ export interface ListPromptsResponse {
 }
 
 export interface Organization {
+  company_id?: string;
+  company_name?: string;
   organization_id: string;
   organization_alias: string;
   budget_id: string;
@@ -541,9 +639,7 @@ export const cancelModelCostMapReload = async (accessToken: string) => {
 
 export const getModelCostMapSource = async (accessToken: string) => {
   try {
-    const url = proxyBaseUrl
-      ? `${proxyBaseUrl}/model/cost_map/source`
-      : `/model/cost_map/source`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/model/cost_map/source` : `/model/cost_map/source`;
     const response = await fetch(url, {
       method: "GET",
       headers: {
@@ -880,9 +976,7 @@ export const keyCreateServiceAccountCall = async (
         [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        ...formValues, // Include formValues in the request body
-      }),
+      body: JSON.stringify(sanitizeKeyTenantPayload(formValues)),
     });
 
     if (!response.ok) {
@@ -943,10 +1037,7 @@ export const keyCreateCall = async (
         [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        user_id: userID,
-        ...formValues, // Include formValues in the request body
-      }),
+      body: JSON.stringify(sanitizeKeyTenantPayload({ user_id: userID, ...formValues })),
     });
 
     if (!response.ok) {
@@ -973,6 +1064,8 @@ export const keyCreateForAgentCall = async (
   models: string[],
   metadata?: Record<string, any>,
   teamId?: string | null,
+  companyId?: string | null,
+  projectId?: string | null,
 ) => {
   const url = proxyBaseUrl ? `${proxyBaseUrl}/key/generate` : `/key/generate`;
   const body: Record<string, any> = {
@@ -983,6 +1076,12 @@ export const keyCreateForAgentCall = async (
   if (teamId) {
     body.team_id = teamId;
   }
+  if (companyId) {
+    body.company_id = companyId;
+  }
+  if (projectId) {
+    body.project_id = projectId;
+  }
   if (metadata && Object.keys(metadata).length > 0) {
     body.metadata = metadata;
   }
@@ -992,7 +1091,7 @@ export const keyCreateForAgentCall = async (
       [globalLitellmHeaderName]: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(sanitizeKeyTenantPayload(body)),
   });
 
   if (!response.ok) {
@@ -1045,10 +1144,7 @@ export const userCreateCall = async (
         [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        user_id: userID,
-        ...formValues, // Include formValues in the request body
-      }),
+      body: JSON.stringify(sanitizeUserMembershipPayload({ user_id: userID, ...formValues })),
     });
 
     if (!response.ok) {
@@ -1186,14 +1282,14 @@ export const userListCall = async (
   sso_user_id: string | null = null,
   sortBy: string | null = null,
   sortOrder: "asc" | "desc" | null = null,
-  organizationIds: string[] | null = null,
+  companyIds: string[] | null = null,
+  projectIds: string[] | null = null,
 ) => {
   /**
    * Get all available teams on proxy
    */
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/user/list` : `/user/list`;
-    console.log("in userListCall");
     const queryParams = new URLSearchParams();
 
     if (userIDs && userIDs.length > 0) {
@@ -1234,8 +1330,12 @@ export const userListCall = async (
       queryParams.append("sort_order", sortOrder);
     }
 
-    if (organizationIds && organizationIds.length > 0) {
-      queryParams.append("organization_ids", organizationIds.join(","));
+    if (companyIds && companyIds.length > 0) {
+      queryParams.append("company_ids", companyIds.join(","));
+    }
+
+    if (projectIds && projectIds.length > 0) {
+      queryParams.append("project_ids", projectIds.join(","));
     }
 
     const queryString = queryParams.toString();
@@ -1286,6 +1386,10 @@ export interface UserInfoV2Response {
   updated_at: string | null;
   sso_user_id: string | null;
   teams: string[];
+  company_ids: string[];
+  company_names: string[];
+  project_ids: string[];
+  project_names: string[];
 }
 
 /**
@@ -1295,10 +1399,7 @@ export interface UserInfoV2Response {
  * @param accessToken - Bearer token for auth
  * @param userId - Optional user ID to look up. If omitted, returns the caller's own info.
  */
-export const userGetInfoV2 = async (
-  accessToken: string,
-  userId?: string,
-): Promise<UserInfoV2Response> => {
+export const userGetInfoV2 = async (accessToken: string, userId?: string): Promise<UserInfoV2Response> => {
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/v2/user/info` : `/v2/user/info`;
     if (userId) {
@@ -1432,6 +1533,7 @@ export const v2TeamListCall = async (
   page_size: number = 10,
   sort_by: string | null = null,
   sort_order: "asc" | "desc" | null = null,
+  projectID: string | null = null,
 ): Promise<TeamListResponse> => {
   /**
    * Get list of teams with filtering and sorting options
@@ -1446,7 +1548,7 @@ export const v2TeamListCall = async (
     }
 
     if (organizationID) {
-      queryParams.append("organization_id", organizationID.toString());
+      queryParams.append("company_id", organizationID.toString());
     }
 
     if (teamID) {
@@ -1455,6 +1557,19 @@ export const v2TeamListCall = async (
 
     if (team_alias) {
       queryParams.append("team_alias", team_alias.toString());
+    }
+
+    if (projectID) {
+      queryParams.append("project_id", projectID.toString());
+    }
+
+    queryParams.append("page", page.toString());
+    queryParams.append("page_size", page_size.toString());
+    if (sort_by) {
+      queryParams.append("sort_by", sort_by.toString());
+    }
+    if (sort_order) {
+      queryParams.append("sort_order", sort_order.toString());
     }
 
     const queryString = queryParams.toString();
@@ -1493,6 +1608,7 @@ export const teamListCall = async (
   userID: string | null = null,
   teamID: string | null = null,
   team_alias: string | null = null,
+  projectID: string | null = null,
 ) => {
   /**
    * Get all available teams on proxy
@@ -1507,7 +1623,7 @@ export const teamListCall = async (
     }
 
     if (organizationID) {
-      queryParams.append("organization_id", organizationID.toString());
+      queryParams.append("company_id", organizationID.toString());
     }
 
     if (teamID) {
@@ -1516,6 +1632,10 @@ export const teamListCall = async (
 
     if (team_alias) {
       queryParams.append("team_alias", team_alias.toString());
+    }
+
+    if (projectID) {
+      queryParams.append("project_id", projectID.toString());
     }
 
     const queryString = queryParams.toString();
@@ -1584,18 +1704,18 @@ export const organizationListCall = async (
   org_alias: string | null = null,
 ) => {
   /**
-   * Get all organizations on proxy
+   * Get all companies on proxy. Function name stays as LiteLLM compatibility.
    */
   try {
-    let url = proxyBaseUrl ? `${proxyBaseUrl}/organization/list` : `/organization/list`;
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/company/list` : `/company/list`;
     const queryParams = new URLSearchParams();
 
     if (org_id) {
-      queryParams.append("org_id", org_id.toString());
+      queryParams.append("company_id", org_id.toString());
     }
 
     if (org_alias) {
-      queryParams.append("org_alias", org_alias.toString());
+      queryParams.append("company_name", org_alias.toString());
     }
 
     const queryString = queryParams.toString();
@@ -1628,11 +1748,11 @@ export const organizationListCall = async (
 
 export const organizationInfoCall = async (accessToken: string, organizationID: string) => {
   try {
-    let url = proxyBaseUrl ? `${proxyBaseUrl}/organization/info` : `/organization/info`;
+    let url = proxyBaseUrl ? `${proxyBaseUrl}/company/info` : `/company/info`;
     if (organizationID) {
-      url = `${url}?organization_id=${organizationID}`;
+      url = `${url}?company_id=${organizationID}`;
     }
-    console.log("in teamInfoCall");
+    console.log("in companyInfoCall");
     const response = await fetch(url, {
       method: "GET",
       headers: {
@@ -1676,7 +1796,7 @@ export const organizationCreateCall = async (
       }
     }
 
-    const url = proxyBaseUrl ? `${proxyBaseUrl}/organization/new` : `/organization/new`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/company/new` : `/company/new`;
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -1712,7 +1832,7 @@ export const organizationUpdateCall = async (
   try {
     console.log("Form Values in organizationUpdateCall:", formValues); // Log the form values before making the API call
 
-    const url = proxyBaseUrl ? `${proxyBaseUrl}/organization/update` : `/organization/update`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/company/update` : `/company/update`;
     const response = await fetch(url, {
       method: "PATCH",
       headers: {
@@ -1743,7 +1863,7 @@ export const organizationUpdateCall = async (
 
 export const organizationDeleteCall = async (accessToken: string, organizationID: string) => {
   try {
-    const url = proxyBaseUrl ? `${proxyBaseUrl}/organization/delete` : `/organization/delete`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/company/delete` : `/company/delete`;
     const response = await fetch(url, {
       method: "DELETE",
       headers: {
@@ -1751,7 +1871,7 @@ export const organizationDeleteCall = async (accessToken: string, organizationID
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        organization_ids: [organizationID],
+        company_ids: [organizationID],
       }),
     });
 
@@ -1891,7 +2011,13 @@ const fetchDailyActivity = async ({
   }
 };
 
-export const userDailyActivityCall = async (accessToken: string, startTime: Date, endTime: Date, page: number = 1, userId: string | null = null) => {
+export const userDailyActivityCall = async (
+  accessToken: string,
+  startTime: Date,
+  endTime: Date,
+  page: number = 1,
+  userId: string | null = null,
+) => {
   /**
    * Get daily user activity on proxy
    */
@@ -1967,6 +2093,46 @@ export const organizationDailyActivityCall = async (
     page,
     extraQueryParams: {
       organization_ids: organizationIds,
+    },
+  });
+};
+
+export const companyDailyActivityCall = async (
+  accessToken: string,
+  startTime: Date,
+  endTime: Date,
+  page: number = 1,
+  companyIds: string[] | null = null,
+) => {
+  return fetchDailyActivity({
+    accessToken,
+    endpoint: "/company/daily/activity",
+    startTime,
+    endTime,
+    page,
+    extraQueryParams: {
+      company_ids: companyIds,
+    },
+  });
+};
+
+export const projectDailyActivityCall = async (
+  accessToken: string,
+  startTime: Date,
+  endTime: Date,
+  page: number = 1,
+  projectIds: string[] | null = null,
+  companyIds: string[] | null = null,
+) => {
+  return fetchDailyActivity({
+    accessToken,
+    endpoint: "/project/daily/activity",
+    startTime,
+    endTime,
+    page,
+    extraQueryParams: {
+      project_ids: projectIds,
+      company_ids: companyIds,
     },
   });
 };
@@ -2673,6 +2839,8 @@ export const userFilterUICall = async (accessToken: string, params: URLSearchPar
 interface UiSpendLogsParams {
   api_key?: string;
   team_id?: string;
+  company_id?: string;
+  project_id?: string;
   request_id?: string;
   user_id?: string;
   end_user?: string;
@@ -2718,7 +2886,8 @@ export const uiSpendLogsCall = async ({
     queryParams.append("page_size", page_size.toString());
 
     // Add optional params only when explicitly provided
-    for (const [key, value] of Object.entries(params)) {
+    const sanitizedParams = sanitizeCompanyProjectFilterParams(params);
+    for (const [key, value] of Object.entries(sanitizedParams)) {
       if (value == null) continue;
       if (key === "min_spend" || key === "max_spend") {
         queryParams.append(key, value.toString());
@@ -3183,6 +3352,7 @@ export const keyListCall = async (
   sortOrder: string | null = null,
   expand: string | null = null,
   status: string | null = null,
+  projectID: string | null = null,
 ) => {
   /**
    * Get all available teams on proxy
@@ -3197,7 +3367,11 @@ export const keyListCall = async (
     }
 
     if (organizationID) {
-      queryParams.append("organization_id", organizationID.toString());
+      queryParams.append("company_id", organizationID.toString());
+    }
+
+    if (projectID) {
+      queryParams.append("project_id", projectID.toString());
     }
 
     if (selectedKeyAlias) {
@@ -3324,7 +3498,12 @@ export const keyAliasesCall = async (
   }
 };
 
-export const userDailyActivityAggregatedCall = async (accessToken: string, startTime: Date, endTime: Date, userId: string | null = null) => {
+export const userDailyActivityAggregatedCall = async (
+  accessToken: string,
+  startTime: Date,
+  endTime: Date,
+  userId: string | null = null,
+) => {
   /**
    * Get aggregated daily user activity (no pagination)
    */
@@ -3423,9 +3602,7 @@ export const teamCreateCall = async (
         [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        ...formValues, // Include formValues in the request body
-      }),
+      body: JSON.stringify(sanitizeTeamTenantPayload(formValues)),
     });
 
     if (!response.ok) {
@@ -3668,9 +3845,7 @@ export const keyUpdateCall = async (
         [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        ...formValues, // Include formValues in the request body
-      }),
+      body: JSON.stringify(sanitizeKeyTenantPayload(formValues)),
     });
 
     if (!response.ok) {
@@ -3703,9 +3878,7 @@ export const teamUpdateCall = async (
         [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        ...formValues, // Include formValues in the request body
-      }),
+      body: JSON.stringify(sanitizeTeamTenantPayload(formValues)),
     });
 
     if (!response.ok) {
@@ -4007,7 +4180,7 @@ export const organizationMemberAddCall = async (
   try {
     console.log("Form Values in teamMemberAddCall:", formValues); // Log the form values before making the API call
 
-    const url = proxyBaseUrl ? `${proxyBaseUrl}/organization/member_add` : `/organization/member_add`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/company/member_add` : `/company/member_add`;
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -4015,7 +4188,7 @@ export const organizationMemberAddCall = async (
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        organization_id: organizationId,
+        company_id: organizationId,
         member: formValues, // Include formValues in the request body
       }),
     });
@@ -4041,7 +4214,7 @@ export const organizationMemberDeleteCall = async (accessToken: string, organiza
   try {
     console.log("Form Values in organizationMemberDeleteCall:", userId); // Log the form values before making the API call
 
-    const url = proxyBaseUrl ? `${proxyBaseUrl}/organization/member_delete` : `/organization/member_delete`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/company/member_delete` : `/company/member_delete`;
 
     const response = await fetch(url, {
       method: "DELETE",
@@ -4050,7 +4223,7 @@ export const organizationMemberDeleteCall = async (accessToken: string, organiza
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        organization_id: organizationId,
+        company_id: organizationId,
         user_id: userId,
       }),
     });
@@ -4078,7 +4251,7 @@ export const organizationMemberUpdateCall = async (
   try {
     console.log("Form Values in organizationMemberUpdateCall:", formValues); // Log the form values before making the API call
 
-    const url = proxyBaseUrl ? `${proxyBaseUrl}/organization/member_update` : `/organization/member_update`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/company/member_update` : `/company/member_update`;
 
     const response = await fetch(url, {
       method: "PATCH",
@@ -4087,7 +4260,7 @@ export const organizationMemberUpdateCall = async (
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        organization_id: organizationId,
+        company_id: organizationId,
         ...formValues, // Include formValues in the request body
       }),
     });
@@ -4117,18 +4290,17 @@ export const userUpdateUserCall = async (
     console.log("Form Values in userUpdateUserCall:", formValues); // Log the form values before making the API call
 
     const url = proxyBaseUrl ? `${proxyBaseUrl}/user/update` : `/user/update`;
-    let response_body = { ...formValues };
+    const responseBody = sanitizeUserMembershipPayload(formValues);
     if (userRole !== null) {
-      response_body["user_role"] = userRole;
+      responseBody["user_role"] = userRole;
     }
-    response_body = JSON.stringify(response_body);
     const response = await fetch(url, {
       method: "POST",
       headers: {
         [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-      body: response_body,
+      body: JSON.stringify(responseBody),
     });
 
     if (!response.ok) {
@@ -4988,9 +5160,33 @@ export const testMCPSemanticFilter = async (accessToken: string, model: string, 
   }
 };
 
-export const getGuardrailsList = async (accessToken: string) => {
+export interface GuardrailsListOptions {
+  companyId?: string | null;
+  projectId?: string | null;
+}
+
+const appendGuardrailScopeParams = (url: string, options?: GuardrailsListOptions) => {
+  if (!options?.companyId && !options?.projectId) {
+    return url;
+  }
+
+  const params = new URLSearchParams();
+  if (options.companyId) {
+    params.set("company_id", options.companyId);
+  }
+  if (options.projectId) {
+    params.set("project_id", options.projectId);
+  }
+  return `${url}?${params.toString()}`;
+};
+
+export const getGuardrailsList = async (accessToken: string, options?: GuardrailsListOptions) => {
+  const isScopedRequest = Boolean(options?.companyId || options?.projectId);
   try {
-    const v2Url = proxyBaseUrl ? `${proxyBaseUrl}/v2/guardrails/list` : `/v2/guardrails/list`;
+    const v2Url = appendGuardrailScopeParams(
+      proxyBaseUrl ? `${proxyBaseUrl}/v2/guardrails/list` : `/v2/guardrails/list`,
+      options,
+    );
     const response = await fetch(v2Url, {
       method: "GET",
       headers: {
@@ -5006,9 +5202,16 @@ export const getGuardrailsList = async (accessToken: string) => {
     const data = await response.json();
     return data;
   } catch (error) {
+    if (isScopedRequest) {
+      console.error("Failed to get scoped guardrails list:", error);
+      throw error;
+    }
     console.log("v2/guardrails/list failed, falling back to v1:", error);
     try {
-      const v1Url = proxyBaseUrl ? `${proxyBaseUrl}/guardrails/list` : `/guardrails/list`;
+      const v1Url = appendGuardrailScopeParams(
+        proxyBaseUrl ? `${proxyBaseUrl}/guardrails/list` : `/guardrails/list`,
+        options,
+      );
       const fallbackResponse = await fetch(v1Url, {
         method: "GET",
         headers: {
@@ -5037,6 +5240,10 @@ export interface GuardrailSubmissionItem {
   guardrail_id: string;
   guardrail_name: string;
   status: string; // "pending_review" | "active" | "rejected"
+  company_id?: string | null;
+  company_name?: string | null;
+  project_id?: string | null;
+  project_name?: string | null;
   team_id?: string | null;
   team_guardrail?: boolean; // true when submitted via team (team_id set)
   litellm_params?: Record<string, unknown> | null;
@@ -5063,11 +5270,20 @@ interface ListGuardrailSubmissionsResponse {
 
 export const listGuardrailSubmissions = async (
   accessToken: string,
-  params?: { status?: string; team_id?: string; team_guardrail?: boolean; search?: string }
+  params?: {
+    status?: string;
+    company_id?: string;
+    project_id?: string;
+    team_id?: string;
+    team_guardrail?: boolean;
+    search?: string;
+  },
 ): Promise<ListGuardrailSubmissionsResponse> => {
   const url = proxyBaseUrl ? `${proxyBaseUrl}/guardrails/submissions` : `/guardrails/submissions`;
   const searchParams = new URLSearchParams();
   if (params?.status) searchParams.set("status", params.status);
+  if (params?.company_id) searchParams.set("company_id", params.company_id);
+  if (params?.project_id) searchParams.set("project_id", params.project_id);
   if (params?.team_id) searchParams.set("team_id", params.team_id);
   if (params?.team_guardrail !== undefined) searchParams.set("team_guardrail", String(params.team_guardrail));
   if (params?.search) searchParams.set("search", params.search);
@@ -5090,7 +5306,7 @@ export const listGuardrailSubmissions = async (
 
 export const approveGuardrailSubmission = async (
   accessToken: string,
-  guardrailId: string
+  guardrailId: string,
 ): Promise<{ guardrail_id: string; status: string; message: string }> => {
   const url = proxyBaseUrl
     ? `${proxyBaseUrl}/guardrails/submissions/${encodeURIComponent(guardrailId)}/approve`
@@ -5113,7 +5329,7 @@ export const approveGuardrailSubmission = async (
 
 export const rejectGuardrailSubmission = async (
   accessToken: string,
-  guardrailId: string
+  guardrailId: string,
 ): Promise<{ guardrail_id: string; status: string; message: string }> => {
   const url = proxyBaseUrl
     ? `${proxyBaseUrl}/guardrails/submissions/${encodeURIComponent(guardrailId)}/reject`
@@ -5135,11 +5351,7 @@ export const rejectGuardrailSubmission = async (
 };
 
 // Guardrails / Policies usage (dashboard)
-export const getGuardrailsUsageOverview = async (
-  accessToken: string,
-  startDate?: string,
-  endDate?: string
-) => {
+export const getGuardrailsUsageOverview = async (accessToken: string, startDate?: string, endDate?: string) => {
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/guardrails/usage/overview` : `/guardrails/usage/overview`;
     const params = new URLSearchParams();
@@ -5168,10 +5380,12 @@ export const getGuardrailsUsageDetail = async (
   accessToken: string,
   guardrailId: string,
   startDate?: string,
-  endDate?: string
+  endDate?: string,
 ) => {
   try {
-    let url = proxyBaseUrl ? `${proxyBaseUrl}/guardrails/usage/detail/${encodeURIComponent(guardrailId)}` : `/guardrails/usage/detail/${encodeURIComponent(guardrailId)}`;
+    let url = proxyBaseUrl
+      ? `${proxyBaseUrl}/guardrails/usage/detail/${encodeURIComponent(guardrailId)}`
+      : `/guardrails/usage/detail/${encodeURIComponent(guardrailId)}`;
     const params = new URLSearchParams();
     if (startDate) params.append("start_date", startDate);
     if (endDate) params.append("end_date", endDate);
@@ -5196,7 +5410,15 @@ export const getGuardrailsUsageDetail = async (
 
 export const getGuardrailsUsageLogs = async (
   accessToken: string,
-  options: { guardrailId?: string; policyId?: string; page?: number; pageSize?: number; action?: string; startDate?: string; endDate?: string }
+  options: {
+    guardrailId?: string;
+    policyId?: string;
+    page?: number;
+    pageSize?: number;
+    action?: string;
+    startDate?: string;
+    endDate?: string;
+  },
 ) => {
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/guardrails/usage/logs` : `/guardrails/usage/logs`;
@@ -5298,7 +5520,7 @@ interface TestPoliciesAndGuardrailsResponse {
 export const testPoliciesAndGuardrails = async (
   accessToken: string,
   body: TestPoliciesAndGuardrailsRequest,
-  signal?: AbortSignal
+  signal?: AbortSignal,
 ): Promise<TestPoliciesAndGuardrailsResponse> => {
   try {
     const url = proxyBaseUrl
@@ -5327,7 +5549,8 @@ export const testPoliciesAndGuardrails = async (
       let errorMessage = "Failed to test policies and guardrails";
       try {
         const errorJson = JSON.parse(errorData);
-        if (errorJson.detail) errorMessage = typeof errorJson.detail === "string" ? errorJson.detail : JSON.stringify(errorJson.detail);
+        if (errorJson.detail)
+          errorMessage = typeof errorJson.detail === "string" ? errorJson.detail : JSON.stringify(errorJson.detail);
         else if (errorJson.message) errorMessage = errorJson.message;
       } catch {
         errorMessage = errorData || errorMessage;
@@ -5400,12 +5623,10 @@ export const enrichPolicyTemplate = async (
   templateId: string,
   parameters: Record<string, string>,
   model?: string,
-  competitors?: string[]
+  competitors?: string[],
 ) => {
   try {
-    const url = proxyBaseUrl
-      ? `${proxyBaseUrl}/policy/templates/enrich`
-      : `/policy/templates/enrich`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/policy/templates/enrich` : `/policy/templates/enrich`;
     const body: any = { template_id: templateId, parameters };
     if (model) body.model = model;
     if (competitors) body.competitors = competitors;
@@ -5437,12 +5658,10 @@ export const suggestPolicyTemplates = async (
   accessToken: string,
   attackExamples: string[],
   description: string,
-  model: string
+  model: string,
 ) => {
   try {
-    const url = proxyBaseUrl
-      ? `${proxyBaseUrl}/policy/templates/suggest`
-      : `/policy/templates/suggest`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/policy/templates/suggest` : `/policy/templates/suggest`;
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -5470,15 +5689,9 @@ export const suggestPolicyTemplates = async (
   }
 };
 
-export const testPolicyTemplate = async (
-  accessToken: string,
-  guardrailDefinitions: any[],
-  text: string
-) => {
+export const testPolicyTemplate = async (accessToken: string, guardrailDefinitions: any[], text: string) => {
   try {
-    const url = proxyBaseUrl
-      ? `${proxyBaseUrl}/policy/templates/test`
-      : `/policy/templates/test`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/policy/templates/test` : `/policy/templates/test`;
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -5518,11 +5731,9 @@ export const enrichPolicyTemplateStream = async (
   }) => void,
   onError?: (error: string) => void,
   options?: { instruction?: string; existingCompetitors?: string[] },
-  onStatus?: (message: string) => void
+  onStatus?: (message: string) => void,
 ) => {
-  const url = proxyBaseUrl
-    ? `${proxyBaseUrl}/policy/templates/enrich/stream`
-    : `/policy/templates/enrich/stream`;
+  const url = proxyBaseUrl ? `${proxyBaseUrl}/policy/templates/enrich/stream` : `/policy/templates/enrich/stream`;
   const body: any = { template_id: templateId, parameters, model };
   if (options?.instruction) body.instruction = options.instruction;
   if (options?.existingCompetitors) body.competitors = options.existingCompetitors;
@@ -5597,9 +5808,7 @@ export const usageAiChatStream = async (
   onToolCall?: (event: UsageAiToolCallEvent) => void,
   signal?: AbortSignal,
 ) => {
-  const url = proxyBaseUrl
-    ? `${proxyBaseUrl}/usage/ai/chat`
-    : `/usage/ai/chat`;
+  const url = proxyBaseUrl ? `${proxyBaseUrl}/usage/ai/chat` : `/usage/ai/chat`;
 
   const response = await fetch(url, {
     method: "POST",
@@ -5711,7 +5920,7 @@ export const updatePolicyCall = async (accessToken: string, policyId: string, po
 
 export const listPolicyVersions = async (
   accessToken: string,
-  policyName: string
+  policyName: string,
 ): Promise<{ policy_name: string; versions: any[]; total_count: number }> => {
   try {
     const encodedName = encodeURIComponent(policyName);
@@ -5743,7 +5952,7 @@ export const listPolicyVersions = async (
 export const createPolicyVersion = async (
   accessToken: string,
   policyName: string,
-  sourcePolicyId?: string | null
+  sourcePolicyId?: string | null,
 ): Promise<any> => {
   try {
     const encodedName = encodeURIComponent(policyName);
@@ -5776,12 +5985,10 @@ export const createPolicyVersion = async (
 export const updatePolicyVersionStatus = async (
   accessToken: string,
   policyId: string,
-  versionStatus: "published" | "production"
+  versionStatus: "published" | "production",
 ): Promise<any> => {
   try {
-    const url = proxyBaseUrl
-      ? `${proxyBaseUrl}/policies/${policyId}/status`
-      : `/policies/${policyId}/status`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/policies/${policyId}/status` : `/policies/${policyId}/status`;
     const response = await fetch(url, {
       method: "PUT",
       headers: {
@@ -5943,7 +6150,7 @@ export const deletePolicyAttachmentCall = async (accessToken: string, attachment
 export const testPipelineCall = async (
   accessToken: string,
   pipeline: any,
-  testMessages: Array<{role: string, content: string}>
+  testMessages: Array<{ role: string; content: string }>,
 ) => {
   try {
     const url = proxyBaseUrl ? `${proxyBaseUrl}/policies/test-pipeline` : `/policies/test-pipeline`;
@@ -6001,12 +6208,10 @@ export const getResolvedGuardrails = async (accessToken: string, policyId: strin
 
 export const resolvePoliciesCall = async (
   accessToken: string,
-  context: { team_alias?: string; key_alias?: string; model?: string; tags?: string[] }
+  context: { team_alias?: string; key_alias?: string; model?: string; tags?: string[] },
 ) => {
   try {
-    const url = proxyBaseUrl
-      ? `${proxyBaseUrl}/policies/resolve`
-      : `/policies/resolve`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/policies/resolve` : `/policies/resolve`;
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -6030,10 +6235,7 @@ export const resolvePoliciesCall = async (
   }
 };
 
-export const estimateAttachmentImpactCall = async (
-  accessToken: string,
-  attachmentData: any
-) => {
+export const estimateAttachmentImpactCall = async (accessToken: string, attachmentData: any) => {
   try {
     const url = proxyBaseUrl
       ? `${proxyBaseUrl}/policies/attachments/estimate-impact`
@@ -6061,10 +6263,7 @@ export const estimateAttachmentImpactCall = async (
   }
 };
 
-export const getPromptsList = async (
-  accessToken: string,
-  environment?: string,
-): Promise<ListPromptsResponse> => {
+export const getPromptsList = async (accessToken: string, environment?: string): Promise<ListPromptsResponse> => {
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/prompts/list` : `/prompts/list`;
     if (environment) {
@@ -6093,7 +6292,11 @@ export const getPromptsList = async (
   }
 };
 
-export const getPromptInfo = async (accessToken: string, promptId: string, environment?: string): Promise<PromptInfoResponse> => {
+export const getPromptInfo = async (
+  accessToken: string,
+  promptId: string,
+  environment?: string,
+): Promise<PromptInfoResponse> => {
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/prompts/${promptId}/info` : `/prompts/${promptId}/info`;
     if (environment) {
@@ -6122,7 +6325,11 @@ export const getPromptInfo = async (accessToken: string, promptId: string, envir
   }
 };
 
-export const getPromptVersions = async (accessToken: string, promptId: string, environment?: string): Promise<ListPromptsResponse> => {
+export const getPromptVersions = async (
+  accessToken: string,
+  promptId: string,
+  environment?: string,
+): Promise<ListPromptsResponse> => {
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/prompts/${promptId}/versions` : `/prompts/${promptId}/versions`;
     if (environment) {
@@ -6279,9 +6486,7 @@ export const createAgentCall = async (accessToken: string, agentData: any) => {
         [globalLitellmHeaderName]: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        ...agentData,
-      }),
+      body: JSON.stringify(sanitizeKeyTenantPayload({ ...agentData })),
     });
 
     if (!response.ok) {
@@ -6427,9 +6632,7 @@ export const updateInternalUserSettings = async (accessToken: string, settings: 
 
 export const fetchOpenAPIRegistry = async (accessToken: string) => {
   try {
-    const url = proxyBaseUrl
-      ? `${proxyBaseUrl}/v1/mcp/openapi-registry`
-      : `/v1/mcp/openapi-registry`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/v1/mcp/openapi-registry` : `/v1/mcp/openapi-registry`;
 
     const response = await fetch(url, {
       method: HTTP_REQUEST.GET,
@@ -6453,9 +6656,7 @@ export const fetchOpenAPIRegistry = async (accessToken: string) => {
 
 export const fetchDiscoverableMCPServers = async (accessToken: string) => {
   try {
-    const url = proxyBaseUrl
-      ? `${proxyBaseUrl}/v1/mcp/discover`
-      : `/v1/mcp/discover`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/v1/mcp/discover` : `/v1/mcp/discover`;
 
     const response = await fetch(url, {
       method: HTTP_REQUEST.GET,
@@ -6586,9 +6787,7 @@ export const fetchMCPAccessGroups = async (accessToken: string) => {
 
 export const fetchMCPClientIp = async (accessToken: string): Promise<string | null> => {
   try {
-    const url = proxyBaseUrl
-      ? `${proxyBaseUrl}/v1/mcp/network/client-ip`
-      : `/v1/mcp/network/client-ip`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/v1/mcp/network/client-ip` : `/v1/mcp/network/client-ip`;
 
     const response = await fetch(url, {
       method: HTTP_REQUEST.GET,
@@ -7067,11 +7266,7 @@ export const testSearchToolConnection = async (accessToken: string, litellmParam
   }
 };
 
-export const listMCPTools = async (
-  accessToken: string, 
-  serverId: string,
-  customHeaders?: Record<string, string>
-) => {
+export const listMCPTools = async (accessToken: string, serverId: string, customHeaders?: Record<string, string>) => {
   try {
     // Construct base URL
     let url = proxyBaseUrl
@@ -7517,6 +7712,10 @@ export const sessionSpendLogsCall = async (accessToken: string, session_id: stri
 export const vectorStoreCreateCall = async (accessToken: string, formValues: Record<string, any>): Promise<void> => {
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/vector_store/new` : `/vector_store/new`;
+    const payload = { ...formValues };
+    delete payload.organization_id;
+    delete payload.organization_ids;
+    delete payload.organizations;
 
     const response = await fetch(url, {
       method: "POST",
@@ -7524,7 +7723,7 @@ export const vectorStoreCreateCall = async (accessToken: string, formValues: Rec
         "Content-Type": "application/json",
         [globalLitellmHeaderName]: `Bearer ${accessToken}`,
       },
-      body: JSON.stringify(formValues),
+      body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
@@ -7543,9 +7742,20 @@ export const vectorStoreListCall = async (
   accessToken: string,
   page: number = 1,
   page_size: number = 100,
+  filters?: { company_id?: string; project_id?: string },
 ): Promise<any> => {
   try {
-    let url = proxyBaseUrl ? `${proxyBaseUrl}/vector_store/list` : `/vector_store/list`;
+    const queryParams = new URLSearchParams();
+    queryParams.append("page", String(page));
+    queryParams.append("page_size", String(page_size));
+    if (filters?.company_id) {
+      queryParams.append("company_id", filters.company_id);
+    }
+    if (filters?.project_id) {
+      queryParams.append("project_id", filters.project_id);
+    }
+    const path = `/vector_store/list?${queryParams.toString()}`;
+    let url = proxyBaseUrl ? `${proxyBaseUrl}${path}` : path;
 
     const response = await fetch(url, {
       method: "GET",
@@ -7620,6 +7830,10 @@ export const vectorStoreInfoCall = async (accessToken: string, vectorStoreId: st
 export const vectorStoreUpdateCall = async (accessToken: string, formValues: Record<string, any>): Promise<any> => {
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/vector_store/update` : `/vector_store/update`;
+    const payload = { ...formValues };
+    delete payload.organization_id;
+    delete payload.organization_ids;
+    delete payload.organizations;
 
     const response = await fetch(url, {
       method: "POST",
@@ -7627,7 +7841,7 @@ export const vectorStoreUpdateCall = async (accessToken: string, formValues: Rec
         "Content-Type": "application/json",
         [globalLitellmHeaderName]: `Bearer ${accessToken}`,
       },
-      body: JSON.stringify(formValues),
+      body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
@@ -7650,6 +7864,8 @@ export const ragIngestCall = async (
   vectorStoreName?: string,
   vectorStoreDescription?: string,
   providerSpecificParams?: Record<string, any>,
+  companyId?: string,
+  projectId?: string,
 ): Promise<any> => {
   try {
     let url = proxyBaseUrl ? `${proxyBaseUrl}/rag/ingest` : `/rag/ingest`;
@@ -7667,14 +7883,20 @@ export const ragIngestCall = async (
       },
     };
 
-    // Add litellm_vector_store_params if name or description provided
-    if (vectorStoreName || vectorStoreDescription) {
+    // Add LiteLLM-managed vector store params if product metadata is provided.
+    if (vectorStoreName || vectorStoreDescription || companyId || projectId) {
       ingestOptions.ingest_options.litellm_vector_store_params = {};
       if (vectorStoreName) {
         ingestOptions.ingest_options.litellm_vector_store_params.vector_store_name = vectorStoreName;
       }
       if (vectorStoreDescription) {
         ingestOptions.ingest_options.litellm_vector_store_params.vector_store_description = vectorStoreDescription;
+      }
+      if (companyId) {
+        ingestOptions.ingest_options.litellm_vector_store_params.company_id = companyId;
+      }
+      if (projectId) {
+        ingestOptions.ingest_options.litellm_vector_store_params.project_id = projectId;
       }
     }
 
@@ -7993,9 +8215,7 @@ export const getCategoryYaml = async (accessToken: string, categoryName: string)
 
 export const getMajorAirlines = async (accessToken: string) => {
   try {
-    const url = proxyBaseUrl
-      ? `${proxyBaseUrl}/guardrails/ui/major_airlines`
-      : `/guardrails/ui/major_airlines`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/guardrails/ui/major_airlines` : `/guardrails/ui/major_airlines`;
 
     const response = await fetch(url, {
       method: "GET",
@@ -8007,10 +8227,7 @@ export const getMajorAirlines = async (accessToken: string) => {
 
     if (!response.ok) {
       const errorData = await response.text();
-      console.error(
-        `Failed to get major airlines. Status: ${response.status}, Error:`,
-        errorData
-      );
+      console.error(`Failed to get major airlines. Status: ${response.status}, Error:`, errorData);
       handleError(errorData);
       throw new Error(`Failed to get major airlines: ${response.status} ${errorData}`);
     }
@@ -8023,9 +8240,23 @@ export const getMajorAirlines = async (accessToken: string) => {
   }
 };
 
-export const getAgentsList = async (accessToken: string, healthCheck: boolean = false) => {
+export const getAgentsList = async (
+  accessToken: string,
+  healthCheck: boolean = false,
+  filters: { company_id?: string | null; project_id?: string | null } = {},
+) => {
   try {
-    const params = healthCheck ? "?health_check=true" : "";
+    const queryParams = new URLSearchParams();
+    if (healthCheck) {
+      queryParams.append("health_check", "true");
+    }
+    if (filters.company_id) {
+      queryParams.append("company_id", filters.company_id);
+    }
+    if (filters.project_id) {
+      queryParams.append("project_id", filters.project_id);
+    }
+    const params = queryParams.toString() ? `?${queryParams.toString()}` : "";
     const url = proxyBaseUrl ? `${proxyBaseUrl}/v1/agents${params}` : `/v1/agents${params}`;
 
     const response = await fetch(url, {
@@ -8542,9 +8773,7 @@ export interface LicenseInfo {
   };
 }
 
-export const getLicenseInfo = async (
-  accessToken: string,
-): Promise<LicenseInfo | null> => {
+export const getLicenseInfo = async (accessToken: string): Promise<LicenseInfo | null> => {
   try {
     const url = proxyBaseUrl ? `${proxyBaseUrl}/health/license` : `/health/license`;
 
@@ -9227,7 +9456,8 @@ export const deriveErrorMessage = (errorData: any): string => {
       ? detail
       : undefined;
   return (
-    (errorData?.error && (errorData.error.message || (typeof errorData.error === "string" ? errorData.error : undefined))) ||
+    (errorData?.error &&
+      (errorData.error.message || (typeof errorData.error === "string" ? errorData.error : undefined))) ||
     errorData?.message ||
     detailStr ||
     JSON.stringify(errorData)
@@ -9276,9 +9506,7 @@ export const loginCall = async (username: string, password: string, useV3?: bool
 
   // v3 returns an opaque code — exchange it for the real JWT
   if (useV3 && data.code) {
-    const exchangeUrl = proxyBaseUrl
-      ? `${proxyBaseUrl}/v3/login/exchange`
-      : "/v3/login/exchange";
+    const exchangeUrl = proxyBaseUrl ? `${proxyBaseUrl}/v3/login/exchange` : "/v3/login/exchange";
 
     const exchangeResponse = await fetch(exchangeUrl, {
       method: "POST",
@@ -9365,7 +9593,6 @@ export const updateUiSettings = async (accessToken: string, settings: Record<str
   const data = await response.json();
   return data;
 };
-
 
 // Claude Code Marketplace Networking Functions
 
@@ -9646,11 +9873,9 @@ export interface ComplianceCheckRequest {
 
 export const checkEuAiActCompliance = async (
   accessToken: string,
-  payload: ComplianceCheckRequest
+  payload: ComplianceCheckRequest,
 ): Promise<ComplianceResponse> => {
-  const url = proxyBaseUrl
-    ? `${proxyBaseUrl}/compliance/eu-ai-act`
-    : `/compliance/eu-ai-act`;
+  const url = proxyBaseUrl ? `${proxyBaseUrl}/compliance/eu-ai-act` : `/compliance/eu-ai-act`;
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -9668,11 +9893,9 @@ export const checkEuAiActCompliance = async (
 
 export const checkGdprCompliance = async (
   accessToken: string,
-  payload: ComplianceCheckRequest
+  payload: ComplianceCheckRequest,
 ): Promise<ComplianceResponse> => {
-  const url = proxyBaseUrl
-    ? `${proxyBaseUrl}/compliance/gdpr`
-    : `/compliance/gdpr`;
+  const url = proxyBaseUrl ? `${proxyBaseUrl}/compliance/gdpr` : `/compliance/gdpr`;
   const response = await fetch(url, {
     method: "POST",
     headers: {
@@ -9718,12 +9941,8 @@ export interface ToolPolicyOptionsResponse {
   output_policies: ToolPolicyOption[];
 }
 
-export const fetchToolPolicyOptions = async (
-  accessToken: string
-): Promise<ToolPolicyOptionsResponse> => {
-  const url = proxyBaseUrl
-    ? `${proxyBaseUrl}/v1/tool/policy/options`
-    : `/v1/tool/policy/options`;
+export const fetchToolPolicyOptions = async (accessToken: string): Promise<ToolPolicyOptionsResponse> => {
+  const url = proxyBaseUrl ? `${proxyBaseUrl}/v1/tool/policy/options` : `/v1/tool/policy/options`;
   const response = await fetch(url, {
     method: "GET",
     headers: {
@@ -9790,12 +10009,10 @@ export interface ToolUsageLogsResponse {
 export const getToolUsageLogs = async (
   accessToken: string,
   toolName: string,
-  options: { page?: number; pageSize?: number; startDate?: string; endDate?: string }
+  options: { page?: number; pageSize?: number; startDate?: string; endDate?: string },
 ): Promise<ToolUsageLogsResponse> => {
   const encoded = encodeURIComponent(toolName);
-  const url = proxyBaseUrl
-    ? `${proxyBaseUrl}/v1/tool/${encoded}/logs`
-    : `/v1/tool/${encoded}/logs`;
+  const url = proxyBaseUrl ? `${proxyBaseUrl}/v1/tool/${encoded}/logs` : `/v1/tool/${encoded}/logs`;
   const params = new URLSearchParams();
   if (options.page != null) params.append("page", String(options.page));
   if (options.pageSize != null) params.append("page_size", String(options.pageSize));
@@ -9816,14 +10033,9 @@ export const getToolUsageLogs = async (
   return response.json();
 };
 
-export const fetchToolDetail = async (
-  accessToken: string,
-  toolName: string
-): Promise<ToolDetailResponse> => {
+export const fetchToolDetail = async (accessToken: string, toolName: string): Promise<ToolDetailResponse> => {
   const encoded = encodeURIComponent(toolName);
-  const url = proxyBaseUrl
-    ? `${proxyBaseUrl}/v1/tool/${encoded}/detail`
-    : `/v1/tool/${encoded}/detail`;
+  const url = proxyBaseUrl ? `${proxyBaseUrl}/v1/tool/${encoded}/detail` : `/v1/tool/${encoded}/detail`;
   const response = await fetch(url, {
     method: "GET",
     headers: {
@@ -9842,7 +10054,7 @@ export const updateToolPolicy = async (
   accessToken: string,
   toolName: string,
   policies: { input_policy?: string; output_policy?: string },
-  options?: { team_id?: string | null; key_hash?: string | null; key_alias?: string | null }
+  options?: { team_id?: string | null; key_hash?: string | null; key_alias?: string | null },
 ): Promise<ToolRow> => {
   const url = proxyBaseUrl ? `${proxyBaseUrl}/v1/tool/policy` : `/v1/tool/policy`;
   const body: Record<string, string | undefined | null> = {
@@ -9871,7 +10083,7 @@ export const updateToolPolicy = async (
 export const deleteToolPolicyOverride = async (
   accessToken: string,
   toolName: string,
-  params: { team_id?: string | null; key_hash?: string | null }
+  params: { team_id?: string | null; key_hash?: string | null },
 ): Promise<{ deleted: boolean; tool_name: string }> => {
   const encoded = encodeURIComponent(toolName);
   const q = new URLSearchParams();
@@ -9934,14 +10146,17 @@ export const storeMCPOAuthUserCredential = async (
     const err = await response.json().catch(() => ({}));
     const errObj = err as { detail?: unknown };
     const detail = errObj?.detail;
-    const detailMsg =
-      Array.isArray(detail)
-        ? detail.map((d: unknown) => (d && typeof d === "object" ? (d as Record<string, unknown>).msg ?? JSON.stringify(d) : String(d))).join("; ")
-        : typeof detail === "string"
-          ? detail
-          : detail && typeof (detail as Record<string, unknown>).error === "string"
-            ? (detail as Record<string, unknown>).error as string
-            : undefined;
+    const detailMsg = Array.isArray(detail)
+      ? detail
+          .map((d: unknown) =>
+            d && typeof d === "object" ? (d as Record<string, unknown>).msg ?? JSON.stringify(d) : String(d),
+          )
+          .join("; ")
+      : typeof detail === "string"
+        ? detail
+        : detail && typeof (detail as Record<string, unknown>).error === "string"
+          ? ((detail as Record<string, unknown>).error as string)
+          : undefined;
     throw new Error(detailMsg || "Failed to store OAuth credential");
   }
   return response.json();
@@ -9962,14 +10177,17 @@ export const deleteMCPOAuthUserCredential = async (
     const err = await response.json().catch(() => ({}));
     const errObj = err as { detail?: unknown };
     const detail = errObj?.detail;
-    const detailMsg =
-      Array.isArray(detail)
-        ? detail.map((d: unknown) => (d && typeof d === "object" ? (d as Record<string, unknown>).msg ?? JSON.stringify(d) : String(d))).join("; ")
-        : typeof detail === "string"
-          ? detail
-          : detail && typeof (detail as Record<string, unknown>).error === "string"
-            ? (detail as Record<string, unknown>).error as string
-            : undefined;
+    const detailMsg = Array.isArray(detail)
+      ? detail
+          .map((d: unknown) =>
+            d && typeof d === "object" ? (d as Record<string, unknown>).msg ?? JSON.stringify(d) : String(d),
+          )
+          .join("; ")
+      : typeof detail === "string"
+        ? detail
+        : detail && typeof (detail as Record<string, unknown>).error === "string"
+          ? ((detail as Record<string, unknown>).error as string)
+          : undefined;
     throw new Error(detailMsg || "Failed to revoke OAuth credential");
   }
   return response.json();
@@ -9992,12 +10210,8 @@ export const getMCPOAuthUserCredentialStatus = async (
   return response.json();
 };
 
-export const listMCPUserCredentials = async (
-  accessToken: string,
-): Promise<MCPUserCredentialListItem[]> => {
-  const url = proxyBaseUrl
-    ? `${proxyBaseUrl}/v1/mcp/user-credentials`
-    : `/v1/mcp/user-credentials`;
+export const listMCPUserCredentials = async (accessToken: string): Promise<MCPUserCredentialListItem[]> => {
+  const url = proxyBaseUrl ? `${proxyBaseUrl}/v1/mcp/user-credentials` : `/v1/mcp/user-credentials`;
   const response = await fetch(url, {
     method: "GET",
     headers: { [globalLitellmHeaderName]: `Bearer ${accessToken}` },
@@ -10023,8 +10237,7 @@ export const listMCPUserCredentials = async (
  * other potentially-unsafe character (spaces, `?`, `#`, `%`, etc.) per
  * path segment.
  */
-const encodeMemoryKeyForPath = (key: string): string =>
-  key.split("/").map(encodeURIComponent).join("/");
+const encodeMemoryKeyForPath = (key: string): string => key.split("/").map(encodeURIComponent).join("/");
 
 export interface MemoryRow {
   memory_id: string;
@@ -10063,8 +10276,7 @@ export const fetchMemoryList = async (
     params.append("key", options.key);
   }
   if (options.page != null) params.append("page", String(options.page));
-  if (options.pageSize != null)
-    params.append("page_size", String(options.pageSize));
+  if (options.pageSize != null) params.append("page_size", String(options.pageSize));
   const url = params.toString() ? `${base}?${params.toString()}` : base;
   const response = await fetch(url, {
     method: "GET",
@@ -10111,9 +10323,7 @@ export const updateMemory = async (
   payload: { value?: string; metadata?: unknown },
 ): Promise<MemoryRow> => {
   const encoded = encodeMemoryKeyForPath(key);
-  const url = proxyBaseUrl
-    ? `${proxyBaseUrl}/v1/memory/${encoded}`
-    : `/v1/memory/${encoded}`;
+  const url = proxyBaseUrl ? `${proxyBaseUrl}/v1/memory/${encoded}` : `/v1/memory/${encoded}`;
   const response = await fetch(url, {
     method: "PUT",
     headers: {
@@ -10129,14 +10339,9 @@ export const updateMemory = async (
   return response.json();
 };
 
-export const deleteMemory = async (
-  accessToken: string,
-  key: string,
-): Promise<void> => {
+export const deleteMemory = async (accessToken: string, key: string): Promise<void> => {
   const encoded = encodeMemoryKeyForPath(key);
-  const url = proxyBaseUrl
-    ? `${proxyBaseUrl}/v1/memory/${encoded}`
-    : `/v1/memory/${encoded}`;
+  const url = proxyBaseUrl ? `${proxyBaseUrl}/v1/memory/${encoded}` : `/v1/memory/${encoded}`;
   const response = await fetch(url, {
     method: "DELETE",
     headers: {

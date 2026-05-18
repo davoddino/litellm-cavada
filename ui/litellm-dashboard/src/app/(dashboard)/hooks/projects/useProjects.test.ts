@@ -19,6 +19,7 @@ vi.mock("@/app/(dashboard)/hooks/useAuthorized", () => ({
 const mockProjects: ProjectResponse[] = [
   {
     project_id: "proj-1",
+    company_id: "company-1",
     project_alias: "Test Project",
     description: "A test project",
     team_id: "team-1",
@@ -39,6 +40,7 @@ const mockProjects: ProjectResponse[] = [
   },
   {
     project_id: "proj-2",
+    company_id: "company-1",
     project_alias: "Test Project 2",
     description: null,
     team_id: "team-1",
@@ -98,6 +100,15 @@ describe("useProjects", () => {
     expect(init.headers["Authorization"]).toBe("Bearer test-token");
   });
 
+  it("should send company_id as the product Project list filter", async () => {
+    (global.fetch as any).mockResolvedValue({ ok: true, json: async () => mockProjects });
+    renderHook(() => useProjects({ companyID: "company-1" }), { wrapper: makeWrapper(queryClient) });
+    await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+    const [url] = (global.fetch as any).mock.calls[0];
+    expect(url).toContain("/project/list?company_id=company-1");
+    expect(url).not.toContain("organization_id");
+  });
+
   it("should set isError when the request fails", async () => {
     (global.fetch as any).mockResolvedValue({
       ok: false,
@@ -120,5 +131,15 @@ describe("useProjects", () => {
     const { result } = renderHook(() => useProjects(), { wrapper: makeWrapper(queryClient) });
     expect(result.current.isFetched).toBe(false);
     expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("should fetch for non-admin users when includeNonAdmin is true", async () => {
+    mockUseAuthorized.mockReturnValue({ accessToken: "test-token", userRole: "Internal User" });
+    (global.fetch as any).mockResolvedValue({ ok: true, json: async () => mockProjects });
+
+    const { result } = renderHook(() => useProjects({ includeNonAdmin: true }), { wrapper: makeWrapper(queryClient) });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(global.fetch).toHaveBeenCalled();
   });
 });

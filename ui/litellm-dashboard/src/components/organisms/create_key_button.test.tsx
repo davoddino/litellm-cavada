@@ -1,13 +1,29 @@
 import { act, fireEvent } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders, screen, waitFor } from "../../../tests/test-utils";
+import { getGuardrailsList } from "../networking";
 import CreateKey from "./create_key_button";
 
-const { formMock, setFieldsValueMock, radioGroupValueRef, formStateRef, mockKeyCreateCall } = vi.hoisted(() => {
+const {
+  formMock,
+  setFieldsValueMock,
+  radioGroupValueRef,
+  formStateRef,
+  mockKeyCreateCall,
+  mockUseProjects,
+  mockUseUISettings,
+  mockVectorStoreSelector,
+} = vi.hoisted(() => {
   const formStateRef = { current: {} as Record<string, any> };
   const mockKeyCreateCall = vi.fn().mockResolvedValue({
     key: "test-api-key",
     soft_budget: null,
+  });
+  const mockUseProjects = vi.fn().mockReturnValue({ data: [], isLoading: false });
+  const mockVectorStoreSelector = vi.fn();
+  const mockUseUISettings = vi.fn().mockReturnValue({
+    data: { values: { enable_projects_ui: false } },
+    isLoading: false,
   });
   const formMock = {
     setFieldsValue: vi.fn((values: Record<string, any>) => {
@@ -28,6 +44,9 @@ const { formMock, setFieldsValueMock, radioGroupValueRef, formStateRef, mockKeyC
     radioGroupValueRef,
     formStateRef,
     mockKeyCreateCall,
+    mockUseProjects,
+    mockUseUISettings,
+    mockVectorStoreSelector,
   };
 });
 
@@ -61,8 +80,7 @@ vi.mock("react-copy-to-clipboard", () => ({
 vi.mock("@tremor/react", () => {
   const React = require("react");
   const Stub = ({ children }: { children?: any }) => React.createElement("div", null, children);
-  const Button = ({ children, ...props }: { children?: any }) =>
-    React.createElement("button", props, children);
+  const Button = ({ children, ...props }: { children?: any }) => React.createElement("button", props, children);
   const TextInput = (props: any) => React.createElement("input", props);
 
   return {
@@ -91,7 +109,14 @@ vi.mock("antd", () => {
     return event;
   };
 
-  const Form = ({ children, onFinish, ...props }: { children?: any; onFinish?: (values: Record<string, any>) => void }) =>
+  const Form = ({
+    children,
+    onFinish,
+    ...props
+  }: {
+    children?: any;
+    onFinish?: (values: Record<string, any>) => void;
+  }) =>
     React.createElement(
       "form",
       {
@@ -109,17 +134,30 @@ vi.mock("antd", () => {
       return React.createElement(React.Fragment, null, children);
     }
 
+    const originalOnChange = children.props.onChange;
+
     return React.cloneElement(children, {
       value: formStateRef.current[name],
       onChange: (event: any) => {
-        formStateRef.current[name] = getValueFromEvent(event);
+        const value = getValueFromEvent(event);
+        formStateRef.current[name] = value;
+        originalOnChange?.(value, event);
       },
     });
   };
 
   Form.useForm = () => [formMock];
 
-  const Select = ({ children, onChange, options, ...props }: { children?: any; onChange?: (value: string) => void; options?: Array<{ value: string; label: string }> }) =>
+  const Select = ({
+    children,
+    onChange,
+    options,
+    ...props
+  }: {
+    children?: any;
+    onChange?: (value: string) => void;
+    options?: Array<{ value: string; label: string }>;
+  }) =>
     React.createElement(
       "select",
       {
@@ -130,8 +168,7 @@ vi.mock("antd", () => {
       options?.map((opt: any) => React.createElement("option", { key: opt.value, value: opt.value }, opt.label)),
     );
 
-  Select.Option = ({ children, ...props }: { children?: any }) =>
-    React.createElement("option", props, children);
+  Select.Option = ({ children, ...props }: { children?: any }) => React.createElement("option", props, children);
 
   const Input = (props: any) => React.createElement("input", props);
   Input.Password = (props: any) => React.createElement("input", { ...props, type: "password" });
@@ -140,8 +177,7 @@ vi.mock("antd", () => {
   const Modal = ({ children, open }: { children?: any; open?: boolean }) =>
     open ? React.createElement("div", null, children) : null;
 
-  const Radio = ({ children, ...props }: { children?: any }) =>
-    React.createElement("div", props, children);
+  const Radio = ({ children, ...props }: { children?: any }) => React.createElement("div", props, children);
 
   Radio.Group = ({ children, value }: { children?: any; value?: string }) => {
     radioGroupValueRef.current = value ?? null;
@@ -155,14 +191,10 @@ vi.mock("antd", () => {
   const Button = ({ children, htmlType, ...props }: { children?: any; htmlType?: string }) =>
     React.createElement("button", { ...props, type: htmlType ?? props.type }, children);
 
-  const Typography = ({ children, ...props }: { children?: any }) =>
-    React.createElement("div", props, children);
-  Typography.Text = ({ children, ...props }: { children?: any }) =>
-    React.createElement("span", props, children);
-  Typography.Paragraph = ({ children, ...props }: { children?: any }) =>
-    React.createElement("p", props, children);
-  Typography.Title = ({ children, ...props }: { children?: any }) =>
-    React.createElement("h1", props, children);
+  const Typography = ({ children, ...props }: { children?: any }) => React.createElement("div", props, children);
+  Typography.Text = ({ children, ...props }: { children?: any }) => React.createElement("span", props, children);
+  Typography.Paragraph = ({ children, ...props }: { children?: any }) => React.createElement("p", props, children);
+  Typography.Title = ({ children, ...props }: { children?: any }) => React.createElement("h1", props, children);
 
   return {
     Button,
@@ -227,10 +259,18 @@ vi.mock("../common_components/RouterSettingsAccordion", () => ({ default: () => 
 vi.mock("@/app/(dashboard)/hooks/teams/useTeams", () => ({
   useInfiniteTeams: () => ({
     data: {
-      pages: [{ teams: [
-        { team_id: "team-1", team_alias: "Team One" },
-        { team_id: "team-2", team_alias: "Team Two" },
-      ], total: 2, page: 1, page_size: 50, total_pages: 1 }],
+      pages: [
+        {
+          teams: [
+            { team_id: "team-1", team_alias: "Team One" },
+            { team_id: "team-2", team_alias: "Team Two" },
+          ],
+          total: 2,
+          page: 1,
+          page_size: 50,
+          total_pages: 1,
+        },
+      ],
     },
     fetchNextPage: vi.fn(),
     hasNextPage: false,
@@ -240,11 +280,7 @@ vi.mock("@/app/(dashboard)/hooks/teams/useTeams", () => ({
 }));
 vi.mock("../common_components/team_dropdown", () => ({
   default: ({ onChange, disabled }: { onChange?: (v: string) => void; disabled?: boolean }) => (
-    <select
-      data-testid="team-dropdown"
-      disabled={disabled}
-      onChange={(e) => onChange?.(e.target.value)}
-    >
+    <select data-testid="team-dropdown" disabled={disabled} onChange={(e) => onChange?.(e.target.value)}>
       <option value="">Select team</option>
       <option value="team-1">Team One</option>
       <option value="team-2">Team Two</option>
@@ -255,7 +291,16 @@ vi.mock("../CreateUserButton", () => ({ CreateUserButton: () => null }));
 vi.mock("../mcp_server_management/MCPServerSelector", () => ({ default: () => null }));
 vi.mock("../mcp_server_management/MCPToolPermissions", () => ({ default: () => null }));
 vi.mock("../shared/numerical_input", () => ({ default: () => null }));
-vi.mock("../vector_store_management/VectorStoreSelector", () => ({ default: () => null }));
+vi.mock("../vector_store_management/VectorStoreSelector", () => ({
+  default: (props: any) => {
+    mockVectorStoreSelector(props);
+    return (
+      <button data-testid="vector-store-selector" type="button" onClick={() => props.onChange?.(["store-1"])}>
+        Vector Store Selector
+      </button>
+    );
+  },
+}));
 vi.mock("../key_team_helpers/fetch_available_models_team_key", () => ({
   getModelDisplayName: (model: string) => model,
 }));
@@ -271,7 +316,11 @@ vi.mock("@/app/(dashboard)/hooks/tags/useTags", () => ({
 }));
 
 vi.mock("@/app/(dashboard)/hooks/projects/useProjects", () => ({
-  useProjects: vi.fn().mockReturnValue({ data: [], isLoading: false }),
+  useProjects: mockUseProjects,
+}));
+
+vi.mock("@/app/(dashboard)/hooks/uiSettings/useUISettings", () => ({
+  useUISettings: mockUseUISettings,
 }));
 
 vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
@@ -300,13 +349,45 @@ vi.mock("../common_components/OrganizationDropdown", () => ({
 }));
 
 vi.mock("../common_components/ProjectDropdown", () => ({
-  default: ({ value, onChange }: { value?: string; onChange?: (v: string) => void }) => (
-    <input
-      data-testid="project-dropdown"
-      value={value || ""}
-      onChange={(e) => onChange?.(e.target.value)}
-    />
-  ),
+  default: ({
+    value,
+    onChange,
+    projects = [],
+    teamId,
+    companyId,
+  }: {
+    value?: string;
+    onChange?: (v?: string) => void;
+    projects?: Array<{
+      project_id: string;
+      project_alias?: string | null;
+      team_id?: string | null;
+      company_id?: string | null;
+    }>;
+    teamId?: string | null;
+    companyId?: string | null;
+  }) => {
+    const filtered = teamId
+      ? projects.filter((project) => project.team_id === teamId)
+      : companyId
+        ? projects.filter((project) => project.company_id === companyId)
+        : projects;
+
+    return (
+      <select
+        data-testid="project-dropdown"
+        value={value || ""}
+        onChange={(e) => onChange?.(e.target.value || undefined)}
+      >
+        <option value="">Select project</option>
+        {filtered.map((project) => (
+          <option key={project.project_id} value={project.project_id}>
+            {project.project_alias || project.project_id}
+          </option>
+        ))}
+      </select>
+    );
+  },
 }));
 
 vi.mock("../common_components/AccessGroupSelector", () => ({
@@ -339,11 +420,47 @@ describe("CreateKey", () => {
       key: "test-api-key",
       soft_budget: null,
     });
+    mockUseProjects.mockReturnValue({ data: [], isLoading: false });
+    mockUseUISettings.mockReturnValue({
+      data: { values: { enable_projects_ui: false } },
+      isLoading: false,
+    });
   });
 
   it("should render the CreateKey component", () => {
     renderWithProviders(<CreateKey {...defaultProps} />);
     expect(screen.getByRole("button", { name: /create new key/i })).toBeInTheDocument();
+  });
+
+  it("should leave project options visible for server-side RBAC enforcement", async () => {
+    authorizedState = { ...defaultAuthorizedState, userRole: "Internal User" };
+    mockUseUISettings.mockReturnValue({
+      data: { values: { enable_projects_ui: true } },
+      isLoading: false,
+    });
+    mockUseProjects.mockReturnValue({
+      data: [
+        {
+          project_id: "project-without-client-role",
+          project_alias: "Project Without Client Role",
+          team_id: "team-without-client-role",
+          company_id: "org-1",
+        },
+      ],
+      isLoading: false,
+    });
+
+    renderWithProviders(<CreateKey {...defaultProps} teams={[]} />);
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("project-dropdown")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("Project Without Client Role")).toBeInTheDocument();
   });
 
   it("should display 'AI APIs' label for the llm_api key type option", async () => {
@@ -455,11 +572,7 @@ describe("CreateKey", () => {
 
   it("should apply owned_by another_user for admin", async () => {
     renderWithProviders(
-      <CreateKey
-        {...defaultProps}
-        autoOpenCreate={true}
-        prefillData={{ owned_by: "another_user" }}
-      />,
+      <CreateKey {...defaultProps} autoOpenCreate={true} prefillData={{ owned_by: "another_user" }} />,
     );
 
     await waitFor(() => {
@@ -468,13 +581,7 @@ describe("CreateKey", () => {
   });
 
   it("should prefill key_type when provided", async () => {
-    renderWithProviders(
-      <CreateKey
-        {...defaultProps}
-        autoOpenCreate={true}
-        prefillData={{ key_type: "management" }}
-      />,
-    );
+    renderWithProviders(<CreateKey {...defaultProps} autoOpenCreate={true} prefillData={{ key_type: "management" }} />);
 
     await waitFor(() => {
       expect(setFieldsValueMock).toHaveBeenCalledWith({ key_type: "management" });
@@ -494,7 +601,7 @@ describe("CreateKey", () => {
       });
     });
 
-    it("should disable the organization dropdown for non-admin users", async () => {
+    it("should leave the company dropdown enabled for non-admin users", async () => {
       authorizedState = { ...defaultAuthorizedState, userRole: "Internal User" };
 
       renderWithProviders(<CreateKey {...defaultProps} />);
@@ -504,7 +611,7 @@ describe("CreateKey", () => {
       });
 
       await waitFor(() => {
-        expect(screen.getByTestId("org-dropdown")).toBeDisabled();
+        expect(screen.getByTestId("org-dropdown")).not.toBeDisabled();
       });
     });
 
@@ -523,9 +630,7 @@ describe("CreateKey", () => {
     });
 
     it("should render team dropdown alongside organization dropdown", async () => {
-      const teamsWithOrg = [
-        { team_id: "team-1", team_alias: "Team Alpha", organization_id: "org-1", models: [] },
-      ];
+      const teamsWithOrg = [{ team_id: "team-1", team_alias: "Team Alpha", organization_id: "org-1", models: [] }];
 
       renderWithProviders(<CreateKey {...defaultProps} teams={teamsWithOrg as any} />);
 
@@ -539,7 +644,7 @@ describe("CreateKey", () => {
       });
     });
 
-    it("should set organization_id in form state when org is selected", async () => {
+    it("should submit company_id without legacy organization aliases when company is selected", async () => {
       renderWithProviders(<CreateKey {...defaultProps} />);
 
       act(() => {
@@ -551,10 +656,107 @@ describe("CreateKey", () => {
       });
 
       act(() => {
+        formMock.setFieldValue("allowed_vector_store_ids", ["store-outside"]);
         fireEvent.change(screen.getByTestId("org-dropdown"), { target: { value: "org-1" } });
+        formMock.setFieldValue("key_alias", "Company Key");
+        formMock.setFieldValue("org_id", "legacy-org-field");
+        formMock.setFieldValue("organization_id", "legacy-org-field");
+        formMock.setFieldValue("organization_ids", ["legacy-org-field"]);
+        formMock.setFieldValue("organizations", ["legacy-org-field"]);
       });
 
-      expect(formStateRef.current["organization_id"]).toBe("org-1");
+      expect(formStateRef.current["company_id"]).toBe("org-1");
+      expect(formStateRef.current["allowed_vector_store_ids"]).toEqual([]);
+      await waitFor(() => {
+        const latestProps = mockVectorStoreSelector.mock.calls[mockVectorStoreSelector.mock.calls.length - 1]?.[0];
+        expect(latestProps).toMatchObject({ companyId: "org-1", projectId: null });
+      });
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create key/i }));
+      });
+
+      await waitFor(() => {
+        expect(mockKeyCreateCall).toHaveBeenCalled();
+      });
+
+      const payload = mockKeyCreateCall.mock.calls[0][2];
+      expect(payload.company_id).toBe("org-1");
+      expect(payload).not.toHaveProperty("org_id");
+      expect(payload).not.toHaveProperty("organization_id");
+      expect(payload).not.toHaveProperty("organization_ids");
+      expect(payload).not.toHaveProperty("organizations");
+    });
+
+    it("should derive company and team from selected project when creating key", async () => {
+      mockUseUISettings.mockReturnValue({
+        data: { values: { enable_projects_ui: true } },
+        isLoading: false,
+      });
+      mockUseProjects.mockReturnValue({
+        data: [
+          {
+            project_id: "project-1",
+            project_alias: "Support Project",
+            team_id: "team-1",
+            company_id: "org-1",
+            models: ["gpt-4"],
+          },
+        ],
+        isLoading: false,
+      });
+
+      renderWithProviders(
+        <CreateKey
+          {...defaultProps}
+          teams={[{ team_id: "team-1", team_alias: "Team One", organization_id: "org-1", models: ["gpt-4"] } as any]}
+        />,
+      );
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId("project-dropdown")).toBeInTheDocument();
+      });
+
+      act(() => {
+        formMock.setFieldValue("allowed_vector_store_ids", ["store-outside"]);
+        fireEvent.change(screen.getByTestId("project-dropdown"), { target: { value: "project-1" } });
+        formMock.setFieldValue("key_alias", "Project Key");
+        formMock.setFieldValue("organization_id", "legacy-org-field");
+      });
+
+      expect(formStateRef.current["project_id"]).toBe("project-1");
+      expect(formStateRef.current["team_id"]).toBe("team-1");
+      expect(formStateRef.current["company_id"]).toBe("org-1");
+      expect(formStateRef.current["allowed_vector_store_ids"]).toEqual([]);
+      await waitFor(() => {
+        const latestProps = mockVectorStoreSelector.mock.calls[mockVectorStoreSelector.mock.calls.length - 1]?.[0];
+        expect(latestProps).toMatchObject({ companyId: "org-1", projectId: "project-1" });
+      });
+
+      await waitFor(() => {
+        expect(vi.mocked(getGuardrailsList)).toHaveBeenCalledWith("test-token", {
+          companyId: "org-1",
+          projectId: "project-1",
+        });
+      });
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create key/i }));
+      });
+
+      await waitFor(() => {
+        expect(mockKeyCreateCall).toHaveBeenCalled();
+      });
+
+      const payload = mockKeyCreateCall.mock.calls[0][2];
+      expect(payload.project_id).toBe("project-1");
+      expect(payload.team_id).toBe("team-1");
+      expect(payload.company_id).toBe("org-1");
+      expect(payload).not.toHaveProperty("organization_id");
     });
   });
 

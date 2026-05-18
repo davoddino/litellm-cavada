@@ -20,6 +20,9 @@ from litellm.llms.custom_httpx.http_handler import get_async_httpx_client
 from litellm.proxy._types import CommonProxyErrors, LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.common_utils.rbac_utils import check_feature_access_for_user
+from litellm.proxy.management_endpoints.common_utils import (
+    build_company_project_access_context,
+)
 from litellm.proxy.management_endpoints.common_daily_activity import get_daily_activity
 from litellm.types.agents import (
     AgentConfig,
@@ -66,7 +69,7 @@ def _check_agent_management_permission(user_api_key_dict: UserAPIKeyAuth) -> Non
     or delete agents.  Only PROXY_ADMIN users are allowed to perform these
     write operations.
     """
-    if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN:
+    if not _is_proxy_admin(user_api_key_dict):
         raise HTTPException(
             status_code=403,
             detail={
@@ -74,6 +77,300 @@ def _check_agent_management_permission(user_api_key_dict: UserAPIKeyAuth) -> Non
                     user_api_key_dict.user_role
                 )
             },
+        )
+
+
+def _is_proxy_admin(user_api_key_dict: UserAPIKeyAuth) -> bool:
+    return user_api_key_dict.user_role in (
+        LitellmUserRoles.PROXY_ADMIN,
+        LitellmUserRoles.PROXY_ADMIN.value,
+    )
+
+
+def _get_field_value(obj: Any, field: str) -> Any:
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(field)
+    return getattr(obj, field, None)
+
+
+def _agent_row_to_dict(agent: Any) -> Dict[str, Any]:
+    if isinstance(agent, dict):
+        return dict(agent)
+    if hasattr(agent, "model_dump"):
+        return agent.model_dump()
+    return dict(agent)
+
+
+async def _get_complete_user_info(
+    *,
+    user_api_key_dict: UserAPIKeyAuth,
+    prisma_client: Any,
+) -> Any:
+    if user_api_key_dict.user_id is None:
+        return None
+
+    from litellm.proxy.auth.auth_checks import get_user_object
+    from litellm.proxy.proxy_server import proxy_logging_obj, user_api_key_cache
+
+    return await get_user_object(
+        user_id=user_api_key_dict.user_id,
+        prisma_client=prisma_client,
+        user_api_key_cache=user_api_key_cache,
+        user_id_upsert=False,
+        proxy_logging_obj=proxy_logging_obj,
+    )
+
+
+async def _resolve_agent_project_context(
+    *,
+    prisma_client: Any,
+    company_id: Optional[str],
+    project_id: Optional[str],
+) -> tuple[Optional[str], Optional[str], Any]:
+    if project_id is None:
+        return company_id, None, None
+
+    project = await prisma_client.db.litellm_projecttable.find_unique(
+        where={"project_id": project_id},
+        include={"litellm_team_table": True},
+    )
+    if project is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": f"Project not found for project_id={project_id}"},
+        )
+
+    team = _get_field_value(project, "litellm_team_table")
+    team_id = _get_field_value(project, "team_id")
+    if team is None and team_id is not None:
+        team = await prisma_client.db.litellm_teamtable.find_unique(
+            where={"team_id": team_id}
+        )
+
+    if team_id is None or team is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"Project={project_id} must have a backing team before it can own agents."
+            },
+        )
+
+    project_company_id = _get_field_value(project, "company_id") or _get_field_value(
+        team, "organization_id"
+    )
+    if project_company_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"Project={project_id} backing team is not assigned to a company."
+            },
+        )
+
+    if company_id is not None and company_id != project_company_id:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"project_id={project_id} belongs to company_id={project_company_id}; received company_id={company_id}."
+            },
+        )
+
+    return project_company_id, project_id, team
+
+
+async def _authorize_agent_company_project_context(
+    *,
+    user_api_key_dict: UserAPIKeyAuth,
+    prisma_client: Any,
+    company_id: Optional[str],
+    project_id: Optional[str],
+    project_team_obj: Any = None,
+    write: bool,
+) -> None:
+    if _is_proxy_admin(user_api_key_dict):
+        return
+    if company_id is None and project_id is None:
+        if write:
+            _check_agent_management_permission(user_api_key_dict)
+        return
+
+    complete_user_info = await _get_complete_user_info(
+        user_api_key_dict=user_api_key_dict,
+        prisma_client=prisma_client,
+    )
+    context = build_company_project_access_context(
+        user_api_key_dict=user_api_key_dict,
+        complete_user_info=complete_user_info,
+        project_team_obj=project_team_obj,
+        project_company_id=company_id,
+        route_permission="/v1/agents",
+    )
+    if project_id is not None:
+        allowed = context.can_manage_project() if write else context.can_read_project()
+    elif write:
+        allowed = (
+            context.can_read_company(company_id)
+            and company_id in context.company_admin_ids
+        )
+    else:
+        allowed = context.can_read_company(company_id)
+
+    if not allowed:
+        action = "manage" if write else "read"
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": f"Not authorized to {action} agents for company_id={company_id}, project_id={project_id}."
+            },
+        )
+
+
+def _agent_tenant_filter(
+    agents: List[AgentResponse],
+    *,
+    company_id: Optional[str],
+    project_id: Optional[str],
+) -> List[AgentResponse]:
+    if company_id is None and project_id is None:
+        return agents
+    return [
+        agent
+        for agent in agents
+        if (company_id is None or agent.company_id == company_id)
+        and (project_id is None or agent.project_id == project_id)
+    ]
+
+
+async def _enrich_agent_tenant_names(
+    agents: List[AgentResponse],
+    prisma_client: Any,
+) -> List[AgentResponse]:
+    company_ids = sorted({agent.company_id for agent in agents if agent.company_id})
+    project_ids = sorted({agent.project_id for agent in agents if agent.project_id})
+    company_names: Dict[str, str] = {}
+    project_names: Dict[str, str] = {}
+
+    if company_ids:
+        companies = await prisma_client.db.litellm_organizationtable.find_many(
+            where={"organization_id": {"in": company_ids}}
+        )
+        company_names = {
+            _get_field_value(company, "organization_id"): _get_field_value(
+                company, "organization_alias"
+            )
+            for company in companies
+            if _get_field_value(company, "organization_id")
+        }
+    if project_ids:
+        projects = await prisma_client.db.litellm_projecttable.find_many(
+            where={"project_id": {"in": project_ids}}
+        )
+        project_names = {
+            _get_field_value(project, "project_id"): _get_field_value(
+                project, "project_alias"
+            )
+            for project in projects
+            if _get_field_value(project, "project_id")
+        }
+
+    for agent in agents:
+        if agent.company_id and company_names.get(agent.company_id):
+            agent.company_name = company_names[agent.company_id]
+        if agent.project_id and project_names.get(agent.project_id):
+            agent.project_name = project_names[agent.project_id]
+    return agents
+
+
+async def _filter_agents_for_caller_tenant_access(
+    *,
+    agents: List[AgentResponse],
+    prisma_client: Any,
+    user_api_key_dict: UserAPIKeyAuth,
+) -> List[AgentResponse]:
+    if _is_proxy_admin(user_api_key_dict):
+        return agents
+
+    visible_agents: List[AgentResponse] = []
+    for agent in agents:
+        company_id, project_id, project_team_obj = await _resolve_agent_project_context(
+            prisma_client=prisma_client,
+            company_id=agent.company_id,
+            project_id=agent.project_id,
+        )
+        try:
+            await _authorize_agent_company_project_context(
+                user_api_key_dict=user_api_key_dict,
+                prisma_client=prisma_client,
+                company_id=company_id,
+                project_id=project_id,
+                project_team_obj=project_team_obj,
+                write=False,
+            )
+        except HTTPException:
+            continue
+        visible_agents.append(agent)
+    return visible_agents
+
+
+async def _normalize_agent_tenant_context(
+    *,
+    prisma_client: Any,
+    agent_payload: Dict[str, Any],
+    fallback_agent: Optional[Dict[str, Any]] = None,
+) -> tuple[Optional[str], Optional[str], Any]:
+    company_id = agent_payload.get("company_id")
+    project_id = agent_payload.get("project_id")
+    if "company_id" not in agent_payload and fallback_agent is not None:
+        company_id = fallback_agent.get("company_id")
+    if "project_id" not in agent_payload and fallback_agent is not None:
+        project_id = fallback_agent.get("project_id")
+
+    company_id, project_id, project_team_obj = await _resolve_agent_project_context(
+        prisma_client=prisma_client,
+        company_id=company_id,
+        project_id=project_id,
+    )
+    agent_payload["company_id"] = company_id
+    agent_payload["project_id"] = project_id
+    return company_id, project_id, project_team_obj
+
+
+async def _authorize_agent_write_context_change(
+    *,
+    user_api_key_dict: UserAPIKeyAuth,
+    prisma_client: Any,
+    existing_agent: Dict[str, Any],
+    target_company_id: Optional[str],
+    target_project_id: Optional[str],
+    target_project_team_obj: Any,
+) -> None:
+    existing_company_id, existing_project_id, existing_project_team_obj = (
+        await _resolve_agent_project_context(
+            prisma_client=prisma_client,
+            company_id=existing_agent.get("company_id"),
+            project_id=existing_agent.get("project_id"),
+        )
+    )
+    await _authorize_agent_company_project_context(
+        user_api_key_dict=user_api_key_dict,
+        prisma_client=prisma_client,
+        company_id=existing_company_id,
+        project_id=existing_project_id,
+        project_team_obj=existing_project_team_obj,
+        write=True,
+    )
+    if (
+        target_company_id,
+        target_project_id,
+    ) != (existing_company_id, existing_project_id):
+        await _authorize_agent_company_project_context(
+            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
+            company_id=target_company_id,
+            project_id=target_project_id,
+            project_team_obj=target_project_team_obj,
+            write=True,
         )
 
 
@@ -131,6 +428,14 @@ async def get_agents(
         False,
         description="When true, performs a GET request to each agent's URL. Agents with reachable URLs (HTTP status < 500) and agents without a URL are returned; unreachable agents are filtered out.",
     ),
+    company_id: Optional[str] = Query(
+        None,
+        description="Filter agents by product company_id.",
+    ),
+    project_id: Optional[str] = Query(
+        None,
+        description="Filter agents by product project_id.",
+    ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),  # Used for auth
 ):
     """
@@ -183,19 +488,65 @@ async def get_agents(
                     agent for agent in all_agents if agent.agent_id in allowed_agent_ids
                 ]
 
-        # Fetch current spend from DB for all returned agents
         from litellm.proxy.proxy_server import prisma_client
 
+        resolved_company_id = company_id
+        resolved_project_id = project_id
+        resolved_project_team_obj = None
+        if prisma_client is None:
+            if company_id is not None or project_id is not None:
+                raise HTTPException(
+                    status_code=500, detail="Prisma client not initialized"
+                )
+        else:
+            resolved_company_id, resolved_project_id, resolved_project_team_obj = (
+                await _resolve_agent_project_context(
+                    prisma_client=prisma_client,
+                    company_id=company_id,
+                    project_id=project_id,
+                )
+            )
+            await _authorize_agent_company_project_context(
+                user_api_key_dict=user_api_key_dict,
+                prisma_client=prisma_client,
+                company_id=resolved_company_id,
+                project_id=resolved_project_id,
+                project_team_obj=resolved_project_team_obj,
+                write=False,
+            )
+
+        # Fetch current spend and tenant context from DB for all returned agents.
         if prisma_client is not None:
             agent_ids = [agent.agent_id for agent in returned_agents]
             if agent_ids:
                 db_agents = await prisma_client.db.litellm_agentstable.find_many(
                     where={"agent_id": {"in": agent_ids}},
                 )
-                spend_map = {a.agent_id: a.spend for a in db_agents}
+                db_agent_map = {
+                    _get_field_value(agent, "agent_id"): agent for agent in db_agents
+                }
                 for agent in returned_agents:
-                    if agent.agent_id in spend_map:
-                        agent.spend = spend_map[agent.agent_id]
+                    db_agent = db_agent_map.get(agent.agent_id)
+                    if db_agent is None:
+                        continue
+                    agent.spend = _get_field_value(db_agent, "spend")
+                    agent.company_id = _get_field_value(db_agent, "company_id")
+                    agent.project_id = _get_field_value(db_agent, "project_id")
+
+            returned_agents = _agent_tenant_filter(
+                returned_agents,
+                company_id=resolved_company_id,
+                project_id=resolved_project_id,
+            )
+            returned_agents = await _filter_agents_for_caller_tenant_access(
+                agents=returned_agents,
+                prisma_client=prisma_client,
+                user_api_key_dict=user_api_key_dict,
+            )
+            returned_agents = await _enrich_agent_tenant_names(
+                returned_agents,
+                prisma_client=prisma_client,
+            )
 
         # add is_public field to each agent - we do it this way, to allow setting config agents as public
         for agent in returned_agents:
@@ -326,12 +677,27 @@ async def create_agent(
 
     from litellm.proxy.proxy_server import prisma_client
 
-    _check_agent_management_permission(user_api_key_dict)
-
     if prisma_client is None:
+        _check_agent_management_permission(user_api_key_dict)
         raise HTTPException(status_code=500, detail="Prisma client not initialized")
 
     try:
+        request_data = dict(request)
+        company_id, project_id, project_team_obj = (
+            await _normalize_agent_tenant_context(
+                prisma_client=prisma_client,
+                agent_payload=request_data,
+            )
+        )
+        await _authorize_agent_company_project_context(
+            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
+            company_id=company_id,
+            project_id=project_id,
+            project_team_obj=project_team_obj,
+            write=True,
+        )
+
         # Get the user ID from the API key auth
         created_by = user_api_key_dict.user_id or "unknown"
 
@@ -346,8 +712,11 @@ async def create_agent(
             )
 
         result = await AGENT_REGISTRY.add_agent_to_db(
-            agent=request, prisma_client=prisma_client, created_by=created_by
+            agent=request_data, prisma_client=prisma_client, created_by=created_by
         )
+        result = (
+            await _enrich_agent_tenant_names([result], prisma_client=prisma_client)
+        )[0]
 
         agent_name = result.agent_name
         agent_id = result.agent_id
@@ -442,11 +811,30 @@ async def get_agent_by_id(
             )
             if db_row is not None:
                 agent.spend = db_row.spend
+                agent.company_id = _get_field_value(db_row, "company_id")
+                agent.project_id = _get_field_value(db_row, "project_id")
 
         if agent is None:
             raise HTTPException(
                 status_code=404, detail=f"Agent with ID {agent_id} not found"
             )
+
+        company_id, project_id, project_team_obj = await _resolve_agent_project_context(
+            prisma_client=prisma_client,
+            company_id=agent.company_id,
+            project_id=agent.project_id,
+        )
+        await _authorize_agent_company_project_context(
+            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
+            company_id=company_id,
+            project_id=project_id,
+            project_team_obj=project_team_obj,
+            write=False,
+        )
+        agent = (
+            await _enrich_agent_tenant_names([agent], prisma_client=prisma_client)
+        )[0]
 
         # Redact sensitive fields for non-admin users
         is_admin = (
@@ -510,9 +898,8 @@ async def update_agent(
 
     from litellm.proxy.proxy_server import prisma_client
 
-    _check_agent_management_permission(user_api_key_dict)
-
     if prisma_client is None:
+        _check_agent_management_permission(user_api_key_dict)
         raise HTTPException(
             status_code=500, detail=CommonProxyErrors.db_not_connected_error.value
         )
@@ -523,22 +910,42 @@ async def update_agent(
             where={"agent_id": agent_id}
         )
         if existing_agent is not None:
-            existing_agent = dict(existing_agent)
+            existing_agent = _agent_row_to_dict(existing_agent)
 
         if existing_agent is None:
             raise HTTPException(
                 status_code=404, detail=f"Agent with ID {agent_id} not found"
             )
 
+        request_data = dict(request)
+        target_company_id, target_project_id, target_project_team_obj = (
+            await _normalize_agent_tenant_context(
+                prisma_client=prisma_client,
+                agent_payload=request_data,
+                fallback_agent=existing_agent,
+            )
+        )
+        await _authorize_agent_write_context_change(
+            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
+            existing_agent=existing_agent,
+            target_company_id=target_company_id,
+            target_project_id=target_project_id,
+            target_project_team_obj=target_project_team_obj,
+        )
+
         # Get the user ID from the API key auth
         updated_by = user_api_key_dict.user_id or "unknown"
 
         result = await AGENT_REGISTRY.update_agent_in_db(
             agent_id=agent_id,
-            agent=request,
+            agent=request_data,
             prisma_client=prisma_client,
             updated_by=updated_by,
         )
+        result = (
+            await _enrich_agent_tenant_names([result], prisma_client=prisma_client)
+        )[0]
 
         # deregister in memory
         AGENT_REGISTRY.deregister_agent(agent_name=existing_agent.get("agent_name"))  # type: ignore
@@ -603,9 +1010,8 @@ async def patch_agent(
 
     from litellm.proxy.proxy_server import prisma_client
 
-    _check_agent_management_permission(user_api_key_dict)
-
     if prisma_client is None:
+        _check_agent_management_permission(user_api_key_dict)
         raise HTTPException(
             status_code=500, detail=CommonProxyErrors.db_not_connected_error.value
         )
@@ -616,22 +1022,42 @@ async def patch_agent(
             where={"agent_id": agent_id}
         )
         if existing_agent is not None:
-            existing_agent = dict(existing_agent)
+            existing_agent = _agent_row_to_dict(existing_agent)
 
         if existing_agent is None:
             raise HTTPException(
                 status_code=404, detail=f"Agent with ID {agent_id} not found"
             )
 
+        request_data = dict(request)
+        target_company_id, target_project_id, target_project_team_obj = (
+            await _normalize_agent_tenant_context(
+                prisma_client=prisma_client,
+                agent_payload=request_data,
+                fallback_agent=existing_agent,
+            )
+        )
+        await _authorize_agent_write_context_change(
+            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
+            existing_agent=existing_agent,
+            target_company_id=target_company_id,
+            target_project_id=target_project_id,
+            target_project_team_obj=target_project_team_obj,
+        )
+
         # Get the user ID from the API key auth
         updated_by = user_api_key_dict.user_id or "unknown"
 
         result = await AGENT_REGISTRY.patch_agent_in_db(
             agent_id=agent_id,
-            agent=request,
+            agent=request_data,
             prisma_client=prisma_client,
             updated_by=updated_by,
         )
+        result = (
+            await _enrich_agent_tenant_names([result], prisma_client=prisma_client)
+        )[0]
 
         # deregister in memory
         AGENT_REGISTRY.deregister_agent(agent_name=existing_agent.get("agent_name"))  # type: ignore
@@ -679,9 +1105,8 @@ async def delete_agent(
 
     from litellm.proxy.proxy_server import prisma_client
 
-    _check_agent_management_permission(user_api_key_dict)
-
     if prisma_client is None:
+        _check_agent_management_permission(user_api_key_dict)
         raise HTTPException(status_code=500, detail="Prisma client not initialized")
 
     try:
@@ -690,12 +1115,26 @@ async def delete_agent(
             where={"agent_id": agent_id}
         )
         if existing_agent is not None:
-            existing_agent = dict[Any, Any](existing_agent)
+            existing_agent = _agent_row_to_dict(existing_agent)
 
         if existing_agent is None:
             raise HTTPException(
                 status_code=404, detail=f"Agent with ID {agent_id} not found in DB."
             )
+
+        company_id, project_id, project_team_obj = await _resolve_agent_project_context(
+            prisma_client=prisma_client,
+            company_id=existing_agent.get("company_id"),
+            project_id=existing_agent.get("project_id"),
+        )
+        await _authorize_agent_company_project_context(
+            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
+            company_id=company_id,
+            project_id=project_id,
+            project_team_obj=project_team_obj,
+            write=True,
+        )
 
         await AGENT_REGISTRY.delete_agent_from_db(
             agent_id=agent_id, prisma_client=prisma_client

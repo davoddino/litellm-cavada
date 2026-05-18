@@ -4,12 +4,33 @@ import { columns } from "./columns";
 import { UserDataTable } from "./table";
 import { UserInfo } from "./types";
 
+vi.mock("@tremor/react", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tremor/react")>();
+  const React = await import("react");
+  return {
+    ...actual,
+    Select: ({ value, onValueChange, placeholder, children }: any) =>
+      React.createElement(
+        "select",
+        {
+          "aria-label": placeholder,
+          value,
+          onChange: (event: any) => onValueChange?.(event.target.value),
+        },
+        children,
+      ),
+    SelectItem: ({ value, children }: any) => React.createElement("option", { value }, children),
+  };
+});
+
 const defaultFilters = {
   email: "",
   user_id: "",
   user_role: "",
   sso_user_id: "",
   team: "",
+  company_id: "",
+  project_id: "",
   model: "",
   min_spend: null,
   max_spend: null,
@@ -27,6 +48,15 @@ const getDefaultProps = () => ({
   updateFilters: vi.fn(),
   initialFilters: defaultFilters,
   teams: [] as any[],
+  organizations: [
+    {
+      organization_id: "legacy-org-1",
+      organization_alias: "Legacy Organization Alias",
+      company_id: "company-1",
+      company_name: "Company One",
+    },
+  ] as any[],
+  projects: [{ project_id: "project-1", project_alias: "Project One", company_id: "company-1" }] as any[],
   handleEdit: vi.fn(),
   handleDelete: vi.fn(),
   handleResetPassword: vi.fn(),
@@ -104,6 +134,8 @@ describe("UserDataTable", () => {
       "Email",
       "Status",
       "Global Proxy Role",
+      "Company",
+      "Project",
       "User Alias",
       "Spend (USD)",
       "Budget (USD)",
@@ -115,6 +147,34 @@ describe("UserDataTable", () => {
     ].forEach((header) => {
       expect(screen.getByRole("columnheader", { name: header })).toBeInTheDocument();
     });
+  });
+
+  it("should render Company filter labels from product fields and no Organization copy", () => {
+    render(<UserDataTable {...getDefaultProps()} />);
+
+    act(() => {
+      fireEvent.click(screen.getByText("Filters"));
+    });
+
+    expect(screen.getByText("Company One")).toBeInTheDocument();
+    expect(screen.queryByText("Legacy Organization Alias")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Organization/)).not.toBeInTheDocument();
+  });
+
+  it("should update Company filters with product company_id and clear stale Project", () => {
+    const updateFilters = vi.fn();
+    render(<UserDataTable {...getDefaultProps()} updateFilters={updateFilters} />);
+
+    act(() => {
+      fireEvent.click(screen.getByText("Filters"));
+    });
+
+    act(() => {
+      fireEvent.change(screen.getByLabelText("Select Company"), { target: { value: "company-1" } });
+    });
+
+    expect(updateFilters).toHaveBeenCalledWith({ company_id: "company-1", project_id: "" });
+    expect(updateFilters).not.toHaveBeenCalledWith({ company_id: "legacy-org-1", project_id: "" });
   });
 
   it("should render the user-row Status cell as Active when scim_active is not set to false", () => {

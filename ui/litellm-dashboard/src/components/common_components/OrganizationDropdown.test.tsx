@@ -5,7 +5,9 @@ import OrganizationDropdown from "./OrganizationDropdown";
 
 const MOCK_ORGS = [
   {
-    organization_id: "org-1",
+    company_id: "company-1",
+    company_name: "Engineering Company",
+    organization_id: "company-1",
     organization_alias: "Engineering",
     budget_id: "",
     metadata: {},
@@ -17,7 +19,9 @@ const MOCK_ORGS = [
     updated_at: "",
   },
   {
-    organization_id: "org-2",
+    company_id: "company-2",
+    company_name: "Sales Company",
+    organization_id: "company-2",
     organization_alias: "Sales",
     budget_id: "",
     metadata: {},
@@ -36,25 +40,27 @@ describe("OrganizationDropdown", () => {
     expect(screen.getByRole("combobox")).toBeInTheDocument();
   });
 
-  it("should display organization options when opened", async () => {
+  it("should display company options when opened", async () => {
     const user = userEvent.setup();
     render(<OrganizationDropdown organizations={MOCK_ORGS} />);
 
     await user.click(screen.getByRole("combobox"));
 
-    expect(await screen.findByText("Engineering")).toBeInTheDocument();
-    expect(screen.getByText("Sales")).toBeInTheDocument();
+    expect(await screen.findByText("Engineering Company")).toBeInTheDocument();
+    expect(screen.getByText("Sales Company")).toBeInTheDocument();
+    expect(screen.getByText("(company-1)")).toBeInTheDocument();
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
   });
 
-  it("should call onChange with the org id when an organization is selected", async () => {
+  it("should call onChange with the company id when a company is selected", async () => {
     const onChange = vi.fn();
     const user = userEvent.setup();
     render(<OrganizationDropdown organizations={MOCK_ORGS} onChange={onChange} />);
 
     await user.click(screen.getByRole("combobox"));
-    await user.click(await screen.findByText("Engineering"));
+    await user.click(await screen.findByText("Engineering Company"));
 
-    expect(onChange).toHaveBeenCalledWith("org-1", expect.anything());
+    expect(onChange).toHaveBeenCalledWith("company-1", expect.anything());
   });
 
   it("should add ant-select-disabled class when disabled prop is true", () => {

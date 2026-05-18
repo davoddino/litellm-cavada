@@ -14,9 +14,9 @@ import UsagePage from "./UsagePageView";
 beforeAll(() => {
   if (typeof window !== "undefined" && !window.ResizeObserver) {
     window.ResizeObserver = class ResizeObserver {
-      observe() { }
-      unobserve() { }
-      disconnect() { }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
     } as any;
   }
 });
@@ -43,7 +43,13 @@ vi.mock("./EntityUsage/TopKeyView", () => ({
 }));
 
 vi.mock("./EntityUsage/EntityUsage", () => ({
-  default: () => <div>Entity Usage</div>,
+  default: ({ companyIds, entityList }: any) => (
+    <div>
+      <div>Entity Usage</div>
+      <div data-testid="entity-usage-company-filter">{companyIds?.join(",") || ""}</div>
+      {entityList?.map((entity: any) => <div key={entity.value}>{entity.label}</div>)}
+    </div>
+  ),
   EntityList: [],
 }));
 
@@ -58,9 +64,7 @@ vi.mock("./EndpointUsage/EndpointUsage", () => ({
 vi.mock("./UsageViewSelect/UsageViewSelect", async () => {
   const React = await import("react");
   const UsageViewSelect = ({ value, onChange, canViewTagUsage = false }: any) => {
-    const tagOption = canViewTagUsage
-      ? React.createElement("option", { value: "tag" }, "Tag Usage")
-      : null;
+    const tagOption = canViewTagUsage ? React.createElement("option", { value: "tag" }, "Tag Usage") : null;
     return React.createElement(
       "select",
       {
@@ -71,7 +75,8 @@ vi.mock("./UsageViewSelect/UsageViewSelect", async () => {
       },
       React.createElement("option", { value: "global" }, "Global Usage"),
       React.createElement("option", { value: "team" }, "Team Usage"),
-      React.createElement("option", { value: "organization" }, "Organization Usage"),
+      React.createElement("option", { value: "company" }, "Company Usage"),
+      React.createElement("option", { value: "project" }, "Project Usage"),
       React.createElement("option", { value: "customer" }, "Customer Usage"),
       tagOption,
       React.createElement("option", { value: "agent" }, "Agent Usage"),
@@ -242,6 +247,7 @@ vi.mock("@ant-design/icons", async () => {
   return {
     GlobalOutlined: Icon,
     BankOutlined: Icon,
+    ProjectOutlined: Icon,
     TeamOutlined: Icon,
     ShoppingCartOutlined: Icon,
     TagsOutlined: Icon,
@@ -448,6 +454,8 @@ describe("UsagePage", () => {
 
   const mockOrganizations: Organization[] = [
     {
+      company_id: "company-123",
+      company_name: "Acme Company",
       organization_id: "org-123",
       organization_alias: "Acme Org",
       budget_id: "budget-1",
@@ -486,6 +494,30 @@ describe("UsagePage", () => {
     },
   ];
 
+  const mockProjects = [
+    {
+      project_id: "project-123",
+      company_id: "company-123",
+      project_alias: "Support Project",
+      description: null,
+      team_id: "team-1",
+      budget_id: null,
+      metadata: null,
+      models: [],
+      spend: 0,
+      model_spend: null,
+      model_rpm_limit: null,
+      model_tpm_limit: null,
+      blocked: false,
+      object_permission_id: null,
+      created_at: "2025-01-01T00:00:00Z",
+      created_by: "user-123",
+      updated_at: "2025-01-02T00:00:00Z",
+      updated_by: "user-123",
+      litellm_budget_table: null,
+    },
+  ];
+
   const defaultProps = {
     teams: [
       {
@@ -506,6 +538,7 @@ describe("UsagePage", () => {
       },
     ],
     organizations: [],
+    projects: mockProjects,
   };
 
   beforeEach(() => {
@@ -665,7 +698,7 @@ describe("UsagePage", () => {
     expect(screen.getByRole("option", { name: "Tag Usage" })).toBeInTheDocument();
   });
 
-  it("should show organization usage banner and view for admins", async () => {
+  it("should show company usage view for admins", async () => {
     renderWithProviders(<UsagePage {...defaultProps} organizations={mockOrganizations} />);
 
     await waitFor(() => {
@@ -674,13 +707,105 @@ describe("UsagePage", () => {
 
     const usageSelect = screen.getByTestId("usage-view-select");
     act(() => {
-      fireEvent.change(usageSelect, { target: { value: "organization" } });
+      fireEvent.change(usageSelect, { target: { value: "company" } });
     });
 
     await waitFor(() => {
       const entityUsageElements = screen.getAllByText("Entity Usage");
       expect(entityUsageElements.length).toBeGreaterThan(0);
     });
+  });
+
+  it("should show project usage view for admins", async () => {
+    renderWithProviders(<UsagePage {...defaultProps} organizations={mockOrganizations} projects={mockProjects} />);
+
+    await waitFor(() => {
+      expect(mockUserDailyActivityAggregatedCall).toHaveBeenCalled();
+    });
+
+    const usageSelect = screen.getByTestId("usage-view-select");
+    act(() => {
+      fireEvent.change(usageSelect, { target: { value: "project" } });
+    });
+
+    await waitFor(() => {
+      const entityUsageElements = screen.getAllByText("Entity Usage");
+      expect(entityUsageElements.length).toBeGreaterThan(0);
+    });
+
+    expect(screen.getByLabelText("Filter project usage by company")).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Acme Company" })).toBeInTheDocument();
+    expect(screen.getByText("Support Project")).toBeInTheDocument();
+  });
+
+  it("should pass selected company filter into project usage", async () => {
+    renderWithProviders(<UsagePage {...defaultProps} organizations={mockOrganizations} projects={mockProjects} />);
+
+    await waitFor(() => {
+      expect(mockUserDailyActivityAggregatedCall).toHaveBeenCalled();
+    });
+
+    const usageSelect = screen.getByTestId("usage-view-select");
+    act(() => {
+      fireEvent.change(usageSelect, { target: { value: "project" } });
+    });
+
+    const companySelect = screen.getByLabelText("Filter project usage by company");
+    act(() => {
+      fireEvent.change(companySelect, { target: { value: "company-123" } });
+    });
+
+    expect(screen.getByTestId("entity-usage-company-filter")).toHaveTextContent("company-123");
+  });
+
+  it("should clear stale Project options when the Project usage Company filter changes", async () => {
+    const organizations: Organization[] = [
+      mockOrganizations[0],
+      {
+        ...mockOrganizations[0],
+        company_id: "company-456",
+        company_name: "Beta Company",
+        organization_id: "org-456",
+        organization_alias: "Beta Org",
+      },
+    ];
+    const projects = [
+      mockProjects[0],
+      {
+        ...mockProjects[0],
+        project_id: "project-456",
+        company_id: "company-456",
+        project_alias: "Billing Project",
+        team_id: "team-2",
+      },
+    ];
+
+    renderWithProviders(<UsagePage {...defaultProps} organizations={organizations} projects={projects} />);
+
+    await waitFor(() => {
+      expect(mockUserDailyActivityAggregatedCall).toHaveBeenCalled();
+    });
+
+    const usageSelect = screen.getByTestId("usage-view-select");
+    act(() => {
+      fireEvent.change(usageSelect, { target: { value: "project" } });
+    });
+
+    const companySelect = screen.getByLabelText("Filter project usage by company");
+    act(() => {
+      fireEvent.change(companySelect, { target: { value: "company-123" } });
+    });
+
+    expect(screen.getByTestId("entity-usage-company-filter")).toHaveTextContent("company-123");
+    expect(screen.getByText("Support Project")).toBeInTheDocument();
+
+    act(() => {
+      fireEvent.change(companySelect, { target: { value: "company-456" } });
+    });
+
+    expect(screen.getByTestId("entity-usage-company-filter")).toHaveTextContent("company-456");
+    expect(screen.queryByText("Support Project")).not.toBeInTheDocument();
+    expect(screen.getByText("Billing Project")).toBeInTheDocument();
   });
 
   it("should show customer usage view for admins", async () => {
@@ -741,9 +866,7 @@ describe("UsagePage", () => {
 
       // Admin should see the user selector select element with the placeholder attribute
       const userSelects = screen.getAllByRole("combobox");
-      const userSelect = userSelects.find(
-        (el) => el.getAttribute("placeholder") === "Select user to filter...",
-      );
+      const userSelect = userSelects.find((el) => el.getAttribute("placeholder") === "Select user to filter...");
       expect(userSelect).toBeDefined();
     });
 
@@ -778,9 +901,7 @@ describe("UsagePage", () => {
         data: {
           pages: [
             {
-              users: [
-                { user_id: "user-dup", user_alias: "DupUser", user_email: null },
-              ],
+              users: [{ user_id: "user-dup", user_alias: "DupUser", user_email: null }],
               page: 1,
               total_pages: 2,
               total_count: 2,
@@ -856,9 +977,7 @@ describe("UsagePage", () => {
 
       // Non-admin should not see the user selector
       const userSelects = screen.getAllByRole("combobox");
-      const userSelect = userSelects.find(
-        (el) => el.getAttribute("placeholder") === "Select user to filter...",
-      );
+      const userSelect = userSelects.find((el) => el.getAttribute("placeholder") === "Select user to filter...");
       expect(userSelect).toBeUndefined();
     });
 
@@ -946,9 +1065,7 @@ describe("UsagePage", () => {
         },
       };
 
-      mockUserDailyActivityCall
-        .mockResolvedValueOnce(page1Data)
-        .mockResolvedValueOnce(page2Data);
+      mockUserDailyActivityCall.mockResolvedValueOnce(page1Data).mockResolvedValueOnce(page2Data);
 
       renderWithProviders(<UsagePage {...defaultProps} />);
 
@@ -958,22 +1075,10 @@ describe("UsagePage", () => {
       });
 
       // Verify first page call
-      expect(mockUserDailyActivityCall).toHaveBeenCalledWith(
-        "test-token",
-        expect.any(Date),
-        expect.any(Date),
-        1,
-        null,
-      );
+      expect(mockUserDailyActivityCall).toHaveBeenCalledWith("test-token", expect.any(Date), expect.any(Date), 1, null);
 
       // Verify second page call
-      expect(mockUserDailyActivityCall).toHaveBeenCalledWith(
-        "test-token",
-        expect.any(Date),
-        expect.any(Date),
-        2,
-        null,
-      );
+      expect(mockUserDailyActivityCall).toHaveBeenCalledWith("test-token", expect.any(Date), expect.any(Date), 2, null);
     });
   });
 

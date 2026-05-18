@@ -13,6 +13,8 @@ const createLogEntry = (overrides: Partial<LogEntry> = {}): LogEntry =>
     request_id: "chatcmpl-test-id",
     api_key: "api-key",
     team_id: "team-id",
+    company_id: "company-id",
+    project_id: "project-id",
     model: "gpt-4",
     model_id: "gpt-4",
     call_type: "chat",
@@ -54,6 +56,33 @@ describe("LogDetailContent", () => {
     expect(screen.getByText("gpt-4o")).toBeInTheDocument();
     expect(screen.getByText("anthropic")).toBeInTheDocument();
     expect(screen.getByText("completion")).toBeInTheDocument();
+  });
+
+  it("should display Company and Project in metrics", () => {
+    render(<LogDetailContent logEntry={createLogEntry()} />);
+
+    expect(screen.getByText("Company")).toBeInTheDocument();
+    expect(screen.getByText("company-id")).toBeInTheDocument();
+    expect(screen.getByText("Project")).toBeInTheDocument();
+    expect(screen.getByText("project-id")).toBeInTheDocument();
+  });
+
+  it("should prefer Company and Project names in metrics", () => {
+    render(
+      <LogDetailContent
+        logEntry={createLogEntry({
+          company_name: "Acme Company",
+          project_name: "Support Project",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Company")).toBeInTheDocument();
+    expect(screen.getByText("Acme Company")).toBeInTheDocument();
+    expect(screen.getByText("Project")).toBeInTheDocument();
+    expect(screen.getByText("Support Project")).toBeInTheDocument();
+    expect(screen.queryByText("company-id")).not.toBeInTheDocument();
+    expect(screen.queryByText("project-id")).not.toBeInTheDocument();
   });
 
   it("should display error alert when request has failed", () => {
@@ -172,12 +201,7 @@ describe("LogDetailContent", () => {
   });
 
   it("should display loading state when isLoadingDetails is true", () => {
-    render(
-      <LogDetailContent
-        logEntry={createLogEntry()}
-        isLoadingDetails={true}
-      />,
-    );
+    render(<LogDetailContent logEntry={createLogEntry()} isLoadingDetails={true} />);
 
     expect(screen.getByText("Loading request & response data...")).toBeInTheDocument();
   });

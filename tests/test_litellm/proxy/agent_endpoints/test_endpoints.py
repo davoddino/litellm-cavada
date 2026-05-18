@@ -1,4 +1,5 @@
 from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -8,8 +9,12 @@ from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
 from litellm.proxy.agent_endpoints import endpoints as agent_endpoints
 from litellm.proxy.agent_endpoints.endpoints import (
     _check_agent_management_permission,
+    create_agent,
+    delete_agent,
     get_agent_daily_activity,
+    get_agents,
     router,
+    update_agent,
     user_api_key_auth,
 )
 from litellm.types.agents import AgentResponse
@@ -38,14 +43,84 @@ def _sample_agent_config() -> dict:
 
 
 def _sample_agent_response(
-    agent_id: str = "agent-123", agent_name: str = "Test Agent"
+    agent_id: str = "agent-123",
+    agent_name: str = "Test Agent",
+    company_id: str | None = None,
+    project_id: str | None = None,
 ) -> AgentResponse:
     return AgentResponse(
         agent_id=agent_id,
         agent_name=agent_name,
         agent_card_params=_sample_agent_card_params(),
         litellm_params={"make_public": False},
+        company_id=company_id,
+        project_id=project_id,
     )
+
+
+def _company_admin_user_info(company_id: str = "company-1") -> SimpleNamespace:
+    return SimpleNamespace(
+        organization_memberships=[
+            SimpleNamespace(
+                organization_id=company_id,
+                user_role=LitellmUserRoles.ORG_ADMIN.value,
+            )
+        ]
+    )
+
+
+def _project_team(
+    *,
+    company_id: str = "company-1",
+    team_id: str = "team-1",
+    user_id: str = "project-admin",
+    role: str = "admin",
+    permissions: list[str] | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        team_id=team_id,
+        organization_id=company_id,
+        members_with_roles=[SimpleNamespace(user_id=user_id, role=role)],
+        team_member_permissions=permissions or [],
+    )
+
+
+def _project_row(
+    *,
+    project_id: str = "project-1",
+    project_alias: str = "Project One",
+    company_id: str = "company-1",
+    team: SimpleNamespace | None = None,
+) -> SimpleNamespace:
+    backing_team = team or _project_team(company_id=company_id)
+    return SimpleNamespace(
+        project_id=project_id,
+        project_alias=project_alias,
+        team_id=backing_team.team_id,
+        litellm_team_table=backing_team,
+        company_id=None,
+    )
+
+
+def _agent_prisma(projects: list[SimpleNamespace] | None = None) -> MagicMock:
+    prisma = MagicMock()
+    project_by_id = {project.project_id: project for project in projects or []}
+    prisma.db.litellm_projecttable.find_unique = AsyncMock(
+        side_effect=lambda where, include=None: project_by_id.get(where["project_id"])
+    )
+    prisma.db.litellm_projecttable.find_many = AsyncMock(return_value=projects or [])
+    prisma.db.litellm_teamtable.find_unique = AsyncMock(return_value=None)
+    prisma.db.litellm_organizationtable.find_many = AsyncMock(
+        side_effect=lambda where: [
+            SimpleNamespace(
+                organization_id=company_id,
+                organization_alias=f"Company {company_id[-1]}",
+            )
+            for company_id in where["organization_id"]["in"]
+        ]
+    )
+    prisma.db.litellm_agentstable.find_many = AsyncMock(return_value=[])
+    return prisma
 
 
 def _make_app_with_role(role: LitellmUserRoles) -> TestClient:
@@ -370,6 +445,270 @@ class TestAgentRBACInternalUserViewOnly:
             "/v1/agents/agent-123", headers={"Authorization": "Bearer k"}
         )
         assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_should_allow_company_admin_to_create_company_scoped_agent(
+    monkeypatch,
+):
+    prisma = _agent_prisma()
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", prisma)
+    monkeypatch.setattr(
+        agent_endpoints,
+        "_get_complete_user_info",
+        AsyncMock(return_value=_company_admin_user_info("company-1")),
+    )
+
+    mock_registry = MagicMock()
+    mock_registry.get_agent_by_name = MagicMock(return_value=None)
+    mock_registry.add_agent_to_db = AsyncMock(
+        side_effect=lambda agent, prisma_client, created_by: _sample_agent_response(
+            company_id=agent.get("company_id"),
+            project_id=agent.get("project_id"),
+        )
+    )
+    mock_registry.register_agent = MagicMock()
+    monkeypatch.setattr(agent_endpoints, "AGENT_REGISTRY", mock_registry)
+
+    result = await create_agent(
+        request={**_sample_agent_config(), "company_id": "company-1"},
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="company-admin",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        ),
+    )
+
+    assert result.company_id == "company-1"
+    assert result.project_id is None
+    saved_agent = mock_registry.add_agent_to_db.call_args.kwargs["agent"]
+    assert saved_agent["company_id"] == "company-1"
+    assert saved_agent["project_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_should_allow_project_admin_to_create_project_scoped_agent(monkeypatch):
+    project = _project_row(
+        company_id="company-1",
+        team=_project_team(
+            company_id="company-1", user_id="project-admin", role="admin"
+        ),
+    )
+    prisma = _agent_prisma([project])
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", prisma)
+    monkeypatch.setattr(
+        agent_endpoints,
+        "_get_complete_user_info",
+        AsyncMock(return_value=SimpleNamespace(organization_memberships=[])),
+    )
+
+    mock_registry = MagicMock()
+    mock_registry.get_agent_by_name = MagicMock(return_value=None)
+    mock_registry.add_agent_to_db = AsyncMock(
+        side_effect=lambda agent, prisma_client, created_by: _sample_agent_response(
+            company_id=agent.get("company_id"),
+            project_id=agent.get("project_id"),
+        )
+    )
+    mock_registry.register_agent = MagicMock()
+    monkeypatch.setattr(agent_endpoints, "AGENT_REGISTRY", mock_registry)
+
+    result = await create_agent(
+        request={**_sample_agent_config(), "project_id": "project-1"},
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="project-admin",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        ),
+    )
+
+    assert result.company_id == "company-1"
+    assert result.project_id == "project-1"
+    saved_agent = mock_registry.add_agent_to_db.call_args.kwargs["agent"]
+    assert saved_agent["company_id"] == "company-1"
+    assert saved_agent["project_id"] == "project-1"
+
+
+@pytest.mark.asyncio
+async def test_should_block_project_member_from_creating_project_scoped_agent(
+    monkeypatch,
+):
+    project = _project_row(
+        company_id="company-1",
+        team=_project_team(
+            company_id="company-1", user_id="project-member", role="user"
+        ),
+    )
+    prisma = _agent_prisma([project])
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", prisma)
+    monkeypatch.setattr(
+        agent_endpoints,
+        "_get_complete_user_info",
+        AsyncMock(return_value=SimpleNamespace(organization_memberships=[])),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await create_agent(
+            request={**_sample_agent_config(), "project_id": "project-1"},
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="project-member",
+                user_role=LitellmUserRoles.INTERNAL_USER,
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_should_block_company_admin_from_listing_agents_outside_company(
+    monkeypatch,
+):
+    prisma = _agent_prisma()
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", prisma)
+    monkeypatch.setattr(
+        agent_endpoints,
+        "_get_complete_user_info",
+        AsyncMock(return_value=_company_admin_user_info("company-1")),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await get_agents(
+            request=MagicMock(),
+            health_check=False,
+            company_id="company-2",
+            project_id=None,
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="company-admin",
+                user_role=LitellmUserRoles.INTERNAL_USER,
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_should_filter_agent_list_to_caller_company_scope(monkeypatch):
+    prisma = _agent_prisma()
+    prisma.db.litellm_agentstable.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                agent_id="agent-1",
+                spend=1.0,
+                company_id="company-1",
+                project_id=None,
+            ),
+            SimpleNamespace(
+                agent_id="agent-2",
+                spend=2.0,
+                company_id="company-2",
+                project_id=None,
+            ),
+        ]
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", prisma)
+    monkeypatch.setattr(
+        agent_endpoints,
+        "_get_complete_user_info",
+        AsyncMock(return_value=_company_admin_user_info("company-1")),
+    )
+
+    mock_registry = MagicMock()
+    mock_registry.get_agent_list = MagicMock(
+        return_value=[
+            _sample_agent_response(agent_id="agent-1", agent_name="Agent One"),
+            _sample_agent_response(agent_id="agent-2", agent_name="Agent Two"),
+        ]
+    )
+    monkeypatch.setattr(
+        "litellm.proxy.agent_endpoints.agent_registry.global_agent_registry",
+        mock_registry,
+    )
+
+    with patch(
+        "litellm.proxy.agent_endpoints.auth.agent_permission_handler.AgentRequestHandler.get_allowed_agents",
+        new=AsyncMock(return_value=[]),
+    ):
+        result = await get_agents(
+            request=MagicMock(),
+            health_check=False,
+            company_id=None,
+            project_id=None,
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="company-admin",
+                user_role=LitellmUserRoles.INTERNAL_USER,
+            ),
+        )
+
+    assert [agent.agent_id for agent in result] == ["agent-1"]
+    assert result[0].company_id == "company-1"
+
+
+@pytest.mark.asyncio
+async def test_should_block_company_admin_from_moving_agent_outside_company(
+    monkeypatch,
+):
+    prisma = _agent_prisma()
+    prisma.db.litellm_agentstable.find_unique = AsyncMock(
+        return_value={
+            "agent_id": "agent-1",
+            "agent_name": "Agent One",
+            "company_id": "company-1",
+            "project_id": None,
+        }
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", prisma)
+    monkeypatch.setattr(
+        agent_endpoints,
+        "_get_complete_user_info",
+        AsyncMock(return_value=_company_admin_user_info("company-1")),
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await update_agent(
+            agent_id="agent-1",
+            request={**_sample_agent_config(), "company_id": "company-2"},
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="company-admin",
+                user_role=LitellmUserRoles.INTERNAL_USER,
+            ),
+        )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_should_allow_company_admin_to_delete_company_scoped_agent(
+    monkeypatch,
+):
+    prisma = _agent_prisma()
+    prisma.db.litellm_agentstable.find_unique = AsyncMock(
+        return_value={
+            "agent_id": "agent-1",
+            "agent_name": "Agent One",
+            "company_id": "company-1",
+            "project_id": None,
+        }
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", prisma)
+    monkeypatch.setattr(
+        agent_endpoints,
+        "_get_complete_user_info",
+        AsyncMock(return_value=_company_admin_user_info("company-1")),
+    )
+
+    mock_registry = MagicMock()
+    mock_registry.delete_agent_from_db = AsyncMock()
+    mock_registry.deregister_agent = MagicMock()
+    monkeypatch.setattr(agent_endpoints, "AGENT_REGISTRY", mock_registry)
+
+    result = await delete_agent(
+        agent_id="agent-1",
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="company-admin",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        ),
+    )
+
+    assert result["message"] == "Agent agent-1 deleted successfully"
+    mock_registry.delete_agent_from_db.assert_awaited_once()
 
 
 class TestAgentRBACProxyAdmin:

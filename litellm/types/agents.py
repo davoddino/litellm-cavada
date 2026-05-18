@@ -180,6 +180,8 @@ class AgentConfig(TypedDict, total=False):
     agent_name: Required[str]
     agent_card_params: Required[AgentCard]
     litellm_params: Dict[str, Any]  # allow for any future litellm params
+    company_id: Optional[str]
+    project_id: Optional[str]
     object_permission: AgentObjectPermission
     tpm_limit: Optional[int]
     rpm_limit: Optional[int]
@@ -193,6 +195,8 @@ class PatchAgentRequest(TypedDict, total=False):
     agent_name: str
     agent_card_params: AgentCard
     litellm_params: Dict[str, Any]
+    company_id: Optional[str]
+    project_id: Optional[str]
     object_permission: AgentObjectPermission
     tpm_limit: Optional[int]
     rpm_limit: Optional[int]
@@ -210,6 +214,10 @@ class AgentResponse(BaseModel):
     agent_name: str
     litellm_params: Optional[Dict[str, Any]] = None
     agent_card_params: Dict[str, Any]
+    company_id: Optional[str] = None
+    project_id: Optional[str] = None
+    company_name: Optional[str] = None
+    project_name: Optional[str] = None
     object_permission: Optional[Dict[str, Any]] = None
     spend: Optional[float] = None
     tpm_limit: Optional[int] = None

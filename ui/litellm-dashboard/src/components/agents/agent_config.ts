@@ -287,6 +287,8 @@ export const buildAgentDataFromForm = (values: any, existingAgent?: any) => {
   if (values.rpm_limit != null) agentData.rpm_limit = values.rpm_limit;
   if (values.session_tpm_limit != null) agentData.session_tpm_limit = values.session_tpm_limit;
   if (values.session_rpm_limit != null) agentData.session_rpm_limit = values.session_rpm_limit;
+  if (values.company_id !== undefined) agentData.company_id = values.company_id ?? null;
+  if (values.project_id !== undefined) agentData.project_id = values.project_id ?? null;
   // static_headers: convert [{header, value}, ...] → {header: value, ...}
   if (Array.isArray(values.static_headers) && values.static_headers.length > 0) {
     const staticHeaders: Record<string, string> = {};
@@ -337,6 +339,8 @@ export const parseAgentForForm = (agent: any) => {
     cost_per_query: agent.litellm_params?.cost_per_query,
     input_cost_per_token: agent.litellm_params?.input_cost_per_token,
     output_cost_per_token: agent.litellm_params?.output_cost_per_token,
+    company_id: agent.company_id,
+    project_id: agent.project_id,
     tpm_limit: agent.tpm_limit,
     rpm_limit: agent.rpm_limit,
     session_tpm_limit: agent.session_tpm_limit,

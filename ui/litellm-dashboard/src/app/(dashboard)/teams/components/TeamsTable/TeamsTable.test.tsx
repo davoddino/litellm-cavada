@@ -50,6 +50,10 @@ const makeTeam = (overrides: Partial<Team> = {}): Team => ({
   tpm_limit: null,
   rpm_limit: null,
   organization_id: "org-1",
+  company_id: "org-1",
+  company_name: "Acme Corp",
+  project_ids: ["project-1"],
+  project_names: ["Project One"],
   created_at: "2024-06-01T00:00:00Z",
   keys: [],
   members_with_roles: [],
@@ -90,7 +94,9 @@ describe("TeamsTable", () => {
     expect(screen.getByText("Spend (USD)")).toBeInTheDocument();
     expect(screen.getByText("Budget (USD)")).toBeInTheDocument();
     expect(screen.getByText("Models")).toBeInTheDocument();
-    expect(screen.getByText("Organization")).toBeInTheDocument();
+    expect(screen.getByText("Company")).toBeInTheDocument();
+    expect(screen.getByText("Projects")).toBeInTheDocument();
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
     expect(screen.getByText("Your Role")).toBeInTheDocument();
     expect(screen.getByText("Info")).toBeInTheDocument();
   });
@@ -100,7 +106,8 @@ describe("TeamsTable", () => {
 
     expect(screen.getByText("Platform")).toBeInTheDocument();
     expect(screen.getByText("team-ab...")).toBeInTheDocument();
-    expect(screen.getByText("org-1")).toBeInTheDocument();
+    expect(screen.getByText("Acme Corp")).toBeInTheDocument();
+    expect(screen.getByText("Project One")).toBeInTheDocument();
   });
 
   it("should show edit and delete icons for Admin users", () => {

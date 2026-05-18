@@ -24,6 +24,7 @@ _PRISMA_TO_PG_TABLE: Dict[str, str] = {
     "litellm_dailyuserspend": "LiteLLM_DailyUserSpend",
     "litellm_dailyteamspend": "LiteLLM_DailyTeamSpend",
     "litellm_dailyorganizationspend": "LiteLLM_DailyOrganizationSpend",
+    "litellm_dailyprojectspend": "LiteLLM_DailyProjectSpend",
     "litellm_dailyenduserspend": "LiteLLM_DailyEndUserSpend",
     "litellm_dailyagentspend": "LiteLLM_DailyAgentSpend",
     "litellm_dailytagspend": "LiteLLM_DailyTagSpend",

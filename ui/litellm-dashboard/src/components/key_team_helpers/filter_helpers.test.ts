@@ -13,14 +13,14 @@ describe("fetchTeamFilterOptions", () => {
   it("should return empty arrays when accessToken is null", async () => {
     const result = await fetchTeamFilterOptions(null, "team-1");
 
-    expect(result).toEqual({ keyAliases: [], organizationIds: [], userIds: [] });
+    expect(result).toEqual({ keyAliases: [], organizationIds: [], projectOptions: [], userIds: [] });
     expect(mockKeyListCall).not.toHaveBeenCalled();
   });
 
   it("should return empty arrays when teamId is empty", async () => {
     const result = await fetchTeamFilterOptions("tok-123", "");
 
-    expect(result).toEqual({ keyAliases: [], organizationIds: [], userIds: [] });
+    expect(result).toEqual({ keyAliases: [], organizationIds: [], projectOptions: [], userIds: [] });
     expect(mockKeyListCall).not.toHaveBeenCalled();
   });
 
@@ -61,6 +61,24 @@ describe("fetchTeamFilterOptions", () => {
     expect(result.organizationIds).toEqual(["org-a", "org-b", "org-c"]);
   });
 
+  it("should return sorted Project options from Project key context", async () => {
+    mockKeyListCall.mockResolvedValue({
+      keys: [
+        { project_id: "project-z", project_alias: "Zeta Project" },
+        { project_id: "project-a", project_name: "Alpha Project" },
+        { project_id: "project-z", project_alias: "Zeta Project" },
+      ],
+      total_pages: 1,
+    });
+
+    const result = await fetchTeamFilterOptions("tok-123", "team-1");
+
+    expect(result.projectOptions).toEqual([
+      { id: "project-a", label: "Alpha Project (project-a)" },
+      { id: "project-z", label: "Zeta Project (project-z)" },
+    ]);
+  });
+
   it("should map user IDs with email addresses", async () => {
     mockKeyListCall.mockResolvedValue({
       keys: [
@@ -85,6 +103,6 @@ describe("fetchTeamFilterOptions", () => {
 
     const result = await fetchTeamFilterOptions("tok-123", "team-1");
 
-    expect(result).toEqual({ keyAliases: [], organizationIds: [], userIds: [] });
+    expect(result).toEqual({ keyAliases: [], organizationIds: [], projectOptions: [], userIds: [] });
   });
 });

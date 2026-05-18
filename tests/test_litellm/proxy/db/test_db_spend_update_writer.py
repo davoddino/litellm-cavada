@@ -848,6 +848,177 @@ async def test_add_spend_log_transaction_to_daily_org_transaction_skips_when_org
 
 
 @pytest.mark.asyncio
+async def test_update_project_db_queues_project_spend_update():
+    writer = DBSpendUpdateWriter()
+    writer.spend_update_queue.add_update = AsyncMock()
+
+    await writer._update_project_db(
+        response_cost=0.42,
+        project_id="project-123",
+        prisma_client=MagicMock(),
+    )
+
+    writer.spend_update_queue.add_update.assert_called_once()
+    call_args = writer.spend_update_queue.add_update.call_args[1]
+    assert call_args["update"]["entity_type"].value == "project"
+    assert call_args["update"]["entity_id"] == "project-123"
+    assert call_args["update"]["response_cost"] == 0.42
+
+
+@pytest.mark.asyncio
+async def test_add_spend_log_transaction_to_daily_project_transaction_queues_update():
+    writer = DBSpendUpdateWriter()
+    mock_prisma = MagicMock()
+    mock_prisma.get_request_status = MagicMock(return_value="success")
+
+    payload = {
+        "request_id": "req-project-1",
+        "user": "test-user",
+        "project_id": "project-123",
+        "startTime": "2024-01-01T12:00:00",
+        "api_key": "test-key",
+        "model": "gpt-4",
+        "custom_llm_provider": "openai",
+        "model_group": "gpt-4-group",
+        "prompt_tokens": 10,
+        "completion_tokens": 5,
+        "spend": 0.2,
+        "metadata": '{"usage_object": {}}',
+    }
+
+    writer.daily_project_spend_update_queue.add_update = AsyncMock()
+
+    await writer.add_spend_log_transaction_to_daily_project_transaction(
+        payload=payload,
+        prisma_client=mock_prisma,
+    )
+
+    writer.daily_project_spend_update_queue.add_update.assert_called_once()
+    call_args = writer.daily_project_spend_update_queue.add_update.call_args[1]
+    update_dict = call_args["update"]
+    assert len(update_dict) == 1
+    for key, transaction in update_dict.items():
+        assert key == "project-123_2024-01-01_test-key_gpt-4_openai_"
+        assert transaction["project_id"] == "project-123"
+        assert transaction["date"] == "2024-01-01"
+        assert transaction["api_key"] == "test-key"
+        assert transaction["model"] == "gpt-4"
+        assert transaction["custom_llm_provider"] == "openai"
+
+
+@pytest.mark.asyncio
+async def test_batch_database_updates_routes_company_project_attribution():
+    writer = DBSpendUpdateWriter()
+    writer._update_user_db = AsyncMock()
+    writer._update_key_db = AsyncMock()
+    writer._update_team_db = AsyncMock()
+    writer._update_org_db = AsyncMock()
+    writer._update_project_db = AsyncMock()
+    writer._update_tag_db = AsyncMock()
+    writer._update_agent_db = AsyncMock()
+    writer.add_spend_log_transaction_to_daily_user_transaction = AsyncMock()
+    writer.add_spend_log_transaction_to_daily_end_user_transaction = AsyncMock()
+    writer.add_spend_log_transaction_to_daily_agent_transaction = AsyncMock()
+    writer.add_spend_log_transaction_to_daily_team_transaction = AsyncMock()
+    writer.add_spend_log_transaction_to_daily_org_transaction = AsyncMock()
+    writer.add_spend_log_transaction_to_daily_project_transaction = AsyncMock()
+    writer.add_spend_log_transaction_to_daily_tag_transaction = AsyncMock()
+
+    payload = {
+        "request_id": "req-project-company-1",
+        "organization_id": "company-123",
+        "project_id": "project-123",
+        "api_key": "test-key",
+        "model": "gpt-4",
+        "custom_llm_provider": "openai",
+        "metadata": '{"usage_object": {}}',
+    }
+    mock_prisma = MagicMock()
+
+    await writer._batch_database_updates(
+        response_cost=0.2,
+        user_id="user-123",
+        hashed_token="hashed-key",
+        team_id="team-123",
+        org_id="company-123",
+        project_id="project-123",
+        end_user_id=None,
+        prisma_client=mock_prisma,
+        user_api_key_cache=MagicMock(),
+        litellm_proxy_budget_name="proxy-budget",
+        payload_copy=payload,
+        request_tags=None,
+    )
+
+    writer._update_org_db.assert_awaited_once_with(
+        response_cost=0.2,
+        org_id="company-123",
+        prisma_client=mock_prisma,
+    )
+    writer._update_project_db.assert_awaited_once_with(
+        response_cost=0.2,
+        project_id="project-123",
+        prisma_client=mock_prisma,
+    )
+    writer.add_spend_log_transaction_to_daily_org_transaction.assert_awaited_once()
+    org_call = writer.add_spend_log_transaction_to_daily_org_transaction.call_args
+    assert org_call.kwargs["payload"] == payload
+    assert org_call.kwargs["org_id"] == "company-123"
+
+    writer.add_spend_log_transaction_to_daily_project_transaction.assert_awaited_once()
+    project_call = (
+        writer.add_spend_log_transaction_to_daily_project_transaction.call_args
+    )
+    assert project_call.kwargs["payload"] == payload
+
+
+@pytest.mark.asyncio
+async def test_update_daily_project_spend_uses_project_table_and_unique_constraint():
+    mock_prisma_client = MagicMock()
+    mock_batcher = MagicMock()
+    mock_table = MagicMock()
+    mock_prisma_client.db.batch_.return_value.__aenter__.return_value = mock_batcher
+    mock_batcher.litellm_dailyprojectspend = mock_table
+
+    daily_spend_transactions = {
+        "project_key": {
+            "project_id": "project-123",
+            "date": "2024-01-01",
+            "api_key": "test-api-key",
+            "model": "gpt-4",
+            "model_group": "gpt-4-group",
+            "custom_llm_provider": "openai",
+            "mcp_namespaced_tool_name": "",
+            "endpoint": "/chat/completions",
+            "prompt_tokens": 10,
+            "completion_tokens": 20,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "spend": 0.1,
+            "api_requests": 1,
+            "successful_requests": 1,
+            "failed_requests": 0,
+        }
+    }
+
+    await DBSpendUpdateWriter.update_daily_project_spend(
+        n_retry_times=1,
+        prisma_client=mock_prisma_client,
+        proxy_logging_obj=MagicMock(),
+        daily_spend_transactions=daily_spend_transactions,
+    )
+
+    mock_table.upsert.assert_called_once()
+    call_args = mock_table.upsert.call_args[1]
+    where_clause = call_args["where"][
+        "project_id_date_api_key_model_custom_llm_provider_mcp_namespaced_tool_name_endpoint"
+    ]
+    assert where_clause["project_id"] == "project-123"
+    assert where_clause["endpoint"] == "/chat/completions"
+    assert call_args["data"]["create"]["project_id"] == "project-123"
+
+
+@pytest.mark.asyncio
 async def test_add_spend_log_transaction_to_daily_end_user_transaction_injects_end_user_id_and_queues_update():
     writer = DBSpendUpdateWriter()
     mock_prisma = MagicMock()
@@ -1352,6 +1523,7 @@ async def test_batch_database_updates_isolation_on_failure():
     db_writer._update_user_db = AsyncMock()
     db_writer._update_team_db = AsyncMock()
     db_writer._update_org_db = AsyncMock()
+    db_writer._update_project_db = AsyncMock()
     db_writer._update_tag_db = AsyncMock()
     db_writer._update_agent_db = AsyncMock()
     db_writer.add_spend_log_transaction_to_daily_user_transaction = AsyncMock()
@@ -1359,6 +1531,7 @@ async def test_batch_database_updates_isolation_on_failure():
     db_writer.add_spend_log_transaction_to_daily_agent_transaction = AsyncMock()
     db_writer.add_spend_log_transaction_to_daily_team_transaction = AsyncMock()
     db_writer.add_spend_log_transaction_to_daily_org_transaction = AsyncMock()
+    db_writer.add_spend_log_transaction_to_daily_project_transaction = AsyncMock()
     db_writer.add_spend_log_transaction_to_daily_tag_transaction = AsyncMock()
 
     await db_writer._batch_database_updates(
@@ -1367,6 +1540,7 @@ async def test_batch_database_updates_isolation_on_failure():
         hashed_token="t1",
         team_id="team1",
         org_id="org1",
+        project_id="project1",
         end_user_id="eu1",
         prisma_client=MagicMock(),
         user_api_key_cache=MagicMock(),

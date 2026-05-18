@@ -2,6 +2,67 @@
 
 This document provides comprehensive instructions for AI agents working in the LiteLLM repository.
 
+## CAVADALABS WORKFLOW OVERRIDE
+
+These rules are mandatory for every CavadaLabs task in this repository.
+
+### Operating model
+
+- Work on one feature at a time. Do not start implementation until the user or supervisor has explicitly approved that feature.
+- Before coding, propose the exact slice: backend files, frontend files, migration files, tests, and user-visible behavior.
+- If a feasibility document or product spec is expected but not present, stop and ask for it. Do not infer a large architecture from memory.
+- Keep CavadaLabs as the product layer integrated into LiteLLM. Do not build a parallel product beside LiteLLM unless the approved slice explicitly requires a new concept.
+- Companies and Projects are the product tenant concepts for CavadaLabs. LiteLLM Organizations may remain only as internal compatibility where existing LiteLLM code requires them.
+- Preserve provider-specific uses of "organization" such as OpenAI organization IDs.
+
+### File and module rules
+
+- Create new scripts or source files only for genuinely new concepts with no natural home in the existing codebase.
+- If an existing module already owns the behavior, modify that module instead of creating a parallel one.
+- For CavadaLabs work, check existing files first, especially:
+  - `litellm/proxy/cavadalabs/guardrails.py`
+  - `litellm/proxy/cavadalabs/key_context_filters.py`
+  - `litellm/proxy/cavadalabs/key_context_metadata.py`
+  - `litellm/proxy/cavadalabs/usage_tracking.py`
+  - `litellm/proxy/cavadalabs/usage_backfill.py`
+  - `ui/litellm-dashboard/src/components/cavadalabs/*`
+  - existing Virtual Keys, Users, Teams, Usage, Billing, and Settings components
+- Do not create duplicate `guardrails`, `key_context`, `usage`, billing, or migration helpers with similar responsibilities.
+- Keep code modular: small helpers with clear ownership, no monolithic files, no broad rewrites, no unrelated refactors.
+
+### Feature completeness
+
+Each approved feature must address the full product path:
+
+- Backend API and service behavior.
+- Frontend UI and user workflow.
+- Database schema and migration SQL when data shape changes.
+- Tests for backend, frontend, and migration behavior where applicable.
+- Operator commands in `docs/CAVADALABS_OPERATIONS.md`.
+
+If one part is not applicable, state why with evidence.
+
+### Migration policy
+
+- Do not add broad migrations speculatively.
+- If schema changes are needed, update the existing Prisma/schema location used by this repo and add the corresponding migration SQL.
+- Migration SQL must be production-ready, idempotency-aware where possible, and safe for existing data.
+- Data backfills must be explicit, scoped, and documented. Prefer dry-run capable repair/backfill endpoints or scripts when production data may vary.
+
+### Quality bar
+
+- No mocks in production code.
+- No placeholders, TODOs, fake implementations, or "will implement later" paths.
+- No simplified non-production behavior unless the user explicitly approves a temporary diagnostic.
+- Do not claim a feature is complete until backend, frontend, migration/runbook, and targeted tests are handled.
+- End each slice with exact files changed, exact tests run, migration/runbook impact, and remaining blockers.
+
+### Command runbook
+
+- Keep `docs/CAVADALABS_OPERATIONS.md` updated as the current command source of truth.
+- Update commands in place. Do not append a historical log of old commands.
+- The runbook should tell the operator what to run now for migrate, verify, deploy, rollback/repair, and smoke test.
+
 ## OVERVIEW
 
 LiteLLM is a unified interface for 100+ LLMs that:

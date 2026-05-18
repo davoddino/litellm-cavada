@@ -10,6 +10,11 @@ vi.mock("@/app/(dashboard)/hooks/teams/useTeams", () => ({
   useTeams: () => mockUseTeams(),
 }));
 
+const mockUseOrganizations = vi.fn();
+vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
+  useOrganizations: () => mockUseOrganizations(),
+}));
+
 vi.mock("@/components/organisms/create_key_button", () => ({
   fetchTeamModels: vi.fn().mockResolvedValue([]),
 }));
@@ -30,6 +35,7 @@ function FormWrapper() {
 describe("ProjectBaseForm", () => {
   beforeEach(() => {
     mockUseTeams.mockReturnValue({ data: [], isLoading: false });
+    mockUseOrganizations.mockReturnValue({ data: [], isLoading: false });
   });
 
   it("should render", () => {
@@ -52,6 +58,11 @@ describe("ProjectBaseForm", () => {
     expect(screen.getByText("Team")).toBeInTheDocument();
   });
 
+  it("should show a Company select", () => {
+    renderWithProviders(<FormWrapper />);
+    expect(screen.getByText("Company")).toBeInTheDocument();
+  });
+
   it("should show a Description textarea", () => {
     renderWithProviders(<FormWrapper />);
     expect(screen.getByPlaceholderText("Describe the purpose of this project")).toBeInTheDocument();
@@ -65,20 +76,32 @@ describe("ProjectBaseForm", () => {
 
   it("should show available team options when the Team dropdown is opened", async () => {
     const user = userEvent.setup();
+    mockUseOrganizations.mockReturnValue({
+      data: [
+        {
+          company_id: "company-1",
+          company_name: "Acme Company",
+          organization_id: "company-1",
+          organization_alias: "Legacy Org",
+        },
+      ],
+      isLoading: false,
+    });
     mockUseTeams.mockReturnValue({
       data: [
-        { team_id: "team-1", team_alias: "Engineering", models: [] },
-        { team_id: "team-2", team_alias: "Sales", models: [] },
+        { team_id: "team-1", team_alias: "Engineering", models: [], organization_id: "company-1" },
+        { team_id: "team-2", team_alias: "Sales", models: [], organization_id: "company-2" },
       ],
       isLoading: false,
     });
     renderWithProviders(<FormWrapper />);
-    // The form label "Team" is associated with the combobox input inside the Select
+    await user.click(screen.getByLabelText("Company"));
+    await user.click(await screen.findByText("Acme Company"));
     await user.click(screen.getByLabelText("Team"));
     await waitFor(() => {
       expect(screen.getByText("Engineering")).toBeInTheDocument();
     });
-    expect(screen.getByText("Sales")).toBeInTheDocument();
+    expect(screen.queryByText("Sales")).not.toBeInTheDocument();
   });
 
   it("should show the Max Budget field", () => {

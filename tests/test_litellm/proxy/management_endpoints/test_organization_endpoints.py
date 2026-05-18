@@ -156,6 +156,274 @@ async def test_get_organization_daily_activity_admin_param_passing(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_organization_daily_activity_accepts_company_ids(monkeypatch):
+    """
+    Company filters are the product-facing alias for the LiteLLM organization aggregate.
+    """
+    from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
+    from litellm.proxy.management_endpoints import organization_endpoints
+    from litellm.proxy.management_endpoints.organization_endpoints import (
+        get_organization_daily_activity,
+    )
+
+    mock_prisma_client = AsyncMock()
+    mock_prisma_client.db.litellm_organizationtable.find_many = AsyncMock(
+        return_value=[]
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    monkeypatch.setattr(
+        "litellm.proxy.management_endpoints.organization_endpoints._user_has_admin_view",
+        lambda _: True,
+    )
+
+    get_daily_activity_mock = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr(
+        organization_endpoints, "get_daily_activity", get_daily_activity_mock
+    )
+
+    auth = UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN, user_id="admin1")
+    await get_organization_daily_activity(
+        company_ids="company1,company2",
+        exclude_company_ids="company3",
+        user_api_key_dict=auth,
+    )
+
+    kwargs = get_daily_activity_mock.call_args.kwargs
+    assert kwargs["entity_id"] == ["company1", "company2"]
+    assert kwargs["exclude_entity_ids"] == ["company3"]
+
+
+def test_company_daily_activity_route_is_product_primary():
+    from litellm.proxy.management_endpoints import organization_endpoints
+
+    route_paths = {
+        getattr(route, "path", None) for route in organization_endpoints.router.routes
+    }
+    assert "/company/daily/activity" in route_paths
+    assert "/organization/daily/activity" in route_paths
+
+
+def test_company_management_routes_are_product_primary():
+    from litellm.proxy.management_endpoints import organization_endpoints
+
+    route_schema_visibility = {
+        getattr(route, "path", None): getattr(route, "include_in_schema", None)
+        for route in organization_endpoints.router.routes
+    }
+
+    for path in (
+        "/company/new",
+        "/company/update",
+        "/company/delete",
+        "/company/list",
+        "/company/info",
+        "/company/member_add",
+        "/company/member_update",
+        "/company/member_delete",
+    ):
+        assert route_schema_visibility[path] is True
+
+    for path in (
+        "/organization/new",
+        "/organization/update",
+        "/organization/delete",
+        "/organization/list",
+        "/organization/info",
+        "/organization/member_add",
+        "/organization/member_update",
+        "/organization/member_delete",
+    ):
+        assert route_schema_visibility[path] is False
+
+
+def test_company_info_schema_exposes_company_id_and_hides_legacy_organization_alias():
+    from litellm.proxy.management_endpoints.organization_endpoints import router
+
+    company_info_route = next(
+        route
+        for route in router.routes
+        if getattr(route, "path", None) == "/company/info"
+    )
+    query_params = {
+        param.name: getattr(param.field_info, "include_in_schema", True)
+        for param in company_info_route.dependant.query_params
+    }
+
+    assert query_params["company_id"] is True
+    assert query_params["organization_id"] is False
+
+
+def test_company_management_request_aliases_normalize_to_litellm_fields():
+    from litellm.proxy._types import (
+        DeleteOrganizationRequest,
+        LiteLLM_OrganizationTableUpdate,
+        NewOrganizationRequest,
+        OrganizationMemberAddRequest,
+        OrganizationMemberDeleteRequest,
+    )
+
+    create_request = NewOrganizationRequest(
+        company_id="company-1",
+        company_name="Acme",
+        models=["gpt-4o-mini"],
+    )
+    assert create_request.organization_id == "company-1"
+    assert create_request.organization_alias == "Acme"
+
+    update_request = LiteLLM_OrganizationTableUpdate(
+        company_id="company-1",
+        company_name="Acme Updated",
+    )
+    assert update_request.organization_id == "company-1"
+    assert update_request.organization_alias == "Acme Updated"
+
+    delete_request = DeleteOrganizationRequest(company_ids=["company-1"])
+    assert delete_request.organization_ids == ["company-1"]
+
+    add_member_request = OrganizationMemberAddRequest(
+        company_id="company-1",
+        member={"role": "internal_user", "user_id": "user-1"},
+    )
+    assert add_member_request.organization_id == "company-1"
+
+    delete_member_request = OrganizationMemberDeleteRequest(
+        company_id="company-1",
+        user_id="user-1",
+    )
+    assert delete_member_request.organization_id == "company-1"
+
+
+def test_company_management_request_alias_conflicts_are_rejected():
+    from pydantic import ValidationError
+
+    from litellm.proxy._types import (
+        DeleteOrganizationRequest,
+        NewOrganizationRequest,
+    )
+
+    with pytest.raises(ValidationError):
+        NewOrganizationRequest(
+            company_id="company-1",
+            organization_id="company-2",
+            company_name="Acme",
+            models=[],
+        )
+
+    with pytest.raises(ValidationError):
+        NewOrganizationRequest(
+            company_name="Acme",
+            organization_alias="Other",
+            models=[],
+        )
+
+    with pytest.raises(ValidationError):
+        DeleteOrganizationRequest(
+            company_ids=["company-1"],
+            organization_ids=["company-2"],
+        )
+
+
+def test_delete_company_docstring_is_product_facing():
+    from litellm.proxy.management_endpoints.organization_endpoints import (
+        delete_organization,
+    )
+
+    docstring = delete_organization.__doc__ or ""
+    assert "company_ids: List[str] - The company ids to delete." in docstring
+    assert "organization ids to delete" not in docstring
+
+
+@pytest.mark.asyncio
+async def test_deprecated_info_organization_empty_request_uses_company_wording(
+    monkeypatch,
+):
+    from litellm.proxy._types import (
+        LitellmUserRoles,
+        OrganizationRequest,
+        UserAPIKeyAuth,
+    )
+    from litellm.proxy.management_endpoints.organization_endpoints import (
+        deprecated_info_organization,
+    )
+
+    mock_prisma_client = AsyncMock()
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+
+    auth = UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN, user_id="admin-user")
+    with pytest.raises(HTTPException) as exc_info:
+        await deprecated_info_organization(
+            data=OrganizationRequest(organizations=[]),
+            user_api_key_dict=auth,
+        )
+
+    assert exc_info.value.status_code == 400
+    error = exc_info.value.detail["error"]
+    assert "Specify list of company IDs to query" in error
+    assert "organization id" not in error.lower()
+
+
+@pytest.mark.asyncio
+async def test_get_company_daily_activity_accepts_company_id(monkeypatch):
+    from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
+    from litellm.proxy.management_endpoints import organization_endpoints
+    from litellm.proxy.management_endpoints.organization_endpoints import (
+        get_organization_daily_activity,
+    )
+
+    mock_prisma_client = AsyncMock()
+    mock_prisma_client.db.litellm_organizationtable.find_many = AsyncMock(
+        return_value=[]
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    monkeypatch.setattr(
+        "litellm.proxy.management_endpoints.organization_endpoints._user_has_admin_view",
+        lambda _: True,
+    )
+
+    get_daily_activity_mock = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr(
+        organization_endpoints, "get_daily_activity", get_daily_activity_mock
+    )
+
+    auth = UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN, user_id="admin1")
+    await get_organization_daily_activity(
+        company_id="company1",
+        exclude_company_id="company3",
+        api_key="runtime-key-hash",
+        user_api_key_dict=auth,
+    )
+
+    kwargs = get_daily_activity_mock.call_args.kwargs
+    assert kwargs["entity_id"] == ["company1"]
+    assert kwargs["exclude_entity_ids"] == ["company3"]
+    assert kwargs["api_key"] == "runtime-key-hash"
+
+
+@pytest.mark.asyncio
+async def test_get_company_daily_activity_rejects_conflicting_company_aliases(
+    monkeypatch,
+):
+    from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
+    from litellm.proxy.management_endpoints.organization_endpoints import (
+        get_organization_daily_activity,
+    )
+
+    mock_prisma_client = AsyncMock()
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+
+    auth = UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN, user_id="admin1")
+    with pytest.raises(HTTPException) as exc_info:
+        await get_organization_daily_activity(
+            company_id="company1",
+            company_ids="company2",
+            user_api_key_dict=auth,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "company_id" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
 async def test_get_organization_daily_activity_non_admin_defaults_to_admin_orgs(
     monkeypatch,
 ):
@@ -272,6 +540,281 @@ async def test_get_organization_daily_activity_non_admin_unauthorized_org_raises
             user_api_key_dict=auth,
         )
     assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_get_company_daily_activity_non_admin_allowed_company_scope(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
+    from litellm.proxy.management_endpoints import organization_endpoints
+    from litellm.proxy.management_endpoints.organization_endpoints import (
+        get_organization_daily_activity,
+    )
+
+    mock_prisma_client = AsyncMock()
+    mock_prisma_client.db.litellm_organizationmembership.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id="company-123",
+                user_role=LitellmUserRoles.ORG_ADMIN.value,
+            )
+        ]
+    )
+    mock_prisma_client.db.litellm_organizationtable.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id="company-123",
+                organization_alias="Acme Company",
+            )
+        ]
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    monkeypatch.setattr(
+        "litellm.proxy.management_endpoints.organization_endpoints._user_has_admin_view",
+        lambda _: False,
+    )
+
+    captured = {}
+
+    async def _fake_get_daily_activity(**kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    get_daily_activity_mock = AsyncMock(side_effect=_fake_get_daily_activity)
+    monkeypatch.setattr(
+        organization_endpoints, "get_daily_activity", get_daily_activity_mock
+    )
+
+    auth = UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="company-admin",
+    )
+    await get_organization_daily_activity(
+        organization_ids=None,
+        company_ids=None,
+        company_id="company-123",
+        start_date="2026-05-18",
+        end_date="2026-05-18",
+        model=None,
+        api_key="runtime-key-hash",
+        page=1,
+        page_size=10,
+        exclude_organization_ids=None,
+        exclude_company_ids=None,
+        exclude_company_id=None,
+        user_api_key_dict=auth,
+    )
+
+    assert captured["table_name"] == "litellm_dailyorganizationspend"
+    assert captured["entity_id_field"] == "organization_id"
+    assert captured["entity_id"] == ["company-123"]
+    assert captured["api_key"] == "runtime-key-hash"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "company_role",
+    [
+        "internal_user",
+        "internal_user_viewer",
+    ],
+)
+async def test_get_company_daily_activity_company_member_can_read_company_scope(
+    monkeypatch, company_role
+):
+    from types import SimpleNamespace
+
+    from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
+    from litellm.proxy.management_endpoints import organization_endpoints
+    from litellm.proxy.management_endpoints.organization_endpoints import (
+        get_organization_daily_activity,
+    )
+
+    mock_prisma_client = AsyncMock()
+    mock_prisma_client.db.litellm_organizationmembership.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id="company-123",
+                user_role=company_role,
+            )
+        ]
+    )
+    mock_prisma_client.db.litellm_organizationtable.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id="company-123",
+                organization_alias="Acme Company",
+            )
+        ]
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    monkeypatch.setattr(
+        "litellm.proxy.management_endpoints.organization_endpoints._user_has_admin_view",
+        lambda _: False,
+    )
+
+    captured = {}
+
+    async def _fake_get_daily_activity(**kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    get_daily_activity_mock = AsyncMock(side_effect=_fake_get_daily_activity)
+    monkeypatch.setattr(
+        organization_endpoints, "get_daily_activity", get_daily_activity_mock
+    )
+
+    auth = UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="company-member",
+    )
+    await get_organization_daily_activity(
+        organization_ids=None,
+        company_ids=None,
+        company_id="company-123",
+        start_date="2026-05-18",
+        end_date="2026-05-18",
+        model=None,
+        api_key="runtime-key-hash",
+        page=1,
+        page_size=10,
+        exclude_organization_ids=None,
+        exclude_company_ids=None,
+        exclude_company_id=None,
+        user_api_key_dict=auth,
+    )
+
+    assert captured["table_name"] == "litellm_dailyorganizationspend"
+    assert captured["entity_id"] == ["company-123"]
+    assert captured["api_key"] == "runtime-key-hash"
+
+
+@pytest.mark.asyncio
+async def test_get_company_daily_activity_non_admin_rejects_cross_company_scope(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
+    from litellm.proxy.management_endpoints import organization_endpoints
+    from litellm.proxy.management_endpoints.organization_endpoints import (
+        get_organization_daily_activity,
+    )
+
+    mock_prisma_client = AsyncMock()
+    mock_prisma_client.db.litellm_organizationmembership.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id="company-123",
+                user_role=LitellmUserRoles.ORG_ADMIN.value,
+            )
+        ]
+    )
+    mock_prisma_client.db.litellm_organizationtable.find_many = AsyncMock(
+        return_value=[]
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    monkeypatch.setattr(
+        "litellm.proxy.management_endpoints.organization_endpoints._user_has_admin_view",
+        lambda _: False,
+    )
+
+    get_daily_activity_mock = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr(
+        organization_endpoints, "get_daily_activity", get_daily_activity_mock
+    )
+
+    auth = UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="company-admin",
+    )
+    with pytest.raises(HTTPException) as exc:
+        await get_organization_daily_activity(
+            organization_ids=None,
+            company_ids=None,
+            company_id="company-999",
+            start_date="2026-05-18",
+            end_date="2026-05-18",
+            model=None,
+            api_key="runtime-key-hash",
+            page=1,
+            page_size=10,
+            exclude_organization_ids=None,
+            exclude_company_ids=None,
+            exclude_company_id=None,
+            user_api_key_dict=auth,
+        )
+
+    assert exc.value.status_code == 403
+    get_daily_activity_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_company_daily_activity_proxy_admin_can_view_any_company_scope(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
+    from litellm.proxy.management_endpoints import organization_endpoints
+    from litellm.proxy.management_endpoints.organization_endpoints import (
+        get_organization_daily_activity,
+    )
+
+    mock_prisma_client = AsyncMock()
+    mock_prisma_client.db.litellm_organizationmembership.find_many = AsyncMock(
+        return_value=[]
+    )
+    mock_prisma_client.db.litellm_organizationtable.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id="company-999",
+                organization_alias="Other Company",
+            )
+        ]
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    monkeypatch.setattr(
+        "litellm.proxy.management_endpoints.organization_endpoints._user_has_admin_view",
+        lambda _: True,
+    )
+
+    captured = {}
+
+    async def _fake_get_daily_activity(**kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    get_daily_activity_mock = AsyncMock(side_effect=_fake_get_daily_activity)
+    monkeypatch.setattr(
+        organization_endpoints, "get_daily_activity", get_daily_activity_mock
+    )
+
+    auth = UserAPIKeyAuth(
+        user_role=LitellmUserRoles.PROXY_ADMIN,
+        user_id="proxy-admin",
+    )
+    await get_organization_daily_activity(
+        organization_ids=None,
+        company_ids=None,
+        company_id="company-999",
+        start_date="2026-05-18",
+        end_date="2026-05-18",
+        model=None,
+        api_key="runtime-key-hash",
+        page=1,
+        page_size=10,
+        exclude_organization_ids=None,
+        exclude_company_ids=None,
+        exclude_company_id=None,
+        user_api_key_dict=auth,
+    )
+
+    mock_prisma_client.db.litellm_organizationmembership.find_many.assert_not_awaited()
+    assert captured["entity_id"] == ["company-999"]
 
 
 @pytest.mark.asyncio
@@ -472,6 +1015,48 @@ async def test_list_organization_filter_by_org_id(monkeypatch):
         "litellm_budget_table": True,
         "members": True,
         "teams": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_list_company_filters_use_product_aliases(monkeypatch):
+    """
+    Product-facing company filters map to LiteLLM organization fields.
+    """
+    from types import SimpleNamespace
+
+    from litellm.proxy._types import LitellmUserRoles, UserAPIKeyAuth
+    from litellm.proxy.management_endpoints.organization_endpoints import (
+        list_organization,
+    )
+
+    mock_prisma_client = AsyncMock()
+    mock_org = SimpleNamespace(
+        organization_id="company-123",
+        organization_alias="Acme Company",
+        model_dump=lambda: {
+            "organization_id": "company-123",
+            "organization_alias": "Acme Company",
+        },
+    )
+    mock_prisma_client.db.litellm_organizationtable.find_many = AsyncMock(
+        return_value=[mock_org]
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+
+    auth = UserAPIKeyAuth(user_role=LitellmUserRoles.PROXY_ADMIN, user_id="admin-user")
+
+    result = await list_organization(
+        company_id="company-123",
+        company_name="acme",
+        user_api_key_dict=auth,
+    )
+
+    assert len(result) == 1
+    call_args = mock_prisma_client.db.litellm_organizationtable.find_many.call_args
+    assert call_args.kwargs["where"] == {
+        "organization_id": "company-123",
+        "organization_alias": {"contains": "acme", "mode": "insensitive"},
     }
 
 

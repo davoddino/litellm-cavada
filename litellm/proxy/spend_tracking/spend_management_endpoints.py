@@ -1707,6 +1707,19 @@ async def ui_view_spend_logs(  # noqa: PLR0915
         default=None,
         description="Filter spend logs by team_id",
     ),
+    company_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Filter spend logs by company_id",
+    ),
+    organization_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="LiteLLM compatibility alias for company_id",
+        include_in_schema=False,
+    ),
+    project_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Filter spend logs by project_id",
+    ),
     min_spend: Optional[float] = fastapi.Query(
         default=None,
         description="Filter logs with spend greater than or equal to this value",
@@ -1764,6 +1777,8 @@ async def ui_view_spend_logs(  # noqa: PLR0915
     """
     View spend logs with pagination support.
     Available at both `/spend/logs/v2` (public API) and `/spend/logs/ui` (internal UI).
+    Product-facing tenant filters are `company_id` and `project_id`.
+    `organization_id` remains accepted only as a LiteLLM compatibility alias for `company_id`.
 
     Returns paginated response with data, total, page, page_size, and total_pages.
 
@@ -1845,12 +1860,21 @@ async def ui_view_spend_logs(  # noqa: PLR0915
         end_date_iso = end_date_obj.isoformat()  # Already in UTC, no need to add Z
 
         # Build where conditions
+        organization_id = _resolve_company_id_filter(
+            company_id=company_id, organization_id=organization_id
+        )
+        project_id = project_id if isinstance(project_id, str) else None
+
         where_conditions: dict[str, Any] = {
             "startTime": {"gte": start_date_iso, "lte": end_date_iso},
         }
 
         if team_id is not None:
             where_conditions["team_id"] = team_id
+        if organization_id is not None:
+            where_conditions["organization_id"] = organization_id
+        if project_id is not None:
+            where_conditions["project_id"] = project_id
 
         status_condition = _build_status_filter_condition(status_filter)
         if status_condition:
@@ -1915,8 +1939,30 @@ async def ui_view_spend_logs(  # noqa: PLR0915
                 where_conditions["spend"]["lte"] = max_spend
         is_admin_view = _is_admin_view_safe(user_api_key_dict=user_api_key_dict)
         permitted_team_ids: Optional[List[str]] = None
+        tenant_filter_requested = organization_id is not None or project_id is not None
         if not is_admin_view:
-            if team_id is not None:
+            if project_id is not None:
+                project_company_id = await _assert_user_can_view_project_spend_logs(
+                    prisma_client=prisma_client,
+                    user_api_key_dict=user_api_key_dict,
+                    project_id=project_id,
+                )
+                if organization_id is not None:
+                    _assert_project_belongs_to_company_for_spend_logs(
+                        project_id=project_id,
+                        project_company_id=project_company_id,
+                        company_id=organization_id,
+                    )
+            elif organization_id is not None:
+                await _assert_user_can_view_company_spend_logs(
+                    prisma_client=prisma_client,
+                    user_api_key_dict=user_api_key_dict,
+                    company_id=organization_id,
+                )
+
+            if tenant_filter_requested:
+                where_conditions.pop("user", None)
+            elif team_id is not None:
                 can_view_team = await _can_team_member_view_log(
                     prisma_client=prisma_client,
                     user_api_key_dict=user_api_key_dict,
@@ -1989,6 +2035,8 @@ async def ui_view_spend_logs(  # noqa: PLR0915
         # Equality filters - read effective values from where_conditions (post-authorization)
         for sql_col, wc_key in [
             ("team_id", "team_id"),
+            ("organization_id", "organization_id"),
+            ("project_id", "project_id"),
             ('"user"', "user"),
             ("api_key", "api_key"),
             ("request_id", "request_id"),
@@ -2075,7 +2123,7 @@ async def ui_view_spend_logs(  # noqa: PLR0915
                 "completionStartTime", model, model_id, model_group,
                 custom_llm_provider, api_base, "user", metadata,
                 cache_hit, cache_key, request_tags, team_id,
-                organization_id, end_user, requester_ip_address,
+                organization_id, project_id, end_user, requester_ip_address,
                 session_id, status, mcp_namespaced_tool_name, agent_id,
                 COALESCE(request_duration_ms, (EXTRACT(EPOCH FROM ("endTime" - "startTime")) * 1000)::INTEGER) AS request_duration_ms
             FROM "LiteLLM_SpendLogs"
@@ -2217,6 +2265,19 @@ async def view_spend_logs(  # noqa: PLR0915
         default=None,
         description="request_id to get spend logs for specific request_id. If none passed then pass spend logs for all requests",
     ),
+    company_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Filter spend logs by company_id",
+    ),
+    organization_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="LiteLLM compatibility alias for company_id",
+        include_in_schema=False,
+    ),
+    project_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Filter spend logs by project_id",
+    ),
     start_date: Optional[str] = fastapi.Query(
         default=None,
         description="Time from which to start viewing key spend",
@@ -2240,6 +2301,8 @@ async def view_spend_logs(  # noqa: PLR0915
     When start_date and end_date are provided:
     - summarize=true (default): Returns aggregated spend data grouped by date (maintains backward compatibility)
     - summarize=false: Returns filtered individual log entries within the date range
+    Product-facing tenant filters are `company_id` and `project_id`.
+    `organization_id` remains accepted only as a LiteLLM compatibility alias for `company_id`.
 
     Example Request for all logs
     ```
@@ -2273,6 +2336,11 @@ async def view_spend_logs(  # noqa: PLR0915
     """
     from litellm.proxy.proxy_server import prisma_client
 
+    organization_id = _resolve_company_id_filter(
+        company_id=company_id, organization_id=organization_id
+    )
+    project_id = project_id if isinstance(project_id, str) else None
+
     if (
         user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER
         or user_api_key_dict.user_role == LitellmUserRoles.INTERNAL_USER_VIEW_ONLY
@@ -2285,6 +2353,28 @@ async def view_spend_logs(  # noqa: PLR0915
             raise Exception(
                 "Database not connected. Connect a database to your proxy - https://docs.litellm.ai/docs/simple_proxy#managing-auth---virtual-keys"
             )
+        is_admin_view = _is_admin_view_safe(user_api_key_dict=user_api_key_dict)
+        if not is_admin_view:
+            if organization_id is not None:
+                await _assert_user_can_view_company_spend_logs(
+                    prisma_client=prisma_client,
+                    user_api_key_dict=user_api_key_dict,
+                    company_id=organization_id,
+                )
+            if project_id is not None:
+                project_company_id = await _assert_user_can_view_project_spend_logs(
+                    prisma_client=prisma_client,
+                    user_api_key_dict=user_api_key_dict,
+                    project_id=project_id,
+                )
+                if organization_id is not None:
+                    _assert_project_belongs_to_company_for_spend_logs(
+                        project_id=project_id,
+                        project_company_id=project_company_id,
+                        company_id=organization_id,
+                    )
+            if organization_id is not None or project_id is not None:
+                user_id = None
         spend_logs = []
         if (
             start_date is not None
@@ -2320,6 +2410,10 @@ async def view_spend_logs(  # noqa: PLR0915
                 filter_query["request_id"] = request_id  # type: ignore
             if user_id is not None and isinstance(user_id, str):
                 filter_query["user"] = user_id  # type: ignore
+            if organization_id is not None:
+                filter_query["organization_id"] = organization_id  # type: ignore
+            if project_id is not None:
+                filter_query["project_id"] = project_id  # type: ignore
 
             # Check if user wants unsummarized data
             if not summarize:
@@ -2330,7 +2424,10 @@ async def view_spend_logs(  # noqa: PLR0915
                         "startTime": "desc",
                     },
                 )
-                return data
+                return await _enrich_spend_log_rows_with_tenant_names(
+                    prisma_client=prisma_client,
+                    rows=[_spend_log_row_with_company_alias(row) for row in data],
+                )
 
             # Legacy behavior: return summarized data (when summarize=true)
             # SQL query
@@ -2405,6 +2502,10 @@ async def view_spend_logs(  # noqa: PLR0915
                 scoped_filter["request_id"] = request_id
             if user_id is not None and isinstance(user_id, str):
                 scoped_filter["user"] = user_id
+            if organization_id is not None:
+                scoped_filter["organization_id"] = organization_id
+            if project_id is not None:
+                scoped_filter["project_id"] = project_id
 
             if not scoped_filter:
                 spend_logs = await prisma_client.get_data(
@@ -2416,7 +2517,10 @@ async def view_spend_logs(  # noqa: PLR0915
                 where=scoped_filter,  # type: ignore
                 order={"startTime": "desc"},
             )
-            return data
+            return await _enrich_spend_log_rows_with_tenant_names(
+                prisma_client=prisma_client,
+                rows=[_spend_log_row_with_company_alias(row) for row in data],
+            )
 
         return None
 
@@ -3354,7 +3458,7 @@ async def ui_view_session_spend_logs(
                 "completionStartTime", model, model_id, model_group,
                 custom_llm_provider, api_base, "user", metadata,
                 cache_hit, cache_key, request_tags, team_id,
-                organization_id, end_user, requester_ip_address,
+                organization_id, project_id, end_user, requester_ip_address,
                 session_id, status, mcp_namespaced_tool_name, agent_id
             FROM "LiteLLM_SpendLogs"
             WHERE session_id = $1
@@ -3367,8 +3471,13 @@ async def ui_view_session_spend_logs(
 
         total_pages = (total_records + page_size - 1) // page_size
 
+        response_data = await _enrich_spend_log_rows_with_tenant_names(
+            prisma_client=prisma_client,
+            rows=[_spend_log_row_with_company_alias(row) for row in result],
+        )
+
         return {
-            "data": result,
+            "data": response_data,
             "total": total_records,
             "page": page,
             "page_size": page_size,
@@ -3457,16 +3566,18 @@ async def _build_ui_spend_logs_response(
     if enrich_session_counts:
         enriched: List[dict] = []
         for row in data:
-            row_dict = dict(row) if isinstance(row, dict) else row.model_dump()
+            row_dict = _spend_log_row_with_company_alias(row)
             sid = row_dict.get("session_id")
             row_dict["session_total_count"] = count_map.get(sid, 1) if sid else 1
             enriched.append(row_dict)
         response_data: list = enriched
     else:
-        # v2 path: return raw Prisma model instances so FastAPI applies its
-        # own Pydantic-aware serialisation (preserves alias handling, custom
-        # serializers, etc.).
-        response_data = data  # type: ignore[assignment]
+        response_data = [_spend_log_row_with_company_alias(row) for row in data]
+
+    response_data = await _enrich_spend_log_rows_with_tenant_names(
+        prisma_client=prisma_client,
+        rows=response_data,
+    )
 
     return {
         "data": response_data,
@@ -3494,6 +3605,196 @@ def _build_status_filter_condition(status_filter: Optional[str]) -> Dict[str, An
         return {"OR": [{"status": {"equals": "success"}}, {"status": None}]}
     else:
         return {"status": {"equals": status_filter}}
+
+
+def _resolve_company_id_filter(
+    company_id: Optional[str], organization_id: Optional[str]
+) -> Optional[str]:
+    """Resolve product-facing company_id to LiteLLM's internal organization_id."""
+    company_id = company_id if isinstance(company_id, str) else None
+    organization_id = organization_id if isinstance(organization_id, str) else None
+    if company_id and organization_id and company_id != organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "company_id and organization_id refer to the same tenant and must match when both are provided."
+            },
+        )
+    return company_id or organization_id
+
+
+def _spend_log_row_with_company_alias(row: Any) -> Dict[str, Any]:
+    row_dict = dict(row) if isinstance(row, dict) else row.model_dump()
+    company_id = row_dict.get("company_id") or row_dict.get("organization_id")
+    if company_id is not None:
+        row_dict["company_id"] = company_id
+    return row_dict
+
+
+def _unique_non_empty_strings(values: List[Any]) -> List[str]:
+    return sorted({value for value in values if isinstance(value, str) and value})
+
+
+async def _enrich_spend_log_rows_with_tenant_names(
+    prisma_client: "PrismaClient",
+    rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    company_ids = _unique_non_empty_strings(
+        [row.get("company_id") or row.get("organization_id") for row in rows]
+    )
+    project_ids = _unique_non_empty_strings([row.get("project_id") for row in rows])
+
+    company_names: Dict[str, str] = {}
+    organization_table = getattr(
+        getattr(prisma_client, "db", None), "litellm_organizationtable", None
+    )
+    organization_find_many = getattr(organization_table, "find_many", None)
+    if company_ids and callable(organization_find_many):
+        organizations = await organization_find_many(
+            where={"organization_id": {"in": company_ids}}
+        )
+        company_names = {
+            organization.organization_id: organization.organization_alias
+            for organization in organizations
+            if getattr(organization, "organization_id", None)
+            and getattr(organization, "organization_alias", None)
+        }
+
+    project_names: Dict[str, str] = {}
+    project_table = getattr(
+        getattr(prisma_client, "db", None), "litellm_projecttable", None
+    )
+    project_find_many = getattr(project_table, "find_many", None)
+    if project_ids and callable(project_find_many):
+        projects = await project_find_many(where={"project_id": {"in": project_ids}})
+        project_names = {
+            project.project_id: project.project_alias
+            for project in projects
+            if getattr(project, "project_id", None)
+            and getattr(project, "project_alias", None)
+        }
+
+    for row in rows:
+        company_id = row.get("company_id") or row.get("organization_id")
+        if isinstance(company_id, str) and company_names.get(company_id):
+            row["company_name"] = company_names[company_id]
+        project_id = row.get("project_id")
+        if isinstance(project_id, str) and project_names.get(project_id):
+            row["project_name"] = project_names[project_id]
+
+    return rows
+
+
+def _project_company_id_for_spend_logs(project_row: Any) -> Optional[str]:
+    company_id = getattr(project_row, "company_id", None)
+    if isinstance(company_id, str) and company_id:
+        return company_id
+
+    team_row = getattr(project_row, "litellm_team_table", None)
+    if isinstance(team_row, dict):
+        company_id = team_row.get("organization_id")
+    elif team_row is not None:
+        company_id = getattr(team_row, "organization_id", None)
+    return company_id if isinstance(company_id, str) and company_id else None
+
+
+def _assert_project_belongs_to_company_for_spend_logs(
+    *, project_id: str, project_company_id: Optional[str], company_id: str
+) -> None:
+    if project_company_id == company_id:
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "error": "Project project_id={} does not belong to company_id={}".format(
+                project_id, company_id
+            )
+        },
+    )
+
+
+async def _is_company_admin_for_spend_logs(
+    prisma_client: "PrismaClient",
+    user_api_key_dict: UserAPIKeyAuth,
+    company_id: str,
+) -> bool:
+    if not user_api_key_dict.user_id:
+        return False
+
+    membership = await prisma_client.db.litellm_organizationmembership.find_unique(
+        where={
+            "user_id_organization_id": {
+                "user_id": user_api_key_dict.user_id,
+                "organization_id": company_id,
+            }
+        }
+    )
+    return (
+        membership is not None
+        and getattr(membership, "user_role", None) == LitellmUserRoles.ORG_ADMIN.value
+    )
+
+
+async def _assert_user_can_view_company_spend_logs(
+    prisma_client: "PrismaClient",
+    user_api_key_dict: UserAPIKeyAuth,
+    company_id: str,
+) -> None:
+    if await _is_company_admin_for_spend_logs(
+        prisma_client=prisma_client,
+        user_api_key_dict=user_api_key_dict,
+        company_id=company_id,
+    ):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "error": "User is not company admin for company_id={}".format(company_id)
+        },
+    )
+
+
+async def _assert_user_can_view_project_spend_logs(
+    prisma_client: "PrismaClient",
+    user_api_key_dict: UserAPIKeyAuth,
+    project_id: str,
+) -> Optional[str]:
+    project_row = await prisma_client.db.litellm_projecttable.find_unique(
+        where={"project_id": project_id},
+        include={"litellm_team_table": True},
+    )
+    if project_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "Project not found for project_id={}".format(project_id)},
+        )
+
+    project_company_id = _project_company_id_for_spend_logs(project_row)
+    team_id = getattr(project_row, "team_id", None)
+    if team_id and await _can_team_member_view_log(
+        prisma_client=prisma_client,
+        user_api_key_dict=user_api_key_dict,
+        team_id=team_id,
+    ):
+        return project_company_id
+
+    team_row = getattr(project_row, "litellm_team_table", None)
+    company_id = project_company_id or getattr(team_row, "organization_id", None)
+    if company_id and await _is_company_admin_for_spend_logs(
+        prisma_client=prisma_client,
+        user_api_key_dict=user_api_key_dict,
+        company_id=company_id,
+    ):
+        return project_company_id
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "error": "Not authorized to view project spend for project_id={}".format(
+                project_id
+            )
+        },
+    )
 
 
 def _is_admin_view_safe(user_api_key_dict: UserAPIKeyAuth) -> bool:

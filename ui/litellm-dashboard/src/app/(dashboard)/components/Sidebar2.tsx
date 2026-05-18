@@ -92,7 +92,7 @@ const routeFor = (slug: string): string => {
     case "teams":
       return "teams";
     case "organizations":
-      return "organizations";
+      return "companies";
     case "users":
       return "users";
     case "api_ref":
@@ -184,7 +184,7 @@ const menuItems: MenuItemCfg[] = [
   {
     key: "17",
     page: "organizations",
-    label: "Organizations",
+    label: "Companies",
     icon: <BankOutlined style={{ fontSize: 18 }} />,
     roles: all_admin_roles,
   },

@@ -81,12 +81,12 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
       };
       const response = await organizationMemberAddCall(accessToken, organizationId, member);
 
-      NotificationsManager.success("Organization member added successfully");
+      NotificationsManager.success("Company member added successfully");
       setIsAddMemberModalVisible(false);
       form.resetFields();
       queryClient.invalidateQueries({ queryKey: organizationKeys.all });
     } catch (error) {
-      NotificationsManager.fromBackend("Failed to add organization member");
+      NotificationsManager.fromBackend("Failed to add company member");
       console.error("Error adding organization member:", error);
     }
   };
@@ -102,12 +102,12 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
       };
 
       const response = await organizationMemberUpdateCall(accessToken, organizationId, member);
-      NotificationsManager.success("Organization member updated successfully");
+      NotificationsManager.success("Company member updated successfully");
       setIsEditMemberModalVisible(false);
       form.resetFields();
       queryClient.invalidateQueries({ queryKey: organizationKeys.all });
     } catch (error) {
-      NotificationsManager.fromBackend("Failed to update organization member");
+      NotificationsManager.fromBackend("Failed to update company member");
       console.error("Error updating organization member:", error);
     }
   };
@@ -117,12 +117,12 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
       if (!accessToken) return;
 
       await organizationMemberDeleteCall(accessToken, organizationId, values.user_id);
-      NotificationsManager.success("Organization member deleted successfully");
+      NotificationsManager.success("Company member deleted successfully");
       setIsEditMemberModalVisible(false);
       form.resetFields();
       queryClient.invalidateQueries({ queryKey: organizationKeys.all });
     } catch (error) {
-      NotificationsManager.fromBackend("Failed to delete organization member");
+      NotificationsManager.fromBackend("Failed to delete company member");
       console.error("Error deleting organization member:", error);
     }
   };
@@ -133,8 +133,8 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
       setIsOrgSaving(true);
 
       const updateData: any = {
-        organization_id: organizationId,
-        organization_alias: values.organization_alias,
+        company_id: organizationId,
+        company_name: values.company_name,
         models: values.models,
         litellm_budget_table: {
           tpm_limit: values.tpm_limit,
@@ -168,11 +168,11 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
 
       const response = await organizationUpdateCall(accessToken, updateData);
 
-      NotificationsManager.success("Organization settings updated successfully");
+      NotificationsManager.success("Company settings updated successfully");
       setIsEditing(false);
       queryClient.invalidateQueries({ queryKey: organizationKeys.all });
     } catch (error) {
-      NotificationsManager.fromBackend("Failed to update organization settings");
+      NotificationsManager.fromBackend("Failed to update company settings");
       console.error("Error updating organization:", error);
     } finally {
       setIsOrgSaving(false);
@@ -184,8 +184,10 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
   }
 
   if (!orgData) {
-    return <div className="p-4">Organization not found</div>;
+    return <div className="p-4">Company not found</div>;
   }
+
+  const companyName = orgData.company_name || orgData.organization_alias;
 
   const copyToClipboard = async (text: string | null | undefined, key: string) => {
     const success = await utilCopyToClipboard(text);
@@ -237,9 +239,9 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
       <div className="flex justify-between items-center mb-6">
         <div>
           <TremorButton icon={ArrowLeftIcon} onClick={onClose} variant="light" className="mb-4">
-            Back to Organizations
+            Back to Companies
           </TremorButton>
-          <Title>{orgData.organization_alias}</Title>
+          <Title>{companyName}</Title>
           <div className="flex items-center cursor-pointer">
             <Text className="text-gray-500 font-mono">{orgData.organization_id}</Text>
             <Button
@@ -266,7 +268,7 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
             children: (
               <Grid numItems={1} numItemsSm={2} numItemsLg={3} className="gap-6">
                 <Card>
-                  <Text>Organization Details</Text>
+                  <Text>Company Details</Text>
                   <div className="mt-2">
                     <Text>Created: {new Date(orgData.created_at).toLocaleDateString()}</Text>
                     <Text>Updated: {new Date(orgData.updated_at).toLocaleDateString()}</Text>
@@ -352,7 +354,7 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
                   }}
                   onDelete={(member) => handleMemberDelete(member)}
                   onAddMember={() => setIsAddMemberModalVisible(true)}
-                  roleColumnTitle="Organization Role"
+                  roleColumnTitle="Company Role"
                   extraColumns={orgExtraColumns}
                   emptyText="No members found"
                 />
@@ -365,7 +367,7 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
             children: (
               <Card className="overflow-y-auto max-h-[65vh]">
                 <div className="flex justify-between items-center mb-4">
-                  <Title>Organization Settings</Title>
+                  <Title>Company Settings</Title>
                   {canEditOrg && !isEditing && (
                     <TremorButton onClick={() => setIsEditing(true)}>Edit Settings</TremorButton>
                   )}
@@ -376,7 +378,7 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
                     form={form}
                     onFinish={handleOrgUpdate}
                     initialValues={{
-                      organization_alias: orgData.organization_alias,
+                      company_name: companyName,
                       models: orgData.models,
                       tpm_limit: orgData.litellm_budget_table.tpm_limit,
                       rpm_limit: orgData.litellm_budget_table.rpm_limit,
@@ -392,12 +394,12 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
                     layout="vertical"
                   >
                     <Form.Item
-                      label="Organization Name"
-                      name="organization_alias"
+                      label="Company Name"
+                      name="company_name"
                       rules={[
                         {
                           required: true,
-                          message: "Please input an organization name",
+                          message: "Please input a company name",
                         },
                       ]}
                     >
@@ -472,11 +474,11 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
                 ) : (
                   <div className="space-y-4">
                     <div>
-                      <Text className="font-medium">Organization Name</Text>
-                      <div>{orgData.organization_alias}</div>
+                      <Text className="font-medium">Company Name</Text>
+                      <div>{companyName}</div>
                     </div>
                     <div>
-                      <Text className="font-medium">Organization ID</Text>
+                      <Text className="font-medium">Company ID</Text>
                       <div className="font-mono">{orgData.organization_id}</div>
                     </div>
                     <div>
@@ -527,22 +529,22 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
         onCancel={() => setIsAddMemberModalVisible(false)}
         onSubmit={handleMemberAdd}
         accessToken={accessToken}
-        title="Add Organization Member"
+        title="Add Company Member"
         roles={[
           {
-            label: "org_admin",
+            label: "Company Admin",
             value: "org_admin",
             description: "Can add and remove members, and change their roles.",
           },
           {
-            label: "internal_user",
+            label: "Internal User",
             value: "internal_user",
-            description: "Can view/create keys for themselves within organization.",
+            description: "Can view/create keys for themselves within company.",
           },
           {
-            label: "internal_user_viewer",
+            label: "Internal User Viewer",
             value: "internal_user_viewer",
-            description: "Can only view their keys within organization.",
+            description: "Can only view their keys within company.",
           },
         ]}
         defaultRole="internal_user"
@@ -558,7 +560,7 @@ const OrganizationInfoView: React.FC<OrganizationInfoProps> = ({
           showEmail: true,
           showUserId: true,
           roleOptions: [
-            { label: "Org Admin", value: "org_admin" },
+            { label: "Company Admin", value: "org_admin" },
             { label: "Internal User", value: "internal_user" },
             { label: "Internal User Viewer", value: "internal_user_viewer" },
           ],

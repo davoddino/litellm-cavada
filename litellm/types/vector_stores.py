@@ -41,7 +41,13 @@ class LiteLLM_ManagedVectorStore(TypedDict, total=False):
 
     # access control fields
     team_id: Optional[str]
+    project_id: Optional[str]
     user_id: Optional[str]
+
+    # CavadaLabs product context fields returned by management APIs
+    company_id: Optional[str]
+    company_name: Optional[str]
+    project_name: Optional[str]
 
 
 class LiteLLM_ManagedVectorStoreListResponse(TypedDict, total=False):
@@ -60,6 +66,8 @@ class VectorStoreUpdateRequest(BaseModel):
     vector_store_name: Optional[str] = None
     vector_store_description: Optional[str] = None
     vector_store_metadata: Optional[Dict] = None
+    company_id: Optional[str] = None
+    project_id: Optional[str] = None
 
 
 class VectorStoreDeleteRequest(BaseModel):
@@ -172,6 +180,8 @@ class VectorStoreCreateOptionalRequestParams(TypedDict, total=False):
         VectorStoreChunkingStrategy
     ]  # Chunking strategy for the files
     metadata: Optional[Dict[str, str]]  # Set of key-value pairs for metadata
+    company_id: Optional[str]  # CavadaLabs Company context for managed vector stores
+    project_id: Optional[str]  # CavadaLabs Project context for managed vector stores
 
 
 class VectorStoreCreateRequest(VectorStoreCreateOptionalRequestParams, total=False):

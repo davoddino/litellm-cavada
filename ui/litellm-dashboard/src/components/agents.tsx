@@ -11,7 +11,7 @@ import {
   Badge,
   Text,
 } from "@tremor/react";
-import { Modal, Alert, Tooltip, Skeleton, Switch } from "antd";
+import { Modal, Alert, Tooltip, Skeleton, Switch, Select } from "antd";
 import { CheckCircleOutlined } from "@ant-design/icons";
 import { getAgentsList, deleteAgentCall, keyListCall } from "./networking";
 import AddAgentForm from "./agents/add_agent_form";
@@ -22,6 +22,10 @@ import { Agent, AgentKeyInfo } from "./agents/types";
 import { Team } from "./key_team_helpers/key_list";
 import { formatNumberWithCommas } from "@/utils/dataUtils";
 import TableIconActionButton from "./common_components/IconActionButton/TableIconActionButtons/TableIconActionButton";
+import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
+import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
+import ProjectDropdown from "./common_components/ProjectDropdown";
+import { getCompanyDisplayId, getCompanyDisplayName } from "./common_components/OrganizationDropdown";
 
 interface AgentsPanelProps {
   accessToken: string | null;
@@ -33,7 +37,19 @@ interface AgentsResponse {
   agents: Agent[];
 }
 
+interface AgentListFilters {
+  company_id?: string | null;
+  project_id?: string | null;
+}
+
+const emptyAgentListFilters: AgentListFilters = {
+  company_id: null,
+  project_id: null,
+};
+
 const AgentsPanel: React.FC<AgentsPanelProps> = ({ accessToken, userRole, teams }) => {
+  const { data: companies = [], isLoading: isCompaniesLoading } = useOrganizations();
+  const { data: projects = [], isLoading: isProjectsLoading } = useProjects({ includeNonAdmin: true });
   const [agentsList, setAgentsList] = useState<Agent[]>([]);
   const [keyInfoMap, setKeyInfoMap] = useState<Record<string, AgentKeyInfo>>({});
   const [isAddModalVisible, setIsAddModalVisible] = useState(false);
@@ -42,17 +58,25 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({ accessToken, userRole, teams 
   const [agentToDelete, setAgentToDelete] = useState<{ id: string; name: string } | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [healthCheckEnabled, setHealthCheckEnabled] = useState(false);
+  const [agentFilters, setAgentFilters] = useState<AgentListFilters>(emptyAgentListFilters);
 
   const isAdmin = userRole ? isAdminRole(userRole) : false;
 
-  const fetchAgents = async (healthCheck?: boolean) => {
+  const fetchAgents = async (
+    healthCheck?: boolean,
+    filters: AgentListFilters = agentFilters,
+  ) => {
     if (!accessToken) {
       return;
     }
 
     setIsLoading(true);
     try {
-      const response: AgentsResponse = await getAgentsList(accessToken, healthCheck ?? healthCheckEnabled);
+      const response: AgentsResponse = await getAgentsList(
+        accessToken,
+        healthCheck ?? healthCheckEnabled,
+        filters,
+      );
       setAgentsList(response.agents || []);
     } catch (error) {
       console.error("Error fetching agents:", error);
@@ -107,7 +131,30 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({ accessToken, userRole, teams 
 
   const handleHealthCheckToggle = (checked: boolean) => {
     setHealthCheckEnabled(checked);
-    fetchAgents(checked);
+    fetchAgents(checked, agentFilters);
+  };
+
+  const handleCompanyFilterChange = (companyId?: string) => {
+    const nextFilters = {
+      company_id: companyId || null,
+      project_id: null,
+    };
+    setAgentFilters(nextFilters);
+    fetchAgents(undefined, nextFilters);
+  };
+
+  const handleProjectFilterChange = (projectId?: string) => {
+    const nextFilters = {
+      ...agentFilters,
+      project_id: projectId || null,
+    };
+    setAgentFilters(nextFilters);
+    fetchAgents(undefined, nextFilters);
+  };
+
+  const handleClearFilters = () => {
+    setAgentFilters(emptyAgentListFilters);
+    fetchAgents(undefined, emptyAgentListFilters);
   };
 
   const handleAddAgent = () => {
@@ -122,7 +169,7 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({ accessToken, userRole, teams 
   };
 
   const handleSuccess = () => {
-    fetchAgents();
+    fetchAgents(undefined, agentFilters);
   };
 
   const handleDeleteClick = (agentId: string, agentName: string) => {
@@ -136,7 +183,7 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({ accessToken, userRole, teams 
     try {
       await deleteAgentCall(accessToken, agentToDelete.id);
       NotificationsManager.success(`Agent "${agentToDelete.name}" deleted successfully`);
-      fetchAgents();
+      fetchAgents(undefined, agentFilters);
     } catch (error) {
       console.error("Error deleting agent:", error);
       NotificationsManager.fromBackend("Failed to delete agent");
@@ -156,13 +203,13 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({ accessToken, userRole, teams 
     return dateB - dateA;
   });
 
-  const columnCount = isAdmin ? 7 : 6;
+  const columnCount = isAdmin ? 9 : 8;
 
   return (
     <div className="w-full mx-auto flex-auto overflow-y-auto m-8 p-2">
       <div className="flex flex-col gap-2 mb-4">
         <h1 className="text-2xl font-bold">Agents</h1>
-        <p className="text-sm text-gray-600">List of A2A-spec agents that are available to be used in your organization. Go to AI Hub, to make agents public.</p>
+        <p className="text-sm text-gray-600">List of A2A-spec agents available for your Company and Project context. Go to AI Hub to make agents public.</p>
         <Alert
           message="Why do agents need keys?"
           description="Keys scope access to an agent and allow it to call MCP tools. Assign a key when creating an agent or from the Virtual Keys page."
@@ -189,6 +236,61 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({ accessToken, userRole, teams 
             </div>
           </Tooltip>
         </div>
+        <div className="mt-2 flex flex-wrap items-end gap-3">
+          <div className="flex flex-col gap-1">
+            <label htmlFor="agent-company-filter" className="text-sm font-medium text-gray-700">
+              Company
+            </label>
+            <Select
+              id="agent-company-filter"
+              showSearch
+              placeholder="All Companies"
+              value={agentFilters.company_id || undefined}
+              onChange={handleCompanyFilterChange}
+              disabled={!accessToken}
+              loading={isCompaniesLoading}
+              allowClear
+              style={{ minWidth: 280 }}
+              filterOption={(input, option) => {
+                const company = companies.find((item) => getCompanyDisplayId(item) === option?.value);
+                if (!company) return false;
+                const searchTerm = input.toLowerCase().trim();
+                return (
+                  getCompanyDisplayName(company).toLowerCase().includes(searchTerm) ||
+                  getCompanyDisplayId(company).toLowerCase().includes(searchTerm)
+                );
+              }}
+            >
+              {companies.map((company) => {
+                const companyId = getCompanyDisplayId(company);
+                return (
+                  <Select.Option key={companyId} value={companyId}>
+                    {getCompanyDisplayName(company)} ({companyId})
+                  </Select.Option>
+                );
+              })}
+            </Select>
+          </div>
+          <div className="flex flex-col gap-1">
+            <label htmlFor="agent-project-filter" className="text-sm font-medium text-gray-700">
+              Project
+            </label>
+            <ProjectDropdown
+              id="agent-project-filter"
+              projects={projects}
+              value={agentFilters.project_id || undefined}
+              onChange={handleProjectFilterChange}
+              disabled={!accessToken}
+              loading={isProjectsLoading}
+              companyId={agentFilters.company_id}
+            />
+          </div>
+          {(agentFilters.company_id || agentFilters.project_id) && (
+            <Button variant="light" onClick={handleClearFilters}>
+              Clear filters
+            </Button>
+          )}
+        </div>
       </div>
 
       {selectedAgentId ? (
@@ -208,6 +310,8 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({ accessToken, userRole, teams 
                 <TableRow>
                   <TableHeaderCell>Agent Name</TableHeaderCell>
                   <TableHeaderCell>Agent ID</TableHeaderCell>
+                  <TableHeaderCell>Company</TableHeaderCell>
+                  <TableHeaderCell>Project</TableHeaderCell>
                   <TableHeaderCell>Spend (USD)</TableHeaderCell>
                   <TableHeaderCell>Model</TableHeaderCell>
                   <TableHeaderCell>Created</TableHeaderCell>
@@ -239,6 +343,12 @@ const AgentsPanel: React.FC<AgentsPanelProps> = ({ accessToken, userRole, teams 
                             {agent.agent_id.slice(0, 7)}...
                           </Button>
                         </Tooltip>
+                      </TableCell>
+                      <TableCell>
+                        <Text>{agent.company_name || agent.company_id || "N/A"}</Text>
+                      </TableCell>
+                      <TableCell>
+                        <Text>{agent.project_name || agent.project_id || "N/A"}</Text>
                       </TableCell>
                       <TableCell>
                         <Text>{formatNumberWithCommas(agent.spend, 4)}</Text>

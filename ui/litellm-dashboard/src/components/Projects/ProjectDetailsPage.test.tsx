@@ -9,6 +9,11 @@ vi.mock("@/app/(dashboard)/hooks/projects/useProjectDetails", () => ({
   useProjectDetails: (id: string) => mockUseProjectDetails(id),
 }));
 
+const mockUseOrganizations = vi.fn();
+vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
+  useOrganizations: () => mockUseOrganizations(),
+}));
+
 const mockUseTeam = vi.fn();
 vi.mock("@/app/(dashboard)/hooks/teams/useTeams", () => ({
   useTeam: (id?: string) => mockUseTeam(id),
@@ -25,6 +30,7 @@ vi.mock("@/components/common_components/DefaultProxyAdminTag", () => ({
 
 const mockProject: ProjectResponse = {
   project_id: "proj-1",
+  company_id: "company-1",
   project_alias: "My Project",
   description: "A sample project",
   team_id: "team-1",
@@ -50,6 +56,17 @@ describe("ProjectDetail", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockUseTeam.mockReturnValue({ data: undefined, isLoading: false });
+    mockUseOrganizations.mockReturnValue({
+      data: [
+        {
+          company_id: "company-1",
+          company_name: "Acme Company",
+          organization_id: "company-1",
+          organization_alias: "Legacy Org",
+        },
+      ],
+      isLoading: false,
+    });
   });
 
   describe("when loading", () => {
@@ -137,6 +154,14 @@ describe("ProjectDetail", () => {
     it("should show the project description", () => {
       renderWithProviders(<ProjectDetail projectId="proj-1" onBack={onBack} />);
       expect(screen.getByText("A sample project")).toBeInTheDocument();
+    });
+
+    it("should show the Company context without Organization copy", () => {
+      renderWithProviders(<ProjectDetail projectId="proj-1" onBack={onBack} />);
+      expect(screen.getByText("Company")).toBeInTheDocument();
+      expect(screen.getByText("Acme Company")).toBeInTheDocument();
+      expect(screen.queryByText("Legacy Org")).not.toBeInTheDocument();
+      expect(screen.queryByText("Organization")).not.toBeInTheDocument();
     });
 
     it("should show an 'Edit Project' button", () => {

@@ -15,6 +15,23 @@ interface SelectionOptions {
   isIndeterminate: boolean;
 }
 
+const renderTenantList = (names?: string[], ids?: string[]) => {
+  const labels = names && names.length > 0 ? names : ids || [];
+  if (!labels || labels.length === 0) {
+    return <span className="text-xs">-</span>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {labels.slice(0, 2).map((label) => (
+        <Tag key={label} color="blue">
+          {label}
+        </Tag>
+      ))}
+      {labels.length > 2 && <Tag>+{labels.length - 2}</Tag>}
+    </div>
+  );
+};
+
 export const columns = (
   possibleUIRoles: Record<string, Record<string, string>>,
   handleEdit: (user: UserInfo) => void,
@@ -83,6 +100,18 @@ export const columns = (
       accessorKey: "user_role",
       enableSorting: true,
       cell: ({ row }) => <span className="text-xs">{possibleUIRoles?.[row.original.user_role]?.ui_label || "-"}</span>,
+    },
+    {
+      header: "Company",
+      accessorKey: "company_names",
+      enableSorting: false,
+      cell: ({ row }) => renderTenantList(row.original.company_names, row.original.company_ids),
+    },
+    {
+      header: "Project",
+      accessorKey: "project_names",
+      enableSorting: false,
+      cell: ({ row }) => renderTenantList(row.original.project_names, row.original.project_ids),
     },
     {
       header: "User Alias",

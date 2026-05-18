@@ -133,7 +133,8 @@ const FilterComponent: React.FC<FilterComponentProps> = ({
   const orderedFilters = [
     "Team ID",
     "Status",
-    "Organization ID",
+    "Company ID",
+    "Project ID",
     "Key Alias",
     "User ID",
     "End User",

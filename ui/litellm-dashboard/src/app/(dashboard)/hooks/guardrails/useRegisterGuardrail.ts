@@ -14,13 +14,16 @@ export interface RegisterGuardrailParams {
   guardrail_name: string;
   litellm_params: Record<string, unknown>;
   guardrail_info?: Record<string, unknown>;
-  team_id?: string;
+  company_id?: string;
+  project_id?: string;
 }
 
 export interface RegisterGuardrailResponse {
   guardrail_id: string;
   guardrail_name: string;
   status: string;
+  company_id?: string | null;
+  project_id?: string | null;
   submitted_at?: string | null;
 }
 

@@ -47,7 +47,7 @@ describe("Budget Panel", () => {
     renderWithProviders(<BudgetPanel accessToken="token-123" />);
 
     await waitFor(() => {
-      expect(screen.getByText("Create a budget to assign to customers.")).toBeInTheDocument();
+      expect(screen.getByText("Create budget policies for Company, Project, key, team, or user assignments.")).toBeInTheDocument();
       expect(screen.getByText("budget-1")).toBeInTheDocument();
     });
   });
@@ -138,8 +138,24 @@ describe("Budget Panel", () => {
     renderWithProviders(<BudgetPanel accessToken="token-123" />);
 
     await waitFor(() => {
-      expect(screen.getByText("Create a budget to assign to customers.")).toBeInTheDocument();
+      expect(screen.getByText("Create budget policies for Company, Project, key, team, or user assignments.")).toBeInTheDocument();
     });
+  });
+
+  it("should show Company and Project budget assignment examples without Organization tenant copy", async () => {
+    vi.mocked(useBudgets).mockReturnValue({
+      data: mockBudgets,
+      isLoading: false,
+    } as any);
+
+    renderWithProviders(<BudgetPanel accessToken="token-123" />);
+
+    expect(screen.getByText("Apply a budget policy")).toBeInTheDocument();
+    expect(screen.getByText("Assign to Company/Project")).toBeInTheDocument();
+    expect(screen.getByText(/"company_id": "<COMPANY_ID>"/)).toBeInTheDocument();
+    expect(screen.getByText(/"project_id": "<PROJECT_ID>"/)).toBeInTheDocument();
+    expect(screen.queryByText(/Organization/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Customer/i)).not.toBeInTheDocument();
   });
 
   it("should handle delete error", async () => {

@@ -9,7 +9,8 @@ import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 
 export interface FilterState {
   "Team ID": string;
-  "Organization ID": string;
+  "Company ID": string;
+  "Project ID": string;
   "Key Alias": string;
   [key: string]: string;
   "User ID": string;
@@ -28,7 +29,8 @@ export function useFilterLogic({
 }) {
   const defaultFilters: FilterState = {
     "Team ID": "",
-    "Organization ID": "",
+    "Company ID": "",
+    "Project ID": "",
     "Key Alias": "",
     "User ID": "",
     "Sort By": "created_at",
@@ -54,7 +56,7 @@ export function useFilterLogic({
         // Make the API call using userListCall with all filter parameters
         const data = await keyListCall(
           accessToken,
-          filters["Organization ID"] || null,
+          filters["Company ID"] || null,
           filters["Team ID"] || null,
           filters["Key Alias"] || null,
           filters["User ID"] || null,
@@ -63,6 +65,9 @@ export function useFilterLogic({
           defaultPageSize,
           filters["Sort By"] || null,
           filters["Sort Order"] || null,
+          null,
+          null,
+          filters["Project ID"] || null,
         );
 
         // Only update state if this is the most recent search
@@ -94,9 +99,13 @@ export function useFilterLogic({
       result = result.filter((key) => key.team_id === filters["Team ID"]);
     }
 
-    // Apply Organization ID filter
-    if (filters["Organization ID"]) {
-      result = result.filter((key) => (key.organization_id ?? key.org_id) === filters["Organization ID"]);
+    // Apply Company ID filter. organization_id/org_id remain LiteLLM compatibility fields.
+    if (filters["Company ID"]) {
+      result = result.filter((key) => (key.company_id ?? key.organization_id ?? key.org_id) === filters["Company ID"]);
+    }
+
+    if (filters["Project ID"]) {
+      result = result.filter((key) => key.project_id === filters["Project ID"]);
     }
 
     setFilteredKeys(result);
@@ -146,7 +155,8 @@ export function useFilterLogic({
     // Update filters state
     setFilters({
       "Team ID": newFilters["Team ID"] || "",
-      "Organization ID": newFilters["Organization ID"] || "",
+      "Company ID": newFilters["Company ID"] || "",
+      "Project ID": newFilters["Project ID"] || "",
       "Key Alias": newFilters["Key Alias"] || "",
       "User ID": newFilters["User ID"] || "",
       "Sort By": newFilters["Sort By"] || "created_at",

@@ -166,9 +166,9 @@ export function DeletedTeamsTable({
       },
     },
     {
-      id: "organization_id",
-      accessorKey: "organization_id",
-      header: "Organization",
+      id: "company",
+      accessorFn: (row) => row.company_name || row.company_id || row.organization_id,
+      header: "Company",
       size: 150,
       maxSize: 200,
       cell: (info) => {

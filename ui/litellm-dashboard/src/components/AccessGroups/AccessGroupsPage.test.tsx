@@ -119,8 +119,9 @@ describe("AccessGroupsPage", () => {
     renderWithProviders(<AccessGroupsPage />);
     expect(screen.getByRole("heading", { name: "Access Groups" })).toBeInTheDocument();
     expect(
-      screen.getByText("Manage resource permissions for your organization"),
+      screen.getByText("Manage model, server, and agent access for Companies and Projects"),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/organization/i)).not.toBeInTheDocument();
   });
 
   it("should display Create Access Group button", () => {

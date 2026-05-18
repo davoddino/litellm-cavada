@@ -27,6 +27,7 @@ import useAuthorized from "@/app/(dashboard)/hooks/useAuthorized";
 import { organizationKeys } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
 import MCPToolPermissions from "@/components/mcp_server_management/MCPToolPermissions";
 import SearchToolSelector from "@/components/SearchTools/SearchToolSelector";
+import { getCompanyDisplayId, getCompanyDisplayName } from "@/components/common_components/OrganizationDropdown";
 
 interface ModelAliases {
   [key: string]: string;
@@ -52,7 +53,6 @@ const getOrganizationModels = (organization: Organization | null, userModels: st
 
   if (organization) {
     if (organization.models.length > 0) {
-      console.log(`organization.models: ${organization.models}`);
       tempModelsToPick = organization.models;
     } else {
       // show all available models if the team has no models set
@@ -172,12 +172,13 @@ const CreateTeamModal = ({
       if (accessToken != null) {
         const newTeamAlias = formValues?.team_alias;
         const existingTeamAliases = teams?.map((t) => t.team_alias) ?? [];
-        let organizationId = formValues?.organization_id || currentOrg?.organization_id;
-        if (organizationId === "" || typeof organizationId !== "string") {
-          formValues.organization_id = null;
+        let companyId = formValues?.company_id || (currentOrg ? getCompanyDisplayId(currentOrg) : undefined);
+        if (companyId === "" || typeof companyId !== "string") {
+          formValues.company_id = null;
         } else {
-          formValues.organization_id = organizationId.trim();
+          formValues.company_id = companyId.trim();
         }
+        delete formValues.organization_id;
 
         // Remove guardrails from top level since it's now in metadata
         if (existingTeamAliases.includes(newTeamAlias)) {
@@ -340,11 +341,11 @@ const CreateTeamModal = ({
           <Form.Item
             label={
               <span>
-                Organization{" "}
+                Company{" "}
                 <Tooltip
                   title={
                     <span>
-                      Organizations can have multiple teams. Learn more about{" "}
+                      Companies can have multiple teams. Learn more about{" "}
                       <a
                         href="https://docs.litellm.ai/docs/proxy/user_management_heirarchy"
                         target="_blank"
@@ -364,29 +365,33 @@ const CreateTeamModal = ({
                 </Tooltip>
               </span>
             }
-            name="organization_id"
-            initialValue={currentOrg ? currentOrg.organization_id : null}
+            name="company_id"
+            initialValue={currentOrg ? getCompanyDisplayId(currentOrg) : null}
             className="mt-8"
           >
             <Select2
               showSearch
               allowClear
-              placeholder="Search or select an Organization"
+              placeholder="Search or select a Company"
               onChange={(value) => {
-                form.setFieldValue("organization_id", value);
-                setCurrentOrgForCreateTeam(organizations?.find((org) => org.organization_id === value) || null);
+                form.setFieldValue("company_id", value);
+                setCurrentOrgForCreateTeam(organizations?.find((org) => getCompanyDisplayId(org) === value) || null);
               }}
               filterOption={(input, option) => {
                 if (!option) return false;
-                const optionValue = option.children?.toString() || "";
-                return optionValue.toLowerCase().includes(input.toLowerCase());
+                const org = organizations?.find((candidate) => getCompanyDisplayId(candidate) === option.value);
+                if (!org) return false;
+                const searchTerm = input.toLowerCase().trim();
+                return (
+                  getCompanyDisplayName(org).toLowerCase().includes(searchTerm) ||
+                  getCompanyDisplayId(org).toLowerCase().includes(searchTerm)
+                );
               }}
-              optionFilterProp="children"
             >
               {organizations?.map((org) => (
-                <Select2.Option key={org.organization_id} value={org.organization_id}>
-                  <span className="font-medium">{org.organization_alias}</span>{" "}
-                  <span className="text-gray-500">({org.organization_id})</span>
+                <Select2.Option key={getCompanyDisplayId(org)} value={getCompanyDisplayId(org)}>
+                  <span className="font-medium">{getCompanyDisplayName(org)}</span>{" "}
+                  <span className="text-gray-500">({getCompanyDisplayId(org)})</span>
                 </Select2.Option>
               ))}
             </Select2>

@@ -48,7 +48,8 @@ const TeamsTable = ({
           <TableHeaderCell>Spend (USD)</TableHeaderCell>
           <TableHeaderCell>Budget (USD)</TableHeaderCell>
           <TableHeaderCell>Models</TableHeaderCell>
-          <TableHeaderCell>Organization</TableHeaderCell>
+          <TableHeaderCell>Company</TableHeaderCell>
+          <TableHeaderCell>Projects</TableHeaderCell>
           <TableHeaderCell>Your Role</TableHeaderCell>
           <TableHeaderCell>Info</TableHeaderCell>
         </TableRow>
@@ -119,7 +120,12 @@ const TeamsTable = ({
                     {team["max_budget"] !== null && team["max_budget"] !== undefined ? team["max_budget"] : "No limit"}
                   </TableCell>
                   <ModelsCell team={team} />
-                  <TableCell>{team.organization_id}</TableCell>
+                  <TableCell>{team.company_name ?? team.company_id ?? team.organization_id}</TableCell>
+                  <TableCell>
+                    {team.project_names?.length
+                      ? team.project_names.slice(0, 2).join(", ") + (team.project_names.length > 2 ? ` +${team.project_names.length - 2}` : "")
+                      : "-"}
+                  </TableCell>
                   <YourRoleCell team={team} userId={userId} />
                   <TableCell>
                     <Text>

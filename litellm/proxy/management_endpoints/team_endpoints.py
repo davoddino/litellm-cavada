@@ -118,6 +118,151 @@ from litellm.types.proxy.management_endpoints.team_endpoints import (
 router = APIRouter()
 
 
+def _resolve_company_id(
+    company_id: Optional[str],
+    organization_id: Optional[str],
+) -> Optional[str]:
+    company_id = company_id if isinstance(company_id, str) else None
+    organization_id = organization_id if isinstance(organization_id, str) else None
+    if company_id and organization_id and company_id != organization_id:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "company_id and organization_id refer to the same tenant and must match when both are provided."
+            },
+        )
+    return company_id or organization_id
+
+
+def _drop_company_id_from_team_db_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    data.pop("company_id", None)
+    data.pop("company_name", None)
+    data.pop("project_ids", None)
+    data.pop("project_names", None)
+    return data
+
+
+def _field_from_obj(row: Any, field_name: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(field_name)
+    return getattr(row, field_name, None)
+
+
+def _unique_non_empty(values: List[Any]) -> List[str]:
+    seen: set[str] = set()
+    result: List[str] = []
+    for value in values:
+        if value is None:
+            continue
+        value_str = str(value).strip()
+        if not value_str or value_str in seen:
+            continue
+        seen.add(value_str)
+        result.append(value_str)
+    return result
+
+
+async def _get_company_name_map(
+    prisma_client: Any,
+    company_ids: List[str],
+) -> Dict[str, str]:
+    if not company_ids:
+        return {}
+    companies = await prisma_client.db.litellm_organizationtable.find_many(
+        where={"organization_id": {"in": company_ids}},
+    )
+    company_names: Dict[str, str] = {}
+    for company in companies:
+        company_id = _field_from_obj(company, "organization_id")
+        if not company_id:
+            continue
+        company_names[company_id] = (
+            _field_from_obj(company, "organization_alias") or company_id
+        )
+    return company_names
+
+
+async def _team_company_project_context(
+    prisma_client: Any,
+    team_dicts: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    team_ids = _unique_non_empty([team_dict.get("team_id") for team_dict in team_dicts])
+    company_ids = _unique_non_empty(
+        [team_dict.get("organization_id") for team_dict in team_dicts]
+    )
+    company_names = await _get_company_name_map(
+        prisma_client=prisma_client,
+        company_ids=company_ids,
+    )
+
+    projects_by_team: Dict[str, List[Any]] = {team_id: [] for team_id in team_ids}
+    if team_ids:
+        projects = await prisma_client.db.litellm_projecttable.find_many(
+            where={"team_id": {"in": team_ids}},
+        )
+        for project in projects:
+            team_id = _field_from_obj(project, "team_id")
+            if team_id:
+                projects_by_team.setdefault(team_id, []).append(project)
+
+    context: Dict[str, Dict[str, Any]] = {}
+    for team_dict in team_dicts:
+        team_id = team_dict.get("team_id")
+        company_id = team_dict.get("organization_id")
+        projects = projects_by_team.get(team_id, [])
+        project_ids = _unique_non_empty(
+            [_field_from_obj(project, "project_id") for project in projects]
+        )
+        project_names = _unique_non_empty(
+            [
+                _field_from_obj(project, "project_alias")
+                or _field_from_obj(project, "project_id")
+                for project in projects
+            ]
+        )
+        context[team_id] = {
+            "company_id": company_id,
+            "company_name": company_names.get(company_id, company_id)
+            if company_id
+            else None,
+            "project_ids": project_ids,
+            "project_names": project_names,
+        }
+    return context
+
+
+async def _enrich_team_dicts_with_company_project_context(
+    prisma_client: Any,
+    team_dicts: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    context = await _team_company_project_context(
+        prisma_client=prisma_client,
+        team_dicts=team_dicts,
+    )
+    for team_dict in team_dicts:
+        team_dict.update(context.get(team_dict.get("team_id"), {}))
+    return team_dicts
+
+
+async def _project_team_ids_for_filter(
+    prisma_client: Any,
+    project_id: Optional[str],
+) -> Optional[List[str]]:
+    if not isinstance(project_id, str) or not project_id:
+        return None
+    projects = await prisma_client.db.litellm_projecttable.find_many(
+        where={"project_id": project_id},
+    )
+    if not projects:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": f"Project not found for project_id={project_id}"},
+        )
+    return _unique_non_empty(
+        [_field_from_obj(project, "team_id") for project in projects]
+    )
+
+
 def _sanitize_for_log(value: Any) -> str:
     """Strip CR/LF from user-controlled values to prevent log injection."""
     try:
@@ -645,7 +790,7 @@ async def _check_org_team_limits(
         raise HTTPException(
             status_code=400,
             detail={
-                "error": f"Team max_budget ({data.max_budget}) exceeds organization's max_budget ({org_table.litellm_budget_table.max_budget}). Organization: {org_table.organization_id}"
+                "error": f"Team max_budget ({data.max_budget}) exceeds company's max_budget ({org_table.litellm_budget_table.max_budget}). Company: {org_table.organization_id}"
             },
         )
 
@@ -660,7 +805,7 @@ async def _check_org_team_limits(
                     raise HTTPException(
                         status_code=400,
                         detail={
-                            "error": f"Model '{m}' not in organization's allowed models. Organization allowed models={org_table.models}. Organization: {org_table.organization_id}"
+                            "error": f"Model '{m}' not in company's allowed models. Company allowed models={org_table.models}. Company: {org_table.organization_id}"
                         },
                     )
 
@@ -674,7 +819,7 @@ async def _check_org_team_limits(
         raise HTTPException(
             status_code=400,
             detail={
-                "error": f"Team tpm_limit ({data.tpm_limit}) exceeds organization's tpm_limit ({org_table.litellm_budget_table.tpm_limit}). Organization: {org_table.organization_id}"
+                "error": f"Team tpm_limit ({data.tpm_limit}) exceeds company's tpm_limit ({org_table.litellm_budget_table.tpm_limit}). Company: {org_table.organization_id}"
             },
         )
 
@@ -687,7 +832,7 @@ async def _check_org_team_limits(
         raise HTTPException(
             status_code=400,
             detail={
-                "error": f"Team rpm_limit ({data.rpm_limit}) exceeds organization's rpm_limit ({org_table.litellm_budget_table.rpm_limit}). Organization: {org_table.organization_id}"
+                "error": f"Team rpm_limit ({data.rpm_limit}) exceeds company's rpm_limit ({org_table.litellm_budget_table.rpm_limit}). Company: {org_table.organization_id}"
             },
         )
 
@@ -846,7 +991,7 @@ async def new_team(  # noqa: PLR0915
     - members: Optional[List] - Control team members via `/team/member/add` and `/team/member/delete`.
     - tags: Optional[List[str]] - Tags for [tracking spend](https://litellm.vercel.app/docs/proxy/enterprise#tracking-spend-for-custom-tags) and/or doing [tag-based routing](https://litellm.vercel.app/docs/proxy/tag_routing).
     - prompts: Optional[List[str]] - List of prompts that the team is allowed to use.
-    - organization_id: Optional[str] - The organization id of the team. Default is None. Create via `/organization/new`.
+    - company_id: Optional[str] - The company id of the team.
     - model_aliases: Optional[dict] - Model aliases for the team. [Docs](https://docs.litellm.ai/docs/proxy/team_based_routing#create-team-with-model-alias)
     - guardrails: Optional[List[str]] - Guardrails for the team. [Docs](https://docs.litellm.ai/docs/proxy/guardrails)
     - policies: Optional[List[str]] - Policies for the team. [Docs](https://docs.litellm.ai/docs/proxy/guardrails/guardrail_policies)
@@ -982,7 +1127,7 @@ async def new_team(  # noqa: PLR0915
             if org_table is None:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Organization not found for organization_id={data.organization_id}",
+                    detail=f"Company not found for company_id={data.organization_id}",
                 )
 
             await _check_org_team_limits(
@@ -1059,7 +1204,7 @@ async def new_team(  # noqa: PLR0915
         ## Create Team Member Budget Table
         if isinstance(data.metadata, dict):
             TeamMemberBudgetHandler.strip_system_managed_metadata_keys(data.metadata)
-        data_json = data.json()
+        data_json = _drop_company_id_from_team_db_payload(data.json())
 
         ## Handle Object Permission - MCP, Vector Stores etc.
         data_json = await _set_object_permission(
@@ -1133,7 +1278,9 @@ async def new_team(  # noqa: PLR0915
             members_with_roles = complete_team_data.members_with_roles
             complete_team_data.members_with_roles = []
 
-        complete_team_data_dict = complete_team_data.model_dump(exclude_none=True)
+        complete_team_data_dict = _drop_company_id_from_team_db_payload(
+            complete_team_data.model_dump(exclude_none=True)
+        )
 
         # Serialize router_settings to JSON (matching key creation pattern)
         router_settings_value = getattr(data, "router_settings", None)
@@ -1193,9 +1340,14 @@ async def new_team(  # noqa: PLR0915
             )
 
         try:
-            return team_row.model_dump()
+            team_response = team_row.model_dump()
         except Exception:
-            return team_row.dict()
+            team_response = team_row.dict()
+        enriched_team_response = await _enrich_team_dicts_with_company_project_context(
+            prisma_client=prisma_client,
+            team_dicts=[team_response],
+        )
+        return enriched_team_response[0]
     except Exception as e:
         raise handle_exception_on_proxy(e)
 
@@ -1362,7 +1514,7 @@ async def fetch_and_validate_organization(
         raise HTTPException(
             status_code=404,
             detail={
-                "error": f"Organization not found, passed organization_id={organization_id}"
+                "error": f"Company not found, passed company_id={organization_id}"
             },
         )
 
@@ -1421,7 +1573,7 @@ def validate_team_org_change(
             raise HTTPException(
                 status_code=403,
                 detail={
-                    "error": "Cannot move team to organization. Team has access to all proxy models, but the organization does not."
+                    "error": "Cannot move team to company. Team has access to all proxy models, but the company does not."
                 },
             )
         else:
@@ -1442,7 +1594,7 @@ def validate_team_org_change(
         raise HTTPException(
             status_code=403,
             detail={
-                "error": f"Cannot move team to organization. Team has max_budget {team.max_budget} that is greater than the organization's max_budget {organization.litellm_budget_table.max_budget}."
+                "error": f"Cannot move team to company. Team has max_budget {team.max_budget} that is greater than the company's max_budget {organization.litellm_budget_table.max_budget}."
             },
         )
 
@@ -1463,7 +1615,7 @@ def validate_team_org_change(
             raise HTTPException(
                 status_code=403,
                 detail={
-                    "error": f"Cannot move team to organization. Team has user_id {not_in_org} that is not a member of the organization."
+                    "error": f"Cannot move team to company. Team has user_id {not_in_org} that is not a member of the company."
                 },
             )
 
@@ -1477,7 +1629,7 @@ def validate_team_org_change(
         raise HTTPException(
             status_code=403,
             detail={
-                "error": f"Cannot move team to organization. Team has tpm_limit {team.tpm_limit} that is greater than the organization's tpm_limit {organization.litellm_budget_table.tpm_limit}."
+                "error": f"Cannot move team to company. Team has tpm_limit {team.tpm_limit} that is greater than the company's tpm_limit {organization.litellm_budget_table.tpm_limit}."
             },
         )
     if (
@@ -1489,7 +1641,7 @@ def validate_team_org_change(
         raise HTTPException(
             status_code=403,
             detail={
-                "error": f"Cannot move team to organization. Team has rpm_limit {team.rpm_limit} that is greater than the organization's rpm_limit {organization.litellm_budget_table.rpm_limit}."
+                "error": f"Cannot move team to company. Team has rpm_limit {team.rpm_limit} that is greater than the company's rpm_limit {organization.litellm_budget_table.rpm_limit}."
             },
         )
     return True
@@ -1527,7 +1679,7 @@ async def update_team(  # noqa: PLR0915
     - prompts: Optional[List[str]] - List of prompts that the team is allowed to use.
     - blocked: bool - Flag indicating if the team is blocked or not - will stop all calls from keys with this team_id.
     - tags: Optional[List[str]] - Tags for [tracking spend](https://litellm.vercel.app/docs/proxy/enterprise#tracking-spend-for-custom-tags) and/or doing [tag-based routing](https://litellm.vercel.app/docs/proxy/tag_routing).
-    - organization_id: Optional[str] - The organization id of the team. Default is None. Create via `/organization/new`.
+    - company_id: Optional[str] - The company id of the team.
     - model_aliases: Optional[dict] - Model aliases for the team. [Docs](https://docs.litellm.ai/docs/proxy/team_based_routing#create-team-with-model-alias)
     - guardrails: Optional[List[str]] - Guardrails for the team. [Docs](https://docs.litellm.ai/docs/proxy/guardrails)
     - policies: Optional[List[str]] - Policies for the team. [Docs](https://docs.litellm.ai/docs/proxy/guardrails/guardrail_policies)
@@ -1697,9 +1849,9 @@ async def update_team(  # noqa: PLR0915
                         status_code=403,
                         detail={
                             "error": (
-                                "Relocating a team to a different organization "
-                                "requires PROXY_ADMIN or org-admin of the "
-                                "destination org."
+                                "Relocating a team to a different company "
+                                "requires PROXY_ADMIN or company admin of the "
+                                "destination company."
                             )
                         },
                     )
@@ -1754,7 +1906,7 @@ async def update_team(  # noqa: PLR0915
                     user_api_key_cache=user_api_key_cache,
                 )
 
-        updated_kv = data.json(exclude_unset=True)
+        updated_kv = _drop_company_id_from_team_db_payload(data.json(exclude_unset=True))
 
         # Drop server-owned metadata keys from caller input so they can only
         # be written by the same code path that creates the underlying rows.
@@ -1861,7 +2013,12 @@ async def update_team(  # noqa: PLR0915
                 litellm_proxy_admin_name=litellm_proxy_admin_name,
             )
 
-        return {"team_id": team_row.team_id, "data": team_row}
+        team_response = team_row.model_dump()
+        enriched_team_response = await _enrich_team_dicts_with_company_project_context(
+            prisma_client=prisma_client,
+            team_dicts=[team_response],
+        )
+        return {"team_id": team_row.team_id, "data": LiteLLM_TeamTable(**enriched_team_response[0])}
     except Exception as e:
         raise handle_exception_on_proxy(e)
 
@@ -2064,7 +2221,7 @@ async def _validate_team_member_add_permissions(
                 detail={
                     "error": (
                         "Available-team self-join cannot assign 'admin' role. "
-                        "Only proxy/team/org admins can add admins to a team."
+                        "Only proxy, team, or company admins can add admins to a team."
                     )
                 },
             )
@@ -3450,6 +3607,11 @@ async def team_info(
 
         # Resolve resources inherited from access groups
         await _resolve_team_access_group_resources(_team_info)
+        enriched_team_info = await _enrich_team_dicts_with_company_project_context(
+            prisma_client=prisma_client,
+            team_dicts=[_team_info.model_dump()],
+        )
+        _team_info = TeamInfoResponseObjectTeamTable(**enriched_team_info[0])
 
         response_object = TeamInfoResponseObject(
             team_id=team_id,
@@ -3803,6 +3965,7 @@ async def _build_team_list_where_conditions(
     team_id: Optional[str],
     team_alias: Optional[str],
     organization_id: Optional[str],
+    project_team_ids: Optional[List[str]],
     user_id: Optional[str],
     use_deleted_table: bool,
     search: Optional[str] = None,
@@ -3879,6 +4042,29 @@ async def _build_team_list_where_conditions(
             else:
                 where_conditions["team_id"] = {"in": user_team_ids}
 
+    if project_team_ids is not None:
+        if not project_team_ids:
+            return None
+        if team_id is not None:
+            if team_id not in project_team_ids:
+                return None
+        else:
+            existing_team_filter = where_conditions.get("team_id")
+            if isinstance(existing_team_filter, dict) and "in" in existing_team_filter:
+                intersected_team_ids = [
+                    candidate_team_id
+                    for candidate_team_id in existing_team_filter["in"]
+                    if candidate_team_id in project_team_ids
+                ]
+                if not intersected_team_ids:
+                    return None
+                where_conditions["team_id"] = {"in": intersected_team_ids}
+            elif isinstance(existing_team_filter, str):
+                if existing_team_filter not in project_team_ids:
+                    return None
+            else:
+                where_conditions["team_id"] = {"in": project_team_ids}
+
     return where_conditions
 
 
@@ -3921,10 +4107,13 @@ def _convert_teams_to_response_models(
         Union[TeamListItem, LiteLLM_TeamTable, LiteLLM_DeletedTeamTable]
     ] = []
     for team in teams:
-        try:
-            team_dict = team.model_dump()
-        except Exception:
-            team_dict = team.dict()
+        if isinstance(team, dict):
+            team_dict = dict(team)
+        else:
+            try:
+                team_dict = team.model_dump()
+            except Exception:
+                team_dict = team.dict()
 
         if use_deleted_table:
             team_list.append(LiteLLM_DeletedTeamTable(**team_dict))
@@ -3949,7 +4138,7 @@ async def _enforce_list_team_v2_access(
     """Enforce access control for list_team_v2.
 
     - Proxy admins and admin viewers can query any teams.
-    - Org admins can query teams within their organizations.
+    - Company admins can query teams within their companies.
     - Regular users can only query their own teams.
 
     Returns the (possibly overridden) user_id and org_admin_org_ids.
@@ -3971,11 +4160,11 @@ async def _enforce_list_team_v2_access(
         )
 
     if org_admin_org_ids is not None:
-        # Org admin: validate org_id filter if provided
+        # Company admin: validate company filter if provided.
         if organization_id and organization_id not in org_admin_org_ids:
             raise HTTPException(
                 status_code=403,
-                detail={"error": "You can only view teams within your organizations."},
+                detail={"error": "You can only view teams within your companies."},
             )
         verbose_proxy_logger.debug(
             "list_team_v2: org admin access for user=%s, org_ids=%s, user_id_filter=%s",
@@ -4017,7 +4206,16 @@ async def list_team_v2(
     ),
     organization_id: Optional[str] = fastapi.Query(
         default=None,
-        description="Only return teams which this 'organization_id' belongs to",
+        description="Compatibility filter for company membership. Prefer company_id.",
+        include_in_schema=False,
+    ),
+    company_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Only return teams which this company_id belongs to",
+    ),
+    project_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Only return teams associated with this project_id",
     ),
     team_id: Optional[str] = fastapi.Query(
         default=None, description="Only return teams which this 'team_id' belongs to"
@@ -4054,8 +4252,8 @@ async def list_team_v2(
     Parameters:
         user_id: Optional[str]
             Only return teams which this user belongs to
-        organization_id: Optional[str]
-            Only return teams which belong to this organization
+        company_id: Optional[str]
+            Only return teams which belong to this company
         team_id: Optional[str]
             Filter teams by exact team_id match
         team_alias: Optional[str]
@@ -4082,6 +4280,14 @@ async def list_team_v2(
             status_code=500,
             detail={"error": f"No db connected. prisma client={prisma_client}"},
         )
+
+    organization_id = _resolve_company_id(
+        company_id=company_id, organization_id=organization_id
+    )
+    project_team_ids = await _project_team_ids_for_filter(
+        prisma_client=prisma_client,
+        project_id=project_id,
+    )
 
     # --- Access control ---
     user_id, org_admin_org_ids = await _enforce_list_team_v2_access(
@@ -4113,6 +4319,7 @@ async def list_team_v2(
         team_id=team_id,
         team_alias=team_alias,
         organization_id=organization_id,
+        project_team_ids=project_team_ids,
         user_id=user_id,
         use_deleted_table=use_deleted_table,
         search=search,
@@ -4164,6 +4371,18 @@ async def list_team_v2(
 
     # Calculate total pages
     total_pages = -(-total_count // page_size)  # Ceiling division
+
+    if not use_deleted_table:
+        team_dicts = []
+        for team in teams:
+            try:
+                team_dicts.append(team.model_dump())
+            except Exception:
+                team_dicts.append(team.dict())
+        teams = await _enrich_team_dicts_with_company_project_context(
+            prisma_client=prisma_client,
+            team_dicts=team_dicts,
+        )
 
     # Convert Prisma models to response models with members_count
     team_list = _convert_teams_to_response_models(teams, use_deleted_table)
@@ -4298,7 +4517,19 @@ async def list_team(
     user_id: Optional[str] = fastapi.Query(
         default=None, description="Only return teams which this 'user_id' belongs to"
     ),
-    organization_id: Optional[str] = None,
+    organization_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Compatibility filter for company membership. Prefer company_id.",
+        include_in_schema=False,
+    ),
+    company_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Only return teams which this company_id belongs to",
+    ),
+    project_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Only return teams associated with this project_id",
+    ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
@@ -4309,7 +4540,8 @@ async def list_team(
 
     Parameters:
     - user_id: str - Optional. If passed will only return teams that the user_id is a member of.
-    - organization_id: str - Optional. If passed will only return teams that belong to the organization_id. Pass 'default_organization' to get all teams without organization_id.
+    - company_id: str - Optional. If passed will only return teams that belong to the company_id.
+    - project_id: str - Optional. If passed will only return teams associated with the project_id.
     """
     from litellm.proxy.proxy_server import (
         prisma_client,
@@ -4323,6 +4555,14 @@ async def list_team(
             detail={"error": CommonProxyErrors.db_not_connected_error.value},
         )
 
+    organization_id = _resolve_company_id(
+        company_id=company_id, organization_id=organization_id
+    )
+    project_team_ids = await _project_team_ids_for_filter(
+        prisma_client=prisma_client,
+        project_id=project_id,
+    )
+
     filtered_response = await _authorize_and_filter_teams(
         user_api_key_dict=user_api_key_dict,
         user_id=user_id,
@@ -4330,6 +4570,12 @@ async def list_team(
         user_api_key_cache=user_api_key_cache,
         proxy_logging_obj=proxy_logging_obj,
     )
+    if project_team_ids is not None:
+        filtered_response = [
+            team
+            for team in filtered_response
+            if getattr(team, "team_id", None) in project_team_ids
+        ]
 
     _team_ids = [team.team_id for team in filtered_response]
     returned_tm = await get_all_team_memberships(
@@ -4337,6 +4583,13 @@ async def list_team(
     )
 
     returned_responses: List[TeamListResponseObject] = []
+    team_response_dicts: Dict[str, Dict[str, Any]] = {}
+    enriched_team_dicts = await _enrich_team_dicts_with_company_project_context(
+        prisma_client=prisma_client,
+        team_dicts=[team.model_dump() for team in filtered_response],
+    )
+    for team_dict in enriched_team_dicts:
+        team_response_dicts[team_dict["team_id"]] = team_dict
     for team in filtered_response:
         _team_memberships: List[LiteLLM_TeamMembership] = []
         for tm in returned_tm:
@@ -4351,7 +4604,7 @@ async def list_team(
         try:
             returned_responses.append(
                 TeamListResponseObject(
-                    **team.model_dump(),
+                    **team_response_dicts.get(team.team_id, team.model_dump()),
                     team_memberships=_team_memberships,
                     keys=keys,
                 )

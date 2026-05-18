@@ -29,6 +29,7 @@ from litellm.proxy.management_endpoints.common_utils import (
     _user_has_admin_privileges,
     _user_has_admin_view,
     admin_can_invite_user,
+    build_company_project_access_context,
 )
 
 
@@ -261,6 +262,201 @@ class TestIsUserTeamAdmin:
             members_with_roles=[Member(user_id="u1", role="admin")],
         )
         assert _is_user_team_admin(auth, team) is False
+
+
+class TestCompanyProjectAccessContext:
+    """Product tenant authorization over existing LiteLLM membership data."""
+
+    def _membership(self, company_id: str, role: str):
+        now = datetime.now(timezone.utc)
+        return LiteLLM_OrganizationMembershipTable(
+            user_id="caller",
+            organization_id=company_id,
+            user_role=role,
+            created_at=now,
+            updated_at=now,
+        )
+
+    def _user_info(self, memberships=None):
+        return LiteLLM_UserTable(
+            user_id="caller",
+            organization_memberships=memberships or [],
+        )
+
+    def _project_team(
+        self,
+        *,
+        role: str = "user",
+        route_permissions=None,
+        user_id: str = "caller",
+    ):
+        return LiteLLM_TeamTable(
+            team_id="project-team",
+            organization_id="company-1",
+            members_with_roles=[Member(user_id=user_id, role=role)],
+            team_member_permissions=route_permissions,
+        )
+
+    def test_company_admin_can_read_company_and_manage_project(self):
+        caller = UserAPIKeyAuth(
+            user_id="caller",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        )
+        context = build_company_project_access_context(
+            user_api_key_dict=caller,
+            complete_user_info=self._user_info(
+                [
+                    self._membership(
+                        "company-1",
+                        LitellmUserRoles.ORG_ADMIN.value,
+                    )
+                ]
+            ),
+            project_team_obj=self._project_team(user_id="other-user"),
+            project_company_id="company-1",
+            route_permission="/key/list",
+        )
+
+        assert context.can_read_company("company-1") is True
+        assert context.can_read_project() is True
+        assert context.can_manage_project() is True
+
+    @pytest.mark.parametrize(
+        "company_role",
+        [
+            LitellmUserRoles.INTERNAL_USER.value,
+            LitellmUserRoles.INTERNAL_USER_VIEW_ONLY.value,
+        ],
+    )
+    def test_company_member_or_viewer_can_read_own_company_only(
+        self, company_role: str
+    ):
+        caller = UserAPIKeyAuth(
+            user_id="caller",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        )
+        context = build_company_project_access_context(
+            user_api_key_dict=caller,
+            complete_user_info=self._user_info(
+                [
+                    self._membership(
+                        "company-1",
+                        company_role,
+                    )
+                ]
+            ),
+            project_team_obj=self._project_team(user_id="other-user"),
+            project_company_id="company-1",
+            route_permission="/key/list",
+        )
+
+        assert context.can_read_company("company-1") is True
+        assert context.can_read_company("company-2") is False
+        assert context.can_read_project() is False
+        assert context.can_manage_project() is False
+
+    def test_customer_role_membership_does_not_grant_company_read(self):
+        caller = UserAPIKeyAuth(
+            user_id="caller",
+            user_role=LitellmUserRoles.CUSTOMER,
+        )
+        context = build_company_project_access_context(
+            user_api_key_dict=caller,
+            complete_user_info=self._user_info(
+                [
+                    self._membership(
+                        "company-1",
+                        LitellmUserRoles.CUSTOMER.value,
+                    )
+                ]
+            ),
+        )
+
+        assert context.can_read_company("company-1") is False
+
+    def test_company_admin_cannot_read_other_company(self):
+        caller = UserAPIKeyAuth(
+            user_id="caller",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        )
+        context = build_company_project_access_context(
+            user_api_key_dict=caller,
+            complete_user_info=self._user_info(
+                [
+                    self._membership(
+                        "company-1",
+                        LitellmUserRoles.ORG_ADMIN.value,
+                    )
+                ]
+            ),
+        )
+
+        assert context.can_read_company("company-2") is False
+
+    def test_project_admin_can_manage_project(self):
+        caller = UserAPIKeyAuth(
+            user_id="caller",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        )
+        context = build_company_project_access_context(
+            user_api_key_dict=caller,
+            complete_user_info=self._user_info(),
+            project_team_obj=self._project_team(role="admin"),
+            project_company_id="company-1",
+            route_permission="/key/list",
+        )
+
+        assert context.can_read_project() is True
+        assert context.can_manage_project() is True
+
+    def test_project_member_with_route_permission_can_manage_project_scope(self):
+        caller = UserAPIKeyAuth(
+            user_id="caller",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        )
+        context = build_company_project_access_context(
+            user_api_key_dict=caller,
+            complete_user_info=self._user_info(),
+            project_team_obj=self._project_team(route_permissions=["/key/list"]),
+            project_company_id="company-1",
+            route_permission="/key/list",
+        )
+
+        assert context.can_read_project() is True
+        assert context.can_manage_project() is True
+
+    def test_project_member_without_route_permission_is_read_only(self):
+        caller = UserAPIKeyAuth(
+            user_id="caller",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        )
+        context = build_company_project_access_context(
+            user_api_key_dict=caller,
+            complete_user_info=self._user_info(),
+            project_team_obj=self._project_team(route_permissions=[]),
+            project_company_id="company-1",
+            route_permission="/key/list",
+        )
+
+        assert context.can_read_project() is True
+        assert context.can_manage_project() is False
+
+    def test_proxy_admin_read_and_manage_compatibility(self):
+        caller = UserAPIKeyAuth(
+            user_id="proxy-admin",
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+        )
+        context = build_company_project_access_context(
+            user_api_key_dict=caller,
+            complete_user_info=self._user_info(),
+            project_team_obj=self._project_team(user_id="other-user"),
+            project_company_id="company-1",
+            route_permission="/key/list",
+        )
+
+        assert context.can_read_company("company-any") is True
+        assert context.can_read_project() is True
+        assert context.can_manage_project() is True
 
 
 class TestOrgAdminCanInviteUser:

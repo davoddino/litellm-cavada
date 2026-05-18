@@ -2,6 +2,8 @@ import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders } from "../../tests/test-utils";
+import { useOrganizations } from "@/app/(dashboard)/hooks/organizations/useOrganizations";
+import { useProjects } from "@/app/(dashboard)/hooks/projects/useProjects";
 import { UserEditView } from "./user_edit_view";
 
 vi.mock("./key_team_helpers/fetch_available_models_team_key", () => ({
@@ -10,6 +12,14 @@ vi.mock("./key_team_helpers/fetch_available_models_team_key", () => ({
 
 vi.mock("../utils/roles", () => ({
   all_admin_roles: ["Admin", "Admin Viewer", "proxy_admin", "proxy_admin_viewer", "org_admin"],
+}));
+
+vi.mock("@/app/(dashboard)/hooks/organizations/useOrganizations", () => ({
+  useOrganizations: vi.fn(),
+}));
+
+vi.mock("@/app/(dashboard)/hooks/projects/useProjects", () => ({
+  useProjects: vi.fn(),
 }));
 
 vi.mock("antd", async (importOriginal) => {
@@ -22,11 +32,13 @@ vi.mock("antd", async (importOriginal) => {
     children,
     placeholder,
     disabled,
+    loading,
     style,
     allowClear,
     ...props
   }: any) => {
     const isMultiple = mode === "multiple";
+    void loading;
     const selectValue = isMultiple ? (Array.isArray(value) ? value : []) : value || "";
     return React.createElement(
       "select",
@@ -138,6 +150,20 @@ describe("UserEditView", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(useOrganizations).mockReturnValue({
+      data: [
+        { organization_id: "company-1", organization_alias: "Company One" },
+        { organization_id: "company-2", organization_alias: "Company Two" },
+      ],
+      isLoading: false,
+    } as any);
+    vi.mocked(useProjects).mockReturnValue({
+      data: [
+        { project_id: "project-1", project_alias: "Project One", company_id: "company-1" },
+        { project_id: "project-2", project_alias: "Project Two", company_id: "company-2" },
+      ],
+      isLoading: false,
+    } as any);
   });
 
   afterEach(() => {
@@ -382,6 +408,96 @@ describe("UserEditView", () => {
     expect(callArgs.max_budget).toBe(100.5);
     expect(callArgs.budget_duration).toBe("30d");
     expect(callArgs.metadata).toEqual(MOCK_USER_DATA.user_info.metadata);
+  });
+
+  it("should submit company and project ids without organization tenant aliases", async () => {
+    const onSubmitMock = vi.fn();
+    vi.mocked(useOrganizations).mockReturnValue({
+      data: [
+        {
+          company_id: "company-1",
+          company_name: "Company One",
+          organization_id: "company-1",
+          organization_alias: "",
+        },
+      ],
+      isLoading: false,
+    } as any);
+    const userDataWithTenantContext = {
+      ...MOCK_USER_DATA,
+      user_info: {
+        ...MOCK_USER_DATA.user_info,
+        company_ids: ["company-1"],
+        company_names: ["Company One"],
+        project_ids: ["project-1"],
+        project_names: ["Project One"],
+        organization_id: "company-1",
+        organization_ids: ["company-1"],
+        organizations: ["company-1"],
+      },
+    };
+
+    renderWithProviders(
+      <UserEditView
+        {...defaultProps}
+        userData={userDataWithTenantContext}
+        onSubmit={onSubmitMock}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Company")).toBeInTheDocument();
+      expect(screen.getByText("Project")).toBeInTheDocument();
+    });
+    expect(screen.getByRole("option", { name: /Company One \(company-1\)/i })).toBeInTheDocument();
+    expect(screen.queryByText(/organization/i)).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(onSubmitMock).toHaveBeenCalled();
+    });
+
+    const callArgs = onSubmitMock.mock.calls[0][0];
+    expect(callArgs.company_ids).toEqual(["company-1"]);
+    expect(callArgs.project_ids).toEqual(["project-1"]);
+    expect(callArgs).not.toHaveProperty("organization_id");
+    expect(callArgs).not.toHaveProperty("organization_ids");
+    expect(callArgs).not.toHaveProperty("organizations");
+  });
+
+  it("should clear selected projects that do not belong to the selected company", async () => {
+    const onSubmitMock = vi.fn();
+    const userDataWithTenantContext = {
+      ...MOCK_USER_DATA,
+      user_info: {
+        ...MOCK_USER_DATA.user_info,
+        company_ids: ["company-1"],
+        project_ids: ["project-1"],
+      },
+    };
+
+    renderWithProviders(
+      <UserEditView
+        {...defaultProps}
+        userData={userDataWithTenantContext}
+        onSubmit={onSubmitMock}
+      />,
+    );
+
+    const companySelect = await screen.findByRole("combobox", { name: /select company/i });
+    await userEvent.deselectOptions(companySelect, "company-1");
+    await userEvent.selectOptions(companySelect, "company-2");
+
+    await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(onSubmitMock).toHaveBeenCalled();
+    });
+
+    const callArgs = onSubmitMock.mock.calls[0][0];
+    expect(callArgs.company_ids).toEqual(["company-2"]);
+    expect(callArgs.project_ids).toEqual([]);
   });
 
   it("should set max_budget to null when unlimited budget is checked on submit", async () => {

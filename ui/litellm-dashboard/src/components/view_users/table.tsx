@@ -10,6 +10,9 @@ import { FilterInput } from "@/components/common_components/Filters/FilterInput"
 import { FiltersButton } from "@/components/common_components/Filters/FiltersButton";
 import { ResetFiltersButton } from "@/components/common_components/Filters/ResetFiltersButton";
 import { Search, User, CircleUserRound } from "lucide-react";
+import { Organization } from "@/components/networking";
+import { ProjectResponse } from "@/app/(dashboard)/hooks/projects/useProjects";
+import { getCompanyDisplayId, getCompanyDisplayName } from "@/components/common_components/OrganizationDropdown";
 
 interface FilterState {
   email: string;
@@ -17,6 +20,8 @@ interface FilterState {
   user_role: string;
   sso_user_id: string;
   team: string;
+  company_id: string;
+  project_id: string;
   model: string;
   min_spend: number | null;
   max_spend: number | null;
@@ -47,6 +52,8 @@ interface UserDataTableProps {
   updateFilters: (update: Partial<FilterState>) => void;
   initialFilters: FilterState;
   teams: any[] | null;
+  organizations: Organization[];
+  projects: ProjectResponse[];
   // Pagination props
   userListResponse: any;
   currentPage: number;
@@ -72,6 +79,8 @@ export function UserDataTable({
   updateFilters,
   initialFilters,
   teams,
+  organizations,
+  projects,
   userListResponse,
   currentPage,
   handlePageChange,
@@ -123,6 +132,12 @@ export function UserDataTable({
 
   const isAllSelected = data.length > 0 && selectedUsers.length === data.length;
   const isIndeterminate = selectedUsers.length > 0 && selectedUsers.length < data.length;
+  const filteredProjects = React.useMemo(() => {
+    if (!filters.company_id) {
+      return projects;
+    }
+    return projects.filter((project) => project.company_id === filters.company_id);
+  }, [filters.company_id, projects]);
 
   // Create columns with the handleUserClick function
   const columns = React.useMemo(() => {
@@ -230,7 +245,7 @@ export function UserDataTable({
             <FiltersButton
               onClick={() => setShowFilters(!showFilters)}
               active={showFilters}
-              hasActiveFilters={!!(filters.user_id || filters.user_role || filters.team)}
+              hasActiveFilters={!!(filters.user_id || filters.user_role || filters.team || filters.company_id || filters.project_id)}
             />
 
             {/* Reset Filters Button */}
@@ -285,6 +300,39 @@ export function UserDataTable({
                   {teams?.map((team) => (
                     <SelectItem key={team.team_id} value={team.team_id}>
                       {team.team_alias || team.team_id}
+                    </SelectItem>
+                  ))}
+                </Select>
+              </div>
+
+              {/* Company Dropdown */}
+              <div className="w-64">
+                <Select
+                  value={filters.company_id}
+                  onValueChange={(value) => updateFilters({ company_id: value, project_id: "" })}
+                  placeholder="Select Company"
+                >
+                  {organizations?.map((company) => {
+                    const companyId = getCompanyDisplayId(company);
+                    return (
+                      <SelectItem key={companyId} value={companyId}>
+                        {getCompanyDisplayName(company)}
+                      </SelectItem>
+                    );
+                  })}
+                </Select>
+              </div>
+
+              {/* Project Dropdown */}
+              <div className="w-64">
+                <Select
+                  value={filters.project_id}
+                  onValueChange={(value) => updateFilters({ project_id: value })}
+                  placeholder="Select Project"
+                >
+                  {filteredProjects?.map((project) => (
+                    <SelectItem key={project.project_id} value={project.project_id}>
+                      {project.project_alias || project.project_id}
                     </SelectItem>
                   ))}
                 </Select>

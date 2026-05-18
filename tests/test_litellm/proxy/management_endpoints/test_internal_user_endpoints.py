@@ -2,9 +2,12 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 sys.path.insert(
     0, os.path.abspath("../../../..")
@@ -20,6 +23,8 @@ from litellm.proxy._types import (
 )
 from litellm.proxy.management_endpoints.internal_user_endpoints import (
     LiteLLM_UserTableWithKeyCount,
+    _assert_user_context_create_allowed,
+    _assert_user_context_update_allowed,
     _update_internal_user_params,
     get_user_key_counts,
     get_users,
@@ -29,6 +34,173 @@ from litellm.proxy.management_endpoints.internal_user_endpoints import (
 from litellm.proxy.proxy_server import app
 
 client = TestClient(app)
+
+
+def test_new_user_request_accepts_company_ids_alias():
+    request = NewUserRequest(
+        user_email="user@example.com",
+        company_ids=["company-1", "company-2"],
+    )
+
+    assert request.company_ids == ["company-1", "company-2"]
+    assert request.organizations == ["company-1", "company-2"]
+
+
+def test_new_user_request_accepts_company_id_alias():
+    request = NewUserRequest(
+        user_email="user@example.com",
+        company_id="company-1",
+        project_id="project-1",
+    )
+
+    assert request.company_id == "company-1"
+    assert request.organization_id == "company-1"
+    assert request.company_ids == ["company-1"]
+    assert request.organizations == ["company-1"]
+    assert request.project_id == "project-1"
+    assert request.project_ids == ["project-1"]
+
+
+def test_new_user_request_accepts_companies_alias():
+    request = NewUserRequest(
+        user_email="user@example.com",
+        companies=["company-1"],
+    )
+
+    assert request.company_ids == ["company-1"]
+    assert request.companies == ["company-1"]
+    assert request.organizations == ["company-1"]
+
+
+def test_new_user_request_rejects_conflicting_company_and_organization_lists():
+    with pytest.raises(ValidationError, match="company_ids and organizations"):
+        NewUserRequest(
+            user_email="user@example.com",
+            company_ids=["company-1"],
+            organizations=["company-2"],
+        )
+
+
+def test_new_user_request_rejects_conflicting_company_id_and_organization_id():
+    with pytest.raises(ValidationError, match="company_id and organization_id"):
+        NewUserRequest(
+            user_email="user@example.com",
+            company_id="company-1",
+            organization_id="company-2",
+        )
+
+
+def test_new_user_and_update_user_request_accept_project_ids():
+    new_request = NewUserRequest(
+        user_email="user@example.com",
+        company_ids=["company-1"],
+        project_ids=["project-1"],
+    )
+    update_request = UpdateUserRequest(
+        user_id="user-1",
+        company_ids=["company-1"],
+        project_ids=["project-1"],
+    )
+
+    assert new_request.project_ids == ["project-1"]
+    assert update_request.project_ids == ["project-1"]
+    assert update_request.organizations == ["company-1"]
+
+
+def test_new_user_and_update_user_request_reject_conflicting_project_aliases():
+    with pytest.raises(ValidationError, match="project_id and project_ids"):
+        NewUserRequest(
+            user_email="user@example.com",
+            project_id="project-1",
+            project_ids=["project-2"],
+        )
+
+    with pytest.raises(ValidationError, match="project_id and project_ids"):
+        UpdateUserRequest(
+            user_id="user-1",
+            project_id="project-1",
+            project_ids=["project-2"],
+        )
+
+
+def test_update_user_request_accepts_company_id_and_project_id_aliases():
+    update_request = UpdateUserRequest(
+        user_id="user-1",
+        company_id="company-1",
+        project_id="project-1",
+    )
+
+    assert update_request.company_id == "company-1"
+    assert update_request.organization_id == "company-1"
+    assert update_request.company_ids == ["company-1"]
+    assert update_request.organizations == ["company-1"]
+    assert update_request.project_id == "project-1"
+    assert update_request.project_ids == ["project-1"]
+
+
+def test_update_user_request_rejects_conflicting_company_id_and_organization_id():
+    with pytest.raises(ValidationError, match="company_id and organization_id"):
+        UpdateUserRequest(
+            user_id="user-1",
+            company_id="company-1",
+            organization_id="company-2",
+        )
+
+
+def test_user_request_schema_marks_organization_aliases_internal_deprecated():
+    for model in (NewUserRequest, UpdateUserRequest):
+        properties = model.model_json_schema()["properties"]
+
+        assert "company_ids" in properties
+        assert "project_ids" in properties
+        assert properties["organization_id"]["deprecated"] is True
+        assert properties["organization_id"]["x-internal"] is True
+        assert (
+            properties["organization_id"]["x-compat-alias-for"]
+            == "company_id"
+        )
+
+        for field_name in ("organization_ids", "organizations"):
+            assert properties[field_name]["deprecated"] is True
+            assert properties[field_name]["x-internal"] is True
+            assert (
+                properties[field_name]["x-compat-alias-for"]
+                == "company_ids"
+            )
+
+
+def test_user_list_schema_exposes_company_project_and_hides_legacy_organization_alias():
+    user_list_route = next(
+        route
+        for route in app.routes
+        if getattr(route, "path", None) == "/user/list"
+    )
+    query_params = {
+        param.name: getattr(param.field_info, "include_in_schema", True)
+        for param in user_list_route.dependant.query_params
+    }
+
+    assert query_params["company_ids"] is True
+    assert query_params["project_ids"] is True
+    assert query_params["organization_ids"] is False
+
+
+def test_user_info_v2_schema_exposes_company_project_without_organization_aliases():
+    from litellm.proxy._types import UserInfoV2Response
+
+    properties = UserInfoV2Response.model_json_schema()["properties"]
+
+    for field_name in (
+        "company_ids",
+        "company_names",
+        "project_ids",
+        "project_names",
+    ):
+        assert field_name in properties
+
+    assert "organization_id" not in properties
+    assert "organization_ids" not in properties
+    assert "organizations" not in properties
 
 
 @pytest.mark.asyncio
@@ -216,6 +388,8 @@ async def test_ui_view_users_non_org_admin_returns_403(mocker):
 
     assert exc_info.value.status_code == 403
     assert "scope_user_search_to_org is enabled" in str(exc_info.value.detail)
+    assert "company admins" in str(exc_info.value.detail)
+    assert "organization admins" not in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio
@@ -655,6 +829,497 @@ async def test_get_users_includes_timestamps(mocker):
     assert user_response.created_at == mock_user_data["created_at"]
     assert user_response.updated_at == mock_user_data["updated_at"]
     assert user_response.key_count == 0
+
+
+@pytest.mark.asyncio
+async def test_get_users_filters_and_returns_company_project_context(mocker):
+    mock_prisma_client = mocker.MagicMock()
+
+    mock_user_data = {
+        "user_id": "user-project",
+        "user_email": "project@example.com",
+        "user_role": "internal_user",
+        "teams": ["team-project"],
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+    }
+    mock_user_row = mocker.MagicMock()
+    mock_user_row.user_id = "user-project"
+    mock_user_row.model_dump.return_value = mock_user_data
+
+    captured_where_conditions = {}
+
+    async def mock_user_find_many(*args, **kwargs):
+        captured_where_conditions.update(kwargs.get("where") or {})
+        return [mock_user_row]
+
+    async def mock_count(*args, **kwargs):
+        return 1
+
+    async def mock_project_find_many(*args, **kwargs):
+        where = kwargs.get("where") or {}
+        if "project_id" in where:
+            return [
+                SimpleNamespace(
+                    project_id="project-1",
+                    project_alias="Project One",
+                    team_id="team-project",
+                    litellm_team_table=SimpleNamespace(organization_id="company-1"),
+                )
+            ]
+        return [
+            SimpleNamespace(
+                project_id="project-1",
+                project_alias="Project One",
+                team_id="team-project",
+            )
+        ]
+
+    mock_prisma_client.db.litellm_usertable.find_many = mock_user_find_many
+    mock_prisma_client.db.litellm_usertable.count = mock_count
+    mock_prisma_client.db.litellm_organizationmembership.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(user_id="user-project", organization_id="company-1")
+        ]
+    )
+    mock_prisma_client.db.litellm_teamtable.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(team_id="team-project", organization_id="company-1")
+        ]
+    )
+    mock_prisma_client.db.litellm_projecttable.find_many = mock_project_find_many
+    mock_prisma_client.db.litellm_organizationtable.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id="company-1", organization_alias="Company One"
+            )
+        ]
+    )
+
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.get_user_key_counts",
+        mocker.AsyncMock(return_value={"user-project": 0}),
+    )
+
+    admin_key = UserAPIKeyAuth(user_id="admin", user_role=LitellmUserRoles.PROXY_ADMIN)
+    response = await get_users(
+        page=1,
+        page_size=25,
+        project_ids="project-1",
+        user_api_key_dict=admin_key,
+    )
+
+    assert captured_where_conditions["teams"] == {"hasSome": ["team-project"]}
+    user_response = response["users"][0]
+    assert user_response.company_ids == ["company-1"]
+    assert user_response.company_names == ["Company One"]
+    assert user_response.project_ids == ["project-1"]
+    assert user_response.project_names == ["Project One"]
+
+
+@pytest.mark.asyncio
+async def test_get_users_project_member_can_list_project_users(mocker):
+    mock_prisma_client = mocker.MagicMock()
+
+    mock_user_data = {
+        "user_id": "user-project",
+        "user_email": "project@example.com",
+        "user_role": "internal_user",
+        "teams": ["team-project"],
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+    }
+    mock_user_row = mocker.MagicMock()
+    mock_user_row.user_id = "user-project"
+    mock_user_row.model_dump.return_value = mock_user_data
+
+    captured_where_conditions = {}
+
+    async def mock_user_find_many(*args, **kwargs):
+        captured_where_conditions.update(kwargs.get("where") or {})
+        return [mock_user_row]
+
+    async def mock_project_find_many(*args, **kwargs):
+        where = kwargs.get("where") or {}
+        if "project_id" in where:
+            return [
+                SimpleNamespace(
+                    project_id="project-1",
+                    project_alias="Project One",
+                    team_id="team-project",
+                    litellm_team_table=SimpleNamespace(organization_id="company-1"),
+                )
+            ]
+        return [
+            SimpleNamespace(
+                project_id="project-1",
+                project_alias="Project One",
+                team_id="team-project",
+            )
+        ]
+
+    mock_prisma_client.db.litellm_usertable.find_many = mock_user_find_many
+    mock_prisma_client.db.litellm_usertable.count = mocker.AsyncMock(return_value=1)
+    mock_prisma_client.db.litellm_organizationmembership.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(user_id="user-project", organization_id="company-1")
+        ]
+    )
+    mock_prisma_client.db.litellm_teamtable.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                team_id="team-project",
+                organization_id="company-1",
+                members_with_roles=[
+                    SimpleNamespace(user_id="project-member", role="user")
+                ],
+            )
+        ]
+    )
+    mock_prisma_client.db.litellm_projecttable.find_many = mock_project_find_many
+    mock_prisma_client.db.litellm_organizationtable.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id="company-1", organization_alias="Company One"
+            )
+        ]
+    )
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.get_user_object",
+        mocker.AsyncMock(
+            return_value=SimpleNamespace(
+                user_id="project-member",
+                organization_memberships=[],
+                teams=["team-project"],
+            )
+        ),
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.get_user_key_counts",
+        mocker.AsyncMock(return_value={"user-project": 0}),
+    )
+
+    response = await get_users(
+        page=1,
+        page_size=25,
+        project_ids="project-1",
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="project-member",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        ),
+    )
+
+    assert captured_where_conditions["teams"] == {"hasSome": ["team-project"]}
+    assert response["users"][0].project_ids == ["project-1"]
+
+
+@pytest.mark.asyncio
+async def test_project_admin_can_update_user_project_context_without_company_admin(
+    mocker,
+):
+    mock_prisma_client = mocker.MagicMock()
+    mock_prisma_client.db.litellm_organizationmembership.find_many = mocker.AsyncMock(
+        return_value=[]
+    )
+    mock_prisma_client.db.litellm_teamtable.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                team_id="team-project",
+                organization_id="company-1",
+                members_with_roles=[
+                    SimpleNamespace(user_id="project-admin", role="admin")
+                ],
+            )
+        ]
+    )
+
+    await _assert_user_context_update_allowed(
+        prisma_client=mock_prisma_client,
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="project-admin",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        ),
+        target_user_id="target-user",
+        requested_company_ids=["company-1"],
+        existing_company_ids=["company-1"],
+        project_context={
+            "project_ids": ["project-1"],
+            "project_names": ["Project One"],
+            "team_ids": ["team-project"],
+            "company_ids": ["company-1"],
+        },
+        company_membership_was_set=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_project_member_cannot_create_user_project_context_without_admin_role(
+    mocker,
+):
+    mock_prisma_client = mocker.MagicMock()
+    mock_prisma_client.db.litellm_organizationmembership.find_many = mocker.AsyncMock(
+        return_value=[]
+    )
+    mock_prisma_client.db.litellm_teamtable.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                team_id="team-project",
+                organization_id="company-1",
+                members_with_roles=[
+                    SimpleNamespace(user_id="project-member", role="user")
+                ],
+            )
+        ]
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _assert_user_context_create_allowed(
+            prisma_client=mock_prisma_client,
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="project-member",
+                user_role=LitellmUserRoles.INTERNAL_USER,
+            ),
+            requested_company_ids=["company-1"],
+            project_context={
+                "project_ids": ["project-1"],
+                "project_names": ["Project One"],
+                "team_ids": ["team-project"],
+                "company_ids": ["company-1"],
+            },
+            company_membership_was_set=False,
+            project_membership_was_set=True,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "project admin" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_company_admin_can_create_user_company_context(mocker):
+    mock_prisma_client = mocker.MagicMock()
+    mock_prisma_client.db.litellm_organizationmembership.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(organization_id="company-1", user_role="org_admin")
+        ]
+    )
+
+    await _assert_user_context_create_allowed(
+        prisma_client=mock_prisma_client,
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="company-admin",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        ),
+        requested_company_ids=["company-1"],
+        project_context={
+            "project_ids": [],
+            "project_names": [],
+            "team_ids": [],
+            "company_ids": [],
+        },
+        company_membership_was_set=True,
+        project_membership_was_set=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_company_admin_cannot_create_user_outside_company_context(mocker):
+    mock_prisma_client = mocker.MagicMock()
+    mock_prisma_client.db.litellm_organizationmembership.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(organization_id="company-1", user_role="org_admin")
+        ]
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _assert_user_context_create_allowed(
+            prisma_client=mock_prisma_client,
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="company-admin",
+                user_role=LitellmUserRoles.INTERNAL_USER,
+            ),
+            requested_company_ids=["company-2"],
+            project_context={
+                "project_ids": [],
+                "project_names": [],
+                "team_ids": [],
+                "company_ids": [],
+            },
+            company_membership_was_set=True,
+            project_membership_was_set=False,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "company_id(s)=['company-2']" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_company_admin_can_update_user_company_context(mocker):
+    mock_prisma_client = mocker.MagicMock()
+    mock_prisma_client.db.litellm_organizationmembership.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(organization_id="company-1", user_role="org_admin")
+        ]
+    )
+
+    await _assert_user_context_update_allowed(
+        prisma_client=mock_prisma_client,
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="company-admin",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        ),
+        target_user_id="target-user",
+        requested_company_ids=["company-1"],
+        existing_company_ids=["company-1"],
+        project_context={
+            "project_ids": [],
+            "project_names": [],
+            "team_ids": [],
+            "company_ids": [],
+        },
+        company_membership_was_set=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_company_admin_cannot_update_user_outside_company_context(mocker):
+    mock_prisma_client = mocker.MagicMock()
+    mock_prisma_client.db.litellm_organizationmembership.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(organization_id="company-1", user_role="org_admin")
+        ]
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _assert_user_context_update_allowed(
+            prisma_client=mock_prisma_client,
+            user_api_key_dict=UserAPIKeyAuth(
+                user_id="company-admin",
+                user_role=LitellmUserRoles.INTERNAL_USER,
+            ),
+            target_user_id="target-user",
+            requested_company_ids=["company-2"],
+            existing_company_ids=["company-1"],
+            project_context={
+                "project_ids": [],
+                "project_names": [],
+                "team_ids": [],
+                "company_ids": [],
+            },
+            company_membership_was_set=True,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert "company_id(s)=['company-2']" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_new_user_company_id_alias_maps_to_company_membership(mocker):
+    mock_prisma_client = mocker.MagicMock()
+    mock_prisma_client.db.litellm_usertable.count = mocker.AsyncMock(return_value=1)
+
+    mock_license_check = mocker.MagicMock()
+    mock_license_check.is_over_limit.return_value = False
+    mock_generate_key_helper_fn = mocker.AsyncMock(
+        return_value={
+            "user_id": "created-user",
+            "user_email": "company@example.com",
+            "token": "sk-created",
+        }
+    )
+    mock_assert_create_allowed = mocker.AsyncMock()
+    mock_ensure_company_memberships = mocker.AsyncMock()
+
+    async def enrich_with_company_context(user_dict, prisma_client):
+        user_dict.update(
+            {
+                "company_ids": ["company-1"],
+                "company_names": ["Company One"],
+                "project_ids": [],
+                "project_names": [],
+            }
+        )
+        return user_dict
+
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mocker.patch("litellm.proxy.proxy_server._license_check", mock_license_check)
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._check_duplicate_user_id",
+        mocker.AsyncMock(),
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._check_duplicate_user_email",
+        mocker.AsyncMock(),
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.check_if_default_team_set",
+        mocker.MagicMock(return_value=None),
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._project_context_for_project_ids",
+        mocker.AsyncMock(
+            return_value={
+                "project_ids": [],
+                "project_names": [],
+                "team_ids": [],
+                "company_ids": [],
+            }
+        ),
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._assert_user_context_create_allowed",
+        mock_assert_create_allowed,
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.generate_key_helper_fn",
+        mock_generate_key_helper_fn,
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._ensure_user_company_memberships",
+        mock_ensure_company_memberships,
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._enrich_user_dict_with_company_project_context",
+        mocker.AsyncMock(side_effect=enrich_with_company_context),
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.UserManagementEventHooks.async_user_created_hook",
+        mocker.AsyncMock(),
+    )
+
+    response = await new_user(
+        data=NewUserRequest(
+            user_email="company@example.com",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+            company_id="company-1",
+            auto_create_key=False,
+        ),
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="company-admin",
+            user_role=LitellmUserRoles.INTERNAL_USER,
+        ),
+    )
+
+    mock_assert_create_allowed.assert_awaited_once()
+    assert mock_assert_create_allowed.call_args.kwargs["requested_company_ids"] == [
+        "company-1"
+    ]
+    assert mock_assert_create_allowed.call_args.kwargs["company_membership_was_set"]
+    mock_ensure_company_memberships.assert_awaited_once_with(
+        prisma_client=mock_prisma_client,
+        user_id="created-user",
+        company_ids=["company-1"],
+    )
+    generate_kwargs = mock_generate_key_helper_fn.call_args.kwargs
+    assert generate_kwargs["request_type"] == "user"
+    assert "company_id" not in generate_kwargs
+    assert "company_ids" not in generate_kwargs
+    assert "organization_id" not in generate_kwargs
+    assert "organization_ids" not in generate_kwargs
+    assert "organizations" not in generate_kwargs
+    assert response.company_ids == ["company-1"]
+    assert response.company_names == ["Company One"]
 
 
 def test_validate_sort_params():
@@ -2096,9 +2761,183 @@ async def test_user_update_rejects_silent_create_for_non_proxy_admin(mocker):
     assert exc.value.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_update_user_company_id_alias_maps_to_membership_and_sanitizes_persistence(
+    mocker,
+):
+    from litellm.proxy.management_endpoints.internal_user_endpoints import (
+        _update_single_user_helper,
+    )
+
+    existing_user_row = mocker.MagicMock()
+    existing_user_row.model_dump.return_value = {
+        "user_id": "target-user",
+        "user_email": "target@example.com",
+        "user_alias": "Target User",
+        "user_role": "internal_user",
+        "models": [],
+        "teams": [],
+        "metadata": {},
+    }
+    updated_user_row = mocker.MagicMock()
+    updated_user_row.model_dump.return_value = {
+        "user_id": "target-user",
+        "user_email": "target@example.com",
+        "user_alias": "Updated User",
+        "user_role": "internal_user",
+        "models": [],
+        "teams": ["project-team"],
+        "metadata": {},
+    }
+
+    mock_prisma_client = mocker.MagicMock()
+    mock_prisma_client.db.litellm_usertable.find_first = mocker.AsyncMock(
+        side_effect=[existing_user_row, updated_user_row]
+    )
+    mock_prisma_client.update_data = mocker.AsyncMock(
+        return_value={
+            "user_id": "target-user",
+            "user_email": "target@example.com",
+            "user_alias": "Updated User",
+        }
+    )
+    mock_replace_company_memberships = mocker.AsyncMock()
+    mock_sync_project_memberships = mocker.AsyncMock()
+
+    async def enrich_with_context(user_dict, prisma_client):
+        user_dict.update(
+            {
+                "company_ids": ["company-1"],
+                "company_names": ["Company One"],
+                "project_ids": ["project-1"],
+                "project_names": ["Project One"],
+            }
+        )
+        return user_dict
+
+    mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
+    mocker.patch("litellm.proxy.proxy_server.litellm_proxy_admin_name", "proxy-admin")
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._get_user_company_membership_ids",
+        mocker.AsyncMock(return_value=["company-1"]),
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._project_context_for_project_ids",
+        mocker.AsyncMock(
+            return_value={
+                "project_ids": ["project-1"],
+                "project_names": ["Project One"],
+                "team_ids": ["project-team"],
+                "company_ids": ["company-1"],
+            }
+        ),
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._replace_user_company_memberships",
+        mock_replace_company_memberships,
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._sync_user_project_team_memberships",
+        mock_sync_project_memberships,
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints._enrich_user_dict_with_company_project_context",
+        mocker.AsyncMock(side_effect=enrich_with_context),
+    )
+    mocker.patch(
+        "litellm.proxy.management_endpoints.internal_user_endpoints.UserManagementEventHooks.create_internal_user_audit_log",
+        mocker.AsyncMock(),
+    )
+
+    response = await _update_single_user_helper(
+        user_request=UpdateUserRequest(
+            user_id="target-user",
+            user_alias="Updated User",
+            company_id="company-1",
+            project_id="project-1",
+        ),
+        user_api_key_dict=UserAPIKeyAuth(
+            user_id="proxy-admin",
+            user_role=LitellmUserRoles.PROXY_ADMIN,
+        ),
+    )
+
+    update_payload = mock_prisma_client.update_data.call_args.kwargs["data"]
+    assert update_payload["user_id"] == "target-user"
+    assert update_payload["user_alias"] == "Updated User"
+    assert "company_id" not in update_payload
+    assert "company_ids" not in update_payload
+    assert "organization_id" not in update_payload
+    assert "organization_ids" not in update_payload
+    assert "organizations" not in update_payload
+    assert "project_id" not in update_payload
+    assert "project_ids" not in update_payload
+    mock_replace_company_memberships.assert_awaited_once_with(
+        prisma_client=mock_prisma_client,
+        user_id="target-user",
+        company_ids=["company-1"],
+    )
+    mock_sync_project_memberships.assert_awaited_once()
+    assert response["company_ids"] == ["company-1"]
+    assert response["project_ids"] == ["project-1"]
+
+
 # =====================================================================
 # /v2/user/info endpoint tests
 # =====================================================================
+
+
+def _mock_user_info_v2_tenant_context(
+    mocker,
+    mock_prisma_client,
+    user_id: str,
+    *,
+    company_ids=None,
+    company_names=None,
+    team_company_ids=None,
+    projects=None,
+):
+    company_ids = company_ids or []
+    company_names = company_names or {}
+    team_company_ids = team_company_ids or {}
+    projects = projects or []
+    all_company_ids = sorted(set(company_ids + list(team_company_ids.values())))
+
+    mock_prisma_client.db.litellm_organizationmembership.find_many = (
+        mocker.AsyncMock(
+            return_value=[
+                SimpleNamespace(user_id=user_id, organization_id=company_id)
+                for company_id in company_ids
+            ]
+        )
+    )
+    mock_prisma_client.db.litellm_teamtable.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(team_id=team_id, organization_id=company_id)
+            for team_id, company_id in team_company_ids.items()
+        ]
+    )
+    mock_prisma_client.db.litellm_projecttable.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                team_id=project["team_id"],
+                project_id=project["project_id"],
+                project_alias=project.get("project_alias"),
+            )
+            for project in projects
+        ]
+    )
+    mock_prisma_client.db.litellm_organizationtable.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id=company_id,
+                organization_alias=company_names.get(
+                    company_id, f"Company {company_id.rsplit('-', 1)[-1].title()}"
+                ),
+            )
+            for company_id in all_company_ids
+        ]
+    )
 
 
 @pytest.mark.asyncio
@@ -2138,6 +2977,20 @@ async def test_user_info_v2_proxy_admin_can_query_any_user(mocker):
 
     mock_prisma_client.db.litellm_usertable.find_unique = mocker.AsyncMock(
         side_effect=mock_find_unique
+    )
+    _mock_user_info_v2_tenant_context(
+        mocker,
+        mock_prisma_client,
+        user_id="target-user-123",
+        company_ids=["company-1"],
+        team_company_ids={"team-1": "company-1"},
+        projects=[
+            {
+                "team_id": "team-1",
+                "project_id": "project-1",
+                "project_alias": "Project One",
+            }
+        ],
     )
 
     mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
@@ -2205,6 +3058,11 @@ async def test_user_info_v2_internal_user_can_query_self(mocker):
     mock_prisma_client.db.litellm_usertable.find_unique = mocker.AsyncMock(
         side_effect=mock_find_unique
     )
+    _mock_user_info_v2_tenant_context(
+        mocker,
+        mock_prisma_client,
+        user_id="self-user",
+    )
 
     mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
 
@@ -2249,6 +3107,11 @@ async def test_user_info_v2_internal_user_cannot_query_other(mocker):
 
     mock_prisma_client.db.litellm_usertable.find_unique = mocker.AsyncMock(
         side_effect=mock_find_unique
+    )
+    _mock_user_info_v2_tenant_context(
+        mocker,
+        mock_prisma_client,
+        user_id="my-user-id",
     )
 
     mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
@@ -2306,6 +3169,11 @@ async def test_user_info_v2_no_user_id_defaults_to_self(mocker):
 
     mock_prisma_client.db.litellm_usertable.find_unique = mocker.AsyncMock(
         side_effect=mock_find_unique
+    )
+    _mock_user_info_v2_tenant_context(
+        mocker,
+        mock_prisma_client,
+        user_id="my-user-id",
     )
 
     mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
@@ -2402,6 +3270,26 @@ async def test_user_info_v2_response_shape(mocker):
     mock_prisma_client.db.litellm_usertable.find_unique = mocker.AsyncMock(
         side_effect=mock_find_unique
     )
+    _mock_user_info_v2_tenant_context(
+        mocker,
+        mock_prisma_client,
+        user_id="shape-test-user",
+        company_ids=["company-1"],
+        company_names={"company-1": "Company One", "company-2": "Company Two"},
+        team_company_ids={"team-a": "company-1", "team-b": "company-2"},
+        projects=[
+            {
+                "team_id": "team-a",
+                "project_id": "project-a",
+                "project_alias": "Project A",
+            },
+            {
+                "team_id": "team-b",
+                "project_id": "project-b",
+                "project_alias": "Project B",
+            },
+        ],
+    )
 
     mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
 
@@ -2436,6 +3324,10 @@ async def test_user_info_v2_response_shape(mocker):
         "updated_at",
         "sso_user_id",
         "teams",
+        "company_ids",
+        "company_names",
+        "project_ids",
+        "project_names",
     }
     assert set(response_dict.keys()) == expected_fields
 
@@ -2447,6 +3339,10 @@ async def test_user_info_v2_response_shape(mocker):
     # Verify models is a list of strings
     assert isinstance(response.models, list)
     assert response.models == ["gpt-3.5-turbo"]
+    assert response.company_ids == ["company-1", "company-2"]
+    assert response.company_names == ["Company One", "Company Two"]
+    assert response.project_ids == ["project-a", "project-b"]
+    assert response.project_names == ["Project A", "Project B"]
 
 
 @pytest.mark.asyncio
@@ -2500,6 +3396,7 @@ async def test_user_info_v2_team_admin_can_query_team_member(mocker):
     # Mock team with caller as admin
     mock_team = mocker.MagicMock()
     mock_team.team_id = "shared-team-id"
+    mock_team.organization_id = "company-1"
     mock_team.model_dump.return_value = {
         "team_id": "shared-team-id",
         "team_alias": "Shared Team",
@@ -2514,6 +3411,33 @@ async def test_user_info_v2_team_admin_can_query_team_member(mocker):
 
     mock_prisma_client.db.litellm_teamtable.find_many = mocker.AsyncMock(
         side_effect=mock_find_many_teams
+    )
+    mock_prisma_client.db.litellm_organizationmembership.find_many = (
+        mocker.AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    user_id="target-member",
+                    organization_id="company-1",
+                )
+            ]
+        )
+    )
+    mock_prisma_client.db.litellm_projecttable.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                team_id="shared-team-id",
+                project_id="project-shared",
+                project_alias="Shared Project",
+            )
+        ]
+    )
+    mock_prisma_client.db.litellm_organizationtable.find_many = mocker.AsyncMock(
+        return_value=[
+            SimpleNamespace(
+                organization_id="company-1",
+                organization_alias="Company One",
+            )
+        ]
     )
 
     mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)
@@ -2564,6 +3488,9 @@ async def test_user_info_v2_team_admin_cannot_query_non_team_member(mocker):
 
     mock_prisma_client.db.litellm_usertable.find_unique = mocker.AsyncMock(
         side_effect=mock_find_unique
+    )
+    mock_prisma_client.db.litellm_organizationmembership.find_many = (
+        mocker.AsyncMock(return_value=[])
     )
 
     # Mock team where caller is admin
@@ -2642,6 +3569,11 @@ async def test_user_info_v2_url_encoding_plus_character(mocker):
 
     mock_prisma_client.db.litellm_usertable.find_unique = mocker.AsyncMock(
         side_effect=mock_find_unique
+    )
+    _mock_user_info_v2_tenant_context(
+        mocker,
+        mock_prisma_client,
+        user_id=expected_user_id,
     )
 
     mocker.patch("litellm.proxy.proxy_server.prisma_client", mock_prisma_client)

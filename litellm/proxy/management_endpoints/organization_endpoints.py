@@ -62,7 +62,7 @@ async def _verify_org_access(
     if not user_api_key_dict.user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have access to this organization",
+            detail="You do not have access to this company",
         )
 
     from litellm.proxy.proxy_server import proxy_logging_obj, user_api_key_cache
@@ -77,7 +77,7 @@ async def _verify_org_access(
     if caller_user is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have access to this organization",
+            detail="You do not have access to this company",
         )
 
     for m in caller_user.organization_memberships or []:
@@ -89,8 +89,72 @@ async def _verify_org_access(
 
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
-        detail="You do not have access to this organization",
+        detail="You do not have access to this company",
     )
+
+
+def _resolve_company_id_filter(
+    *,
+    company_id: Optional[str],
+    organization_id: Optional[str],
+    company_field_name: str = "company_id",
+    organization_field_name: str = "organization_id",
+) -> Optional[str]:
+    """Resolve product Company ID input to LiteLLM's internal organization ID."""
+
+    present_values = [
+        (name, value.strip())
+        for name, value in (
+            (company_field_name, company_id),
+            (organization_field_name, organization_id),
+        )
+        if isinstance(value, str) and value.strip()
+    ]
+    if not present_values:
+        return None
+    if len(present_values) == 2 and present_values[0][1] != present_values[1][1]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": f"{company_field_name} and {organization_field_name} refer to the same tenant and must match when both are provided."
+            },
+        )
+    return present_values[0][1]
+
+
+def _resolve_company_name_filter(
+    *,
+    company_name: Optional[str],
+    organization_alias: Optional[str],
+) -> Optional[str]:
+    """Resolve product Company name input to LiteLLM's internal organization alias."""
+
+    present_values = [
+        (name, value.strip())
+        for name, value in (
+            ("company_name", company_name),
+            ("org_alias", organization_alias),
+        )
+        if isinstance(value, str) and value.strip()
+    ]
+    if not present_values:
+        return None
+    if len(present_values) == 2 and present_values[0][1] != present_values[1][1]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "company_name and org_alias refer to the same tenant name and must match when both are provided."
+            },
+        )
+    return present_values[0][1]
+
+
+def _remove_product_company_alias_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Keep product-only Company aliases out of LiteLLM DB persistence payloads."""
+
+    data.pop("company_id", None)
+    data.pop("company_name", None)
+    return data
 
 
 def handle_nested_budget_structure_in_organization_update_request(
@@ -118,55 +182,63 @@ def handle_nested_budget_structure_in_organization_update_request(
 
 
 @router.post(
+    "/company/new",
+    tags=["company management"],
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=NewOrganizationResponse,
+)
+@router.post(
     "/organization/new",
     tags=["organization management"],
     dependencies=[Depends(user_api_key_auth)],
     response_model=NewOrganizationResponse,
+    include_in_schema=False,
 )
 async def new_organization(
     data: NewOrganizationRequest,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
-    Allow orgs to own teams
+    Allow companies to own teams.
 
-    Set org level budgets + model access.
+    Set company-level budgets + model access. `organization_id` remains accepted
+    as a LiteLLM compatibility alias for `company_id`.
 
-    Only admins can create orgs.
+    Only admins can create companies.
 
     # Parameters
 
-    - organization_alias: *str* - The name of the organization.
-    - models: *List* - The models the organization has access to.
-    - budget_id: *Optional[str]* - The id for a budget (tpm/rpm/max budget) for the organization.
+    - company_name: *str* - The company display name. `organization_alias` is accepted only as a LiteLLM compatibility alias.
+    - company_id: *Optional[str]* - The company ID. `organization_id` is accepted only as a LiteLLM compatibility alias.
+    - models: *List* - The models the company has access to.
+    - budget_id: *Optional[str]* - The id for a budget (tpm/rpm/max budget) for the company.
     ### IF NO BUDGET ID - CREATE ONE WITH THESE PARAMS ###
-    - max_budget: *Optional[float]* - Max budget for org
-    - tpm_limit: *Optional[int]* - Max tpm limit for org
-    - rpm_limit: *Optional[int]* - Max rpm limit for org
-    - model_rpm_limit: *Optional[Dict[str, int]]* - The RPM (Requests Per Minute) limit per model for this organization.
-    - model_tpm_limit: *Optional[Dict[str, int]]* - The TPM (Tokens Per Minute) limit per model for this organization.
-    - max_parallel_requests: *Optional[int]* - [Not Implemented Yet] Max parallel requests for org
+    - max_budget: *Optional[float]* - Max budget for company
+    - tpm_limit: *Optional[int]* - Max TPM limit for company
+    - rpm_limit: *Optional[int]* - Max RPM limit for company
+    - model_rpm_limit: *Optional[Dict[str, int]]* - The RPM (Requests Per Minute) limit per model for this company.
+    - model_tpm_limit: *Optional[Dict[str, int]]* - The TPM (Tokens Per Minute) limit per model for this company.
+    - max_parallel_requests: *Optional[int]* - [Not Implemented Yet] Max parallel requests for company
     - soft_budget: *Optional[float]* - [Not Implemented Yet] Get a slack alert when this soft budget is reached. Don't block requests.
     - model_max_budget: *Optional[dict]* - Max budget for a specific model
-    - budget_duration: *Optional[str]* - Frequency of reseting org budget
-    - metadata: *Optional[dict]* - Metadata for organization, store information for organization. Example metadata - {"extra_info": "some info"}
-    - blocked: *bool* - Flag indicating if the org is blocked or not - will stop all calls from keys with this org_id.
+    - budget_duration: *Optional[str]* - Frequency of resetting company budget
+    - metadata: *Optional[dict]* - Metadata for company. Example metadata - {"extra_info": "some info"}
+    - blocked: *bool* - Flag indicating if the company is blocked or not - will stop all calls from keys with this company_id.
     - tags: *Optional[List[str]]* - Tags for [tracking spend](https://litellm.vercel.app/docs/proxy/enterprise#tracking-spend-for-custom-tags) and/or doing [tag-based routing](https://litellm.vercel.app/docs/proxy/tag_routing).
-    - organization_id: *Optional[str]* - The organization id of the team. Default is None. Create via `/organization/new`.
     - model_aliases: Optional[dict] - Model aliases for the team. [Docs](https://docs.litellm.ai/docs/proxy/team_based_routing#create-team-with-model-alias)
-    - object_permission: Optional[LiteLLM_ObjectPermissionBase] - organization-specific object permission. Example - {"vector_stores": ["vector_store_1", "vector_store_2"]}. IF null or {} then no object permission.
-    - allowed_models: Optional[List[str]] - List of models the organization is allowed to access. If not set, defaults to the models field.
-    Case 1: Create new org **without** a budget_id
+    - object_permission: Optional[LiteLLM_ObjectPermissionBase] - company-specific object permission. Example - {"vector_stores": ["vector_store_1", "vector_store_2"]}. IF null or {} then no object permission.
+    - allowed_models: Optional[List[str]] - List of models the company is allowed to access. If not set, defaults to the models field.
+    Case 1: Create new company **without** a budget_id
 
     ```bash
-    curl --location 'http://0.0.0.0:4000/organization/new' \
+    curl --location 'http://0.0.0.0:4000/company/new' \
 
     --header 'Authorization: Bearer sk-1234' \
 
     --header 'Content-Type: application/json' \
 
     --data '{
-        "organization_alias": "my-secret-org",
+        "company_name": "my-secret-company",
         "models": ["model1", "model2"],
         "max_budget": 100
     }'
@@ -174,17 +246,17 @@ async def new_organization(
 
     ```
 
-    Case 2: Create new org **with** a budget_id
+    Case 2: Create new company **with** a budget_id
 
     ```bash
-    curl --location 'http://0.0.0.0:4000/organization/new' \
+    curl --location 'http://0.0.0.0:4000/company/new' \
 
     --header 'Authorization: Bearer sk-1234' \
 
     --header 'Content-Type: application/json' \
 
     --data '{
-        "organization_alias": "my-secret-org",
+        "company_name": "my-secret-company",
         "models": ["model1", "model2"],
         "budget_id": "428eeaa8-f3ac-4e85-a8fb-7dc8d7aa8689"
     }'
@@ -210,7 +282,7 @@ async def new_organization(
         raise HTTPException(
             status_code=401,
             detail={
-                "error": f"Only admins can create orgs. Your role is = {user_api_key_dict.user_role}"
+                "error": f"Only admins can create companies. Your role is = {user_api_key_dict.user_role}"
             },
         )
 
@@ -248,7 +320,7 @@ async def new_organization(
 
     if data.budget_id is None:
         """
-        Every organization needs a budget attached.
+        Every company needs a budget attached.
 
         If none provided, create one based on provided values
         """
@@ -278,7 +350,7 @@ async def new_organization(
     )
 
     """
-    Ensure only models that user has access to, are given to org
+    Ensure only models that user has access to are given to the company.
     """
     if len(user_api_key_dict.models) == 0:  # user has access to all models
         pass
@@ -287,7 +359,7 @@ async def new_organization(
             raise HTTPException(
                 status_code=400,
                 detail={
-                    "error": "User not allowed to give access to all models. Select models you want org to have access to."
+                    "error": "User not allowed to give access to all models. Select models you want the company to have access to."
                 },
             )
 
@@ -314,6 +386,7 @@ async def new_organization(
     new_organization_row = prisma_client.jsonify_object(
         organization_row.json(exclude_none=True)
     )
+    new_organization_row = _remove_product_company_alias_fields(new_organization_row)
     verbose_proxy_logger.info(
         f"new_organization_row: {json.dumps(new_organization_row, indent=2)}"
     )
@@ -327,24 +400,120 @@ async def new_organization(
     return response
 
 
+def _resolve_company_csv_filter(
+    *,
+    company_id: Optional[str],
+    company_ids: Optional[str],
+    organization_ids: Optional[str],
+    field_name: str = "company_id",
+    plural_field_name: str = "company_ids",
+    organization_field_name: str = "organization_ids",
+) -> Optional[str]:
+    """Resolve product Company filters to LiteLLM's internal organization IDs."""
+
+    values = [
+        (field_name, company_id),
+        (plural_field_name, company_ids),
+        (organization_field_name, organization_ids),
+    ]
+    present_values = [
+        (name, value.strip())
+        for name, value in values
+        if isinstance(value, str) and value.strip()
+    ]
+    if not present_values:
+        return None
+
+    resolved_value = present_values[0][1]
+    conflicting_names = [
+        name for name, value in present_values[1:] if value != resolved_value
+    ]
+    if conflicting_names:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "{} and {} refer to the same tenant list and must match when both are provided.".format(
+                    present_values[0][0],
+                    ", ".join(conflicting_names),
+                )
+            },
+        )
+    return resolved_value
+
+
+_COMPANY_DAILY_ACTIVITY_READ_ROLES = {
+    LitellmUserRoles.ORG_ADMIN.value,
+    LitellmUserRoles.INTERNAL_USER.value,
+    LitellmUserRoles.INTERNAL_USER_VIEW_ONLY.value,
+}
+
+
+def _company_ids_visible_for_daily_activity(memberships: List[Any]) -> List[str]:
+    visible_company_ids: List[str] = []
+    for membership in memberships:
+        company_id = getattr(membership, "organization_id", None)
+        if not isinstance(company_id, str) or not company_id:
+            continue
+        if (
+            getattr(membership, "user_role", None)
+            not in _COMPANY_DAILY_ACTIVITY_READ_ROLES
+        ):
+            continue
+        if company_id not in visible_company_ids:
+            visible_company_ids.append(company_id)
+    return visible_company_ids
+
+
+@router.get(
+    "/company/daily/activity",
+    response_model=SpendAnalyticsPaginatedResponse,
+    tags=["company management"],
+)
 @router.get(
     "/organization/daily/activity",
     response_model=SpendAnalyticsPaginatedResponse,
-    tags=["organization management"],
+    tags=["company management"],
+    include_in_schema=False,
 )
 async def get_organization_daily_activity(
-    organization_ids: Optional[str] = None,
+    organization_ids: Optional[str] = fastapi.Query(
+        default=None,
+        description="LiteLLM compatibility alias for company_ids. Prefer company_ids or company_id.",
+        include_in_schema=False,
+    ),
+    company_ids: Optional[str] = fastapi.Query(
+        default=None,
+        description="Comma-separated company IDs to include.",
+    ),
+    company_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Single company ID to include.",
+    ),
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     model: Optional[str] = None,
     api_key: Optional[str] = None,
     page: int = 1,
     page_size: int = 10,
-    exclude_organization_ids: Optional[str] = None,
+    exclude_organization_ids: Optional[str] = fastapi.Query(
+        default=None,
+        description="LiteLLM compatibility alias for exclude_company_ids.",
+        include_in_schema=False,
+    ),
+    exclude_company_ids: Optional[str] = fastapi.Query(
+        default=None,
+        description="Comma-separated company IDs to exclude.",
+    ),
+    exclude_company_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Single company ID to exclude.",
+    ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
-    Get daily activity for specific organizations or all accessible organizations.
+    Get daily activity for specific companies or all accessible companies.
+
+    `organization_ids` remains accepted as LiteLLM compatibility.
     """
     from litellm.proxy.proxy_server import (
         prisma_client,
@@ -356,6 +525,20 @@ async def get_organization_daily_activity(
             detail={"error": CommonProxyErrors.db_not_connected_error.value},
         )
 
+    organization_ids = _resolve_company_csv_filter(
+        company_id=company_id,
+        company_ids=company_ids,
+        organization_ids=organization_ids,
+    )
+    exclude_organization_ids = _resolve_company_csv_filter(
+        company_id=exclude_company_id,
+        company_ids=exclude_company_ids,
+        organization_ids=exclude_organization_ids,
+        field_name="exclude_company_id",
+        plural_field_name="exclude_company_ids",
+        organization_field_name="exclude_organization_ids",
+    )
+
     # Parse comma-separated ids
     org_ids_list = organization_ids.split(",") if organization_ids else None
     exclude_org_ids_list: Optional[List[str]] = None
@@ -364,27 +547,23 @@ async def get_organization_daily_activity(
             exclude_organization_ids.split(",") if exclude_organization_ids else None
         )
 
-    # Restrict non-proxy-admins to only organizations where they are org_admin
+    # Restrict non-proxy-admins to only companies where they have Company read membership.
     if not _user_has_admin_view(user_api_key_dict):
         memberships = await prisma_client.db.litellm_organizationmembership.find_many(
             where={"user_id": user_api_key_dict.user_id}
         )
-        admin_org_ids = [
-            m.organization_id
-            for m in memberships
-            if m.user_role == LitellmUserRoles.ORG_ADMIN.value
-        ]
+        visible_org_ids = _company_ids_visible_for_daily_activity(memberships)
         if org_ids_list is None:
-            # Default to orgs where user is org_admin
-            org_ids_list = admin_org_ids
+            # Default to companies where the user has read membership.
+            org_ids_list = visible_org_ids
         else:
-            # Ensure user is org_admin for all requested orgs
+            # Ensure the user has read membership for all requested companies.
             for org_id in org_ids_list:
-                if org_id not in admin_org_ids:
+                if org_id not in visible_org_ids:
                     raise HTTPException(
                         status_code=403,
                         detail={
-                            "error": "User is not org_admin for Organization= {}.".format(
+                            "error": "User does not have access to company_id= {}.".format(
                                 org_id
                             )
                         },
@@ -444,17 +623,25 @@ async def _set_object_permission(
 
 
 @router.patch(
+    "/company/update",
+    tags=["company management"],
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=LiteLLM_OrganizationTableWithMembers,
+)
+@router.patch(
     "/organization/update",
     tags=["organization management"],
     dependencies=[Depends(user_api_key_auth)],
     response_model=LiteLLM_OrganizationTableWithMembers,
+    include_in_schema=False,
 )
 async def update_organization(
     request: Request,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
-    Update an organization
+    Update a company. `organization_id` remains accepted as a LiteLLM
+    compatibility alias for `company_id`.
     """
     from litellm.proxy.proxy_server import prisma_client
 
@@ -503,12 +690,11 @@ async def update_organization(
     if data.organization_id is None:
         raise HTTPException(
             status_code=400,
-            detail={"error": "organization_id is required"},
+            detail={"error": "company_id is required"},
         )
 
-    # IDOR guard: only proxy admins / org admins of THIS org may update
-    # it. Without this, any authenticated key holder could rewrite
-    # another organization's metadata, budgets, and object permissions.
+    # IDOR guard: only proxy admins / company admins of THIS company may
+    # update it.
     await _verify_org_access(
         organization_id=data.organization_id,
         user_api_key_dict=user_api_key_dict,
@@ -523,10 +709,12 @@ async def update_organization(
 
     if existing_organization_row is None:
         raise ValueError(
-            f"Organization not found for organization_id={data.organization_id}"
+            f"Company not found for company_id={data.organization_id}"
         )
 
-    updated_organization_row_json = data.model_dump(exclude_none=True)
+    updated_organization_row_json = _remove_product_company_alias_fields(
+        data.model_dump(exclude_none=True)
+    )
     # Merge metadata from existing organization with updated metadata
     if updated_organization_row_json.get("metadata") is not None:
         existing_metadata = existing_organization_row.metadata or {}
@@ -601,21 +789,29 @@ async def handle_update_object_permission(
 
 
 @router.delete(
+    "/company/delete",
+    tags=["company management"],
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=List[LiteLLM_OrganizationTableWithMembers],
+)
+@router.delete(
     "/organization/delete",
     tags=["organization management"],
     dependencies=[Depends(user_api_key_auth)],
     response_model=List[LiteLLM_OrganizationTableWithMembers],
+    include_in_schema=False,
 )
 async def delete_organization(
     data: DeleteOrganizationRequest,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
-    Delete an organization
+    Delete companies. `organization_ids` remains accepted as a LiteLLM
+    compatibility alias for `company_ids`.
 
     # Parameters:
 
-    - organization_ids: List[str] - The organization ids to delete.
+    - company_ids: List[str] - The company ids to delete.
     """
     from litellm.proxy.proxy_server import prisma_client
 
@@ -628,7 +824,7 @@ async def delete_organization(
     if user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN:
         raise HTTPException(
             status_code=401,
-            detail={"error": "Only proxy admins can delete organizations"},
+            detail={"error": "Only proxy admins can delete companies"},
         )
 
     deleted_orgs = []
@@ -653,7 +849,7 @@ async def delete_organization(
         if deleted_org is None:
             raise HTTPException(
                 status_code=404,
-                detail={"error": f"Organization={organization_id} not found"},
+                detail={"error": f"Company={organization_id} not found"},
             )
         deleted_orgs.append(deleted_org)
 
@@ -661,39 +857,57 @@ async def delete_organization(
 
 
 @router.get(
+    "/company/list",
+    tags=["company management"],
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=List[LiteLLM_OrganizationTableWithMembers],
+)
+@router.get(
     "/organization/list",
     tags=["organization management"],
     dependencies=[Depends(user_api_key_auth)],
     response_model=List[LiteLLM_OrganizationTableWithMembers],
+    include_in_schema=False,
 )
 async def list_organization(
+    company_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Filter companies by exact company_id match.",
+    ),
+    company_name: Optional[str] = fastapi.Query(
+        default=None,
+        description="Filter companies by partial company name match. Supports case-insensitive search.",
+    ),
     org_id: Optional[str] = fastapi.Query(
-        default=None, description="Filter organizations by exact organization_id match"
+        default=None,
+        description="LiteLLM compatibility alias for company_id.",
     ),
     org_alias: Optional[str] = fastapi.Query(
         default=None,
-        description="Filter organizations by partial organization_alias match. Supports case-insensitive search.",
+        description="LiteLLM compatibility alias for company_name.",
     ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
-    Get a list of organizations with optional filtering.
+    Get a list of companies with optional filtering.
 
     Parameters:
-        org_id: Optional[str]
-            Filter organizations by exact organization_id match
-        org_alias: Optional[str]
-            Filter organizations by partial organization_alias match (case-insensitive)
+        company_id: Optional[str]
+            Filter companies by exact company_id match.
+        company_name: Optional[str]
+            Filter companies by partial company name match (case-insensitive).
+        org_id / org_alias:
+            LiteLLM compatibility aliases.
 
     Example:
     ```
-    curl --location --request GET 'http://0.0.0.0:4000/organization/list?org_alias=my-org' \
+    curl --location --request GET 'http://0.0.0.0:4000/company/list?company_name=my-company' \
         --header 'Authorization: Bearer sk-1234'
     ```
 
-    Example with org_id:
+    Example with company_id:
     ```
-    curl --location --request GET 'http://0.0.0.0:4000/organization/list?org_id=123e4567-e89b-12d3-a456-426614174000' \
+    curl --location --request GET 'http://0.0.0.0:4000/company/list?company_id=123e4567-e89b-12d3-a456-426614174000' \
         --header 'Authorization: Bearer sk-1234'
     ```
     """
@@ -711,12 +925,22 @@ async def list_organization(
     # Build where conditions based on provided filters
     where_conditions: Dict[str, Any] = {}
 
-    if org_id:
-        where_conditions["organization_id"] = org_id
+    resolved_company_id = _resolve_company_id_filter(
+        company_id=company_id,
+        organization_id=org_id,
+        organization_field_name="org_id",
+    )
+    resolved_company_name = _resolve_company_name_filter(
+        company_name=company_name,
+        organization_alias=org_alias,
+    )
 
-    if org_alias:
+    if resolved_company_id:
+        where_conditions["organization_id"] = resolved_company_id
+
+    if resolved_company_name:
         where_conditions["organization_alias"] = {
-            "contains": org_alias,
+            "contains": resolved_company_name,
             "mode": "insensitive",  # Case-insensitive search
         }
 
@@ -739,13 +963,13 @@ async def list_organization(
 
         # Combine membership filter with provided filters
         if membership_org_ids:
-            if org_id:
-                # If org_id is provided, ensure user is a member of that org
-                if org_id not in membership_org_ids:
-                    # User is not a member of the requested org, return empty list
+            if resolved_company_id:
+                # If company_id is provided, ensure user is a member of that company
+                if resolved_company_id not in membership_org_ids:
+                    # User is not a member of the requested company, return empty list
                     response = []
                 else:
-                    where_conditions["organization_id"] = org_id
+                    where_conditions["organization_id"] = resolved_company_id
                     response = (
                         await prisma_client.db.litellm_organizationtable.find_many(
                             where=where_conditions,
@@ -775,33 +999,58 @@ async def list_organization(
 
 
 @router.get(
+    "/company/info",
+    tags=["company management"],
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=LiteLLM_OrganizationTableWithMembers,
+)
+@router.get(
     "/organization/info",
     tags=["organization management"],
     dependencies=[Depends(user_api_key_auth)],
     response_model=LiteLLM_OrganizationTableWithMembers,
+    include_in_schema=False,
 )
 async def info_organization(
-    organization_id: str,
+    company_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="Company ID to fetch.",
+    ),
+    organization_id: Optional[str] = fastapi.Query(
+        default=None,
+        description="LiteLLM compatibility alias for company_id.",
+        include_in_schema=False,
+    ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
-    Get the org specific information
+    Get company-specific information.
     """
     from litellm.proxy.proxy_server import prisma_client
 
     if prisma_client is None:
         raise HTTPException(status_code=500, detail={"error": "No db connected"})
 
-    # Verify caller has access to this organization
-    await _verify_org_access(
+    resolved_company_id = _resolve_company_id_filter(
+        company_id=company_id,
         organization_id=organization_id,
+    )
+    if resolved_company_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "company_id is required"},
+        )
+
+    # Verify caller has access to this company
+    await _verify_org_access(
+        organization_id=resolved_company_id,
         user_api_key_dict=user_api_key_dict,
         prisma_client=prisma_client,
     )
 
     response: Optional[LiteLLM_OrganizationTableWithMembers] = (
         await prisma_client.db.litellm_organizationtable.find_unique(
-            where={"organization_id": organization_id},
+            where={"organization_id": resolved_company_id},
             include={
                 "litellm_budget_table": True,
                 "members": {
@@ -816,7 +1065,7 @@ async def info_organization(
     )
 
     if response is None:
-        raise HTTPException(status_code=404, detail={"error": "Organization not found"})
+        raise HTTPException(status_code=404, detail={"error": "Company not found"})
 
     response_pydantic_obj = LiteLLM_OrganizationTableWithMembers(
         **response.model_dump()
@@ -829,6 +1078,7 @@ async def info_organization(
     "/organization/info",
     tags=["organization management"],
     dependencies=[Depends(user_api_key_auth)],
+    include_in_schema=False,
 )
 async def deprecated_info_organization(
     data: OrganizationRequest,
@@ -846,7 +1096,7 @@ async def deprecated_info_organization(
         raise HTTPException(
             status_code=400,
             detail={
-                "error": f"Specify list of organization id's to query. Passed in={data.organizations}"
+                "error": f"Specify list of company IDs to query. Passed in={data.organizations}"
             },
         )
 
@@ -867,10 +1117,17 @@ async def deprecated_info_organization(
 
 
 @router.post(
+    "/company/member_add",
+    tags=["company management"],
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=OrganizationAddMemberResponse,
+)
+@router.post(
     "/organization/member_add",
     tags=["organization management"],
     dependencies=[Depends(user_api_key_auth)],
     response_model=OrganizationAddMemberResponse,
+    include_in_schema=False,
 )
 @management_endpoint_wrapper
 async def organization_member_add(
@@ -881,15 +1138,15 @@ async def organization_member_add(
     """
     [BETA]
 
-    Add new members (either via user_email or user_id) to an organization
+    Add new members (either via user_email or user_id) to a company.
 
     If user doesn't exist, new user row will also be added to User Table
 
-    Only proxy_admin or org_admin of organization, allowed to access this endpoint.
+    Only proxy_admin or company admin of the company may access this endpoint.
 
     # Parameters:
 
-    - organization_id: str (required)
+    - company_id: str (required)
     - member: Union[List[Member], Member] (required)
         - role: Literal[LitellmUserRoles] (required)
         - user_id: Optional[str]
@@ -899,11 +1156,11 @@ async def organization_member_add(
 
     Example:
     ```
-    curl -X POST 'http://0.0.0.0:4000/organization/member_add' \
+    curl -X POST 'http://0.0.0.0:4000/company/member_add' \
     -H 'Authorization: Bearer sk-1234' \
     -H 'Content-Type: application/json' \
     -d '{
-        "organization_id": "45e3e396-ee08-4a61-a88e-16b3ce7e0849",
+        "company_id": "45e3e396-ee08-4a61-a88e-16b3ce7e0849",
         "member": {
             "role": "internal_user",
             "user_id": "krrish247652@berri.ai"
@@ -914,9 +1171,9 @@ async def organization_member_add(
 
     The following is executed in this function:
 
-    1. Check if organization exists
+    1. Check if company exists
     2. Creates a new Internal User if the user_id or user_email is not found in LiteLLM_UserTable
-    3. Add Internal User to the `LiteLLM_OrganizationMembership` table
+    3. Add Internal User to the internal `LiteLLM_OrganizationMembership` table
     """
     try:
         from litellm.proxy.proxy_server import prisma_client
@@ -934,7 +1191,7 @@ async def organization_member_add(
             prisma_client=prisma_client,
         )
 
-        # Check if organization exists
+        # Check if company exists
         existing_organization_row = (
             await prisma_client.db.litellm_organizationtable.find_unique(
                 where={"organization_id": data.organization_id}
@@ -944,7 +1201,7 @@ async def organization_member_add(
             raise HTTPException(
                 status_code=404,
                 detail={
-                    "error": f"Organization not found for organization_id={getattr(data, 'organization_id', None)}"
+                    "error": f"Company not found for company_id={getattr(data, 'organization_id', None)}"
                 },
             )
 
@@ -976,7 +1233,7 @@ async def organization_member_add(
             updated_organization_memberships=updated_organization_memberships,
         )
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error adding member to organization: {e}")
+        verbose_proxy_logger.exception(f"Error adding member to company: {e}")
         if isinstance(e, HTTPException):
             raise ProxyException(
                 message=getattr(e, "detail", f"Authentication Error({str(e)})"),
@@ -1021,10 +1278,17 @@ async def find_member_if_email(
 
 
 @router.patch(
+    "/company/member_update",
+    tags=["company management"],
+    dependencies=[Depends(user_api_key_auth)],
+    response_model=LiteLLM_OrganizationMembershipTable,
+)
+@router.patch(
     "/organization/member_update",
     tags=["organization management"],
     dependencies=[Depends(user_api_key_auth)],
     response_model=LiteLLM_OrganizationMembershipTable,
+    include_in_schema=False,
 )
 @management_endpoint_wrapper
 async def organization_member_update(
@@ -1032,7 +1296,7 @@ async def organization_member_update(
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
-    Update a member's role in an organization
+    Update a member's role in a company.
     """
     try:
         from litellm.proxy.proxy_server import prisma_client
@@ -1053,7 +1317,7 @@ async def organization_member_update(
             prisma_client=prisma_client,
         )
 
-        # Check if organization exists
+        # Check if company exists
         existing_organization_row = (
             await prisma_client.db.litellm_organizationtable.find_unique(
                 where={"organization_id": data.organization_id}
@@ -1063,11 +1327,11 @@ async def organization_member_update(
             raise HTTPException(
                 status_code=400,
                 detail={
-                    "error": f"Organization not found for organization_id={getattr(data, 'organization_id', None)}"
+                    "error": f"Company not found for company_id={getattr(data, 'organization_id', None)}"
                 },
             )
 
-        # Check if member exists in organization
+        # Check if member exists in company
         if data.user_email is not None and data.user_id is None:
             existing_user_email_row = await find_member_if_email(
                 data.user_email, prisma_client
@@ -1089,14 +1353,14 @@ async def organization_member_update(
             raise HTTPException(
                 status_code=400,
                 detail={
-                    "error": f"Error finding organization membership for user_id={data.user_id} in organization={data.organization_id}: {e}"
+                    "error": f"Error finding company membership for user_id={data.user_id} in company={data.organization_id}: {e}"
                 },
             )
         if existing_organization_membership is None:
             raise HTTPException(
                 status_code=404,
                 detail={
-                    "error": f"Member not found in organization for user_id={data.user_id}"
+                    "error": f"Member not found in company for user_id={data.user_id}"
                 },
             )
 
@@ -1118,7 +1382,7 @@ async def organization_member_update(
                     status_code=403,
                     detail={
                         "error": (
-                            "Only PROXY_ADMIN may modify the organization "
+                            "Only PROXY_ADMIN may modify the company "
                             "role of a user who is a global PROXY_ADMIN."
                         )
                     },
@@ -1180,7 +1444,7 @@ async def organization_member_update(
             raise HTTPException(
                 status_code=400,
                 detail={
-                    "error": f"Member not found in organization={data.organization_id} for user_id={data.user_id}"
+                    "error": f"Member not found in company={data.organization_id} for user_id={data.user_id}"
                 },
             )
 
@@ -1189,21 +1453,27 @@ async def organization_member_update(
         )
         return final_organization_membership_pydantic
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error updating member in organization: {e}")
+        verbose_proxy_logger.exception(f"Error updating member in company: {e}")
         raise e
 
 
 @router.delete(
+    "/company/member_delete",
+    tags=["company management"],
+    dependencies=[Depends(user_api_key_auth)],
+)
+@router.delete(
     "/organization/member_delete",
     tags=["organization management"],
     dependencies=[Depends(user_api_key_auth)],
+    include_in_schema=False,
 )
 async def organization_member_delete(
     data: OrganizationMemberDeleteRequest,
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
-    Delete a member from an organization
+    Delete a member from a company.
     """
     try:
         from litellm.proxy.proxy_server import prisma_client
@@ -1240,7 +1510,7 @@ async def organization_member_delete(
         return member_to_delete
 
     except Exception as e:
-        verbose_proxy_logger.exception(f"Error deleting member from organization: {e}")
+        verbose_proxy_logger.exception(f"Error deleting member from company: {e}")
         raise e
 
 

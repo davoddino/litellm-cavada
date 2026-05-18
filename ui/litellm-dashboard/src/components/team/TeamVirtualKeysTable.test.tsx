@@ -21,6 +21,7 @@ vi.mock("../key_team_helpers/filter_helpers", () => ({
   fetchTeamFilterOptions: vi.fn().mockResolvedValue({
     keyAliases: [],
     organizationIds: [],
+    projectOptions: [],
     userIds: [],
   }),
 }));
@@ -59,8 +60,10 @@ const createMockKey = (overrides: Partial<KeyResponse> = {}): KeyResponse =>
   } as KeyResponse);
 
 const mockOrganization: Organization = {
+  company_id: "org-123",
+  company_name: "Test Company",
   organization_id: "org-123",
-  organization_alias: "Test Org",
+  organization_alias: "Test Company",
   budget_id: "budget-1",
   metadata: {},
   models: [],
@@ -109,7 +112,7 @@ describe("TeamVirtualKeysTable", () => {
     });
   });
 
-  it("should enrich keys with organization_id when organization is provided", async () => {
+  it("should display Company context from the provided company when a key only has compatibility tenant fields", async () => {
     const keyWithoutOrg = createMockKey({ organization_id: null });
     mockUseKeys.mockReturnValue({
       data: {
@@ -127,9 +130,8 @@ describe("TeamVirtualKeysTable", () => {
       <TeamVirtualKeysTable {...defaultProps} organization={mockOrganization} />
     );
 
-    // Key with org_id should display in table - org-123 from organization
     await waitFor(() => {
-      expect(screen.getByText("org-123")).toBeInTheDocument();
+      expect(screen.getByText("Test Company")).toBeInTheDocument();
     });
   });
 
@@ -163,6 +165,37 @@ describe("TeamVirtualKeysTable", () => {
       expect(screen.getByText("alice_key_team1")).toBeInTheDocument();
     });
     expect(screen.getByText("bob_key_team1")).toBeInTheDocument();
+  });
+
+  it("should display Company and Project columns without Organization tenant copy", async () => {
+    mockUseKeys.mockReturnValue({
+      data: {
+        keys: [
+          createMockKey({
+            company_id: "org-123",
+            company_name: "Engineering Company",
+            project_id: "project-1",
+            project_name: "Support Project",
+          }),
+        ],
+        total_count: 1,
+        current_page: 1,
+        total_pages: 1,
+      } as KeysResponse,
+      isPending: false,
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+
+    renderWithProviders(<TeamVirtualKeysTable {...defaultProps} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Company")).toBeInTheDocument();
+      expect(screen.getByText("Project")).toBeInTheDocument();
+      expect(screen.getByText("Engineering Company")).toBeInTheDocument();
+      expect(screen.getByText("Support Project (project-1)")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Organization")).not.toBeInTheDocument();
   });
 
   it("should show Page X of Y when multiple pages exist", async () => {
@@ -247,11 +280,12 @@ describe("TeamVirtualKeysTable", () => {
     });
   });
 
-  it("should fetch team-scoped filter options for Key Alias, Organization ID, and User ID", async () => {
+  it("should fetch team-scoped filter options for Key Alias, Company, Project, and User ID", async () => {
     const mockFetchTeamFilterOptions = vi.mocked(fetchTeamFilterOptions);
     mockFetchTeamFilterOptions.mockResolvedValue({
       keyAliases: ["alice_key_team1", "charlie_key_team1"],
       organizationIds: ["org-123"],
+      projectOptions: [{ id: "project-1", label: "Support Project (project-1)" }],
       userIds: [
         { id: "user-1", email: "alice@example.com" },
         { id: "user-2", email: "charlie@example.com" },
@@ -267,6 +301,47 @@ describe("TeamVirtualKeysTable", () => {
       expect(mockFetchTeamFilterOptions).toHaveBeenCalledWith(
         "test-token",
         "team-filter-options-test"
+      );
+    });
+  });
+
+  it("should send projectID when filtering team virtual keys by Project", async () => {
+    const user = userEvent.setup();
+    const mockFetchTeamFilterOptions = vi.mocked(fetchTeamFilterOptions);
+    mockFetchTeamFilterOptions.mockResolvedValue({
+      keyAliases: [],
+      organizationIds: [],
+      projectOptions: [{ id: "project-1", label: "Support Project (project-1)" }],
+      userIds: [],
+    });
+
+    renderWithProviders(
+      <TeamVirtualKeysTable {...defaultProps} teamId="team-project-filter-test" />
+    );
+
+    await user.click(screen.getByRole("button", { name: "Filters" }));
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Project").length).toBeGreaterThan(0);
+    });
+
+    const filterComboboxes = screen.getAllByRole("combobox");
+    await user.click(filterComboboxes[1]);
+
+    await waitFor(() => {
+      expect(screen.getByText("Support Project (project-1)")).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByText("Support Project (project-1)"));
+
+    await waitFor(() => {
+      expect(mockUseKeys).toHaveBeenLastCalledWith(
+        1,
+        50,
+        expect.objectContaining({
+          teamID: "team-project-filter-test",
+          projectID: "project-1",
+        }),
       );
     });
   });

@@ -27,9 +27,11 @@ export interface DeletedTeam extends Team {
 
 export interface TeamListCallOptions {
   organizationID?: string | null;
+  companyID?: string | null;
   teamID?: string | null;
   team_alias?: string | null;
   search?: string | null;
+  projectID?: string | null;
   userID?: string | null;
   sortBy?: string | null;
   sortOrder?: string | null;
@@ -51,9 +53,10 @@ export const teamListCall = async (
     const params = new URLSearchParams(
       Object.entries({
         team_id: options.teamID,
-        organization_id: options.organizationID,
+        company_id: options.companyID ?? options.organizationID,
         team_alias: options.team_alias,
         search: options.search,
+        project_id: options.projectID,
         user_id: options.userID,
         page,
         page_size: pageSize,
@@ -178,7 +181,7 @@ const deletedTeamListCall = async (
     const params = new URLSearchParams(
       Object.entries({
         team_id: options.teamID,
-        organization_id: options.organizationID,
+        company_id: options.companyID ?? options.organizationID,
         team_alias: options.team_alias,
         search: options.search,
         user_id: options.userID,

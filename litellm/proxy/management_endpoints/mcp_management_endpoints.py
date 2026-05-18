@@ -161,7 +161,10 @@ if MCP_AVAILABLE:
         _read_request_body,
         populate_request_with_path_params,
     )
-    from litellm.proxy.management_endpoints.common_utils import _user_has_admin_view
+    from litellm.proxy.management_endpoints.common_utils import (
+        _user_has_admin_view,
+        build_company_project_access_context,
+    )
     from litellm.proxy.management_helpers.utils import management_endpoint_wrapper
     from litellm.types.mcp import MCPCredentials
     from litellm.types.mcp_server.mcp_server_manager import MCPServer
@@ -840,6 +843,65 @@ if MCP_AVAILABLE:
 
         return _redact_mcp_credentials_list(servers)
 
+    async def _get_mcp_scope_user_info(
+        *,
+        user_api_key_dict: UserAPIKeyAuth,
+        prisma_client: Any,
+        user_api_key_cache: Any,
+    ):
+        if not user_api_key_dict.user_id:
+            return None
+
+        from litellm.proxy.auth.auth_checks import get_user_object
+
+        return await get_user_object(
+            user_id=user_api_key_dict.user_id,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+            user_id_upsert=False,
+            check_db_only=True,
+        )
+
+    async def _authorize_mcp_team_scope_read(
+        *,
+        user_api_key_dict: UserAPIKeyAuth,
+        team_obj: Any,
+        prisma_client: Any,
+        user_api_key_cache: Any,
+    ) -> None:
+        if _user_has_admin_view(user_api_key_dict):
+            return
+
+        access_context = build_company_project_access_context(
+            user_api_key_dict=user_api_key_dict,
+            complete_user_info=None,
+            project_team_obj=team_obj,
+            project_company_id=getattr(team_obj, "organization_id", None),
+            route_permission="/v1/mcp/server",
+        )
+        if access_context.can_read_project():
+            return
+
+        complete_user_info = await _get_mcp_scope_user_info(
+            user_api_key_dict=user_api_key_dict,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+        )
+        access_context = build_company_project_access_context(
+            user_api_key_dict=user_api_key_dict,
+            complete_user_info=complete_user_info,
+            project_team_obj=team_obj,
+            project_company_id=getattr(team_obj, "organization_id", None),
+            route_permission="/v1/mcp/server",
+        )
+        if access_context.can_read_project():
+            return
+
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have permission to view MCP servers for this team.",
+        )
+
     @router.get(
         "/server",
         description="Returns the mcp server list with associated teams",
@@ -897,15 +959,12 @@ if MCP_AVAILABLE:
                     user_api_key_cache=user_api_key_cache,
                     check_db_only=True,
                 )
-                user_in_team = any(
-                    m.user_id is not None and m.user_id == user_api_key_dict.user_id
-                    for m in team_obj.members_with_roles
+                await _authorize_mcp_team_scope_read(
+                    user_api_key_dict=user_api_key_dict,
+                    team_obj=team_obj,
+                    prisma_client=prisma_client,
+                    user_api_key_cache=user_api_key_cache,
                 )
-                if not user_in_team:
-                    raise HTTPException(
-                        status_code=403,
-                        detail="You do not have permission to view MCP servers for this team.",
-                    )
 
             redacted_mcp_servers = await _get_team_scoped_mcp_server_list(
                 sanitized_team_id
