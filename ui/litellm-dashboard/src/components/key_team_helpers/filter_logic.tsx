@@ -21,7 +21,7 @@ export interface FilterState {
   "Company ID": string;
   "Project ID": string;
   "Key Alias": string;
-  "Key Hash"?: string;
+  "Key Hash": string;
   [key: string]: string;
   "User ID": string;
   "Sort By": string;

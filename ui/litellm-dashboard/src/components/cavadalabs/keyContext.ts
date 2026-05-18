@@ -34,52 +34,53 @@ export interface CavadaLabsKeyContextOptions {
   isCavadaLabsProductContext?: boolean;
 }
 
-export const getKeyCavadaLabsCompanyId = (key: Partial<KeyResponse>): string | null => {
-  const metadata = typeof key.metadata === "object" && key.metadata !== null ? key.metadata : {};
-  const cavadalabs = metadata.cavadalabs;
-  const spendLogsMetadata = metadata.spend_logs_metadata;
-  if (typeof key.cavadalabs_company_id === "string" && key.cavadalabs_company_id) {
-    return key.cavadalabs_company_id;
+type MetadataObject = Record<string, unknown>;
+
+const asMetadataObject = (value: unknown): MetadataObject | null => {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as MetadataObject) : null;
+};
+
+const getFirstStringField = (metadata: MetadataObject | null, fields: string[]): string | null => {
+  if (!metadata) {
+    return null;
   }
-  if (typeof metadata.cavadalabs_company_id === "string" && metadata.cavadalabs_company_id) {
-    return metadata.cavadalabs_company_id;
+
+  for (const field of fields) {
+    const value = metadata[field];
+    if (typeof value === "string" && value) {
+      return value;
+    }
   }
-  if (typeof metadata.company_id === "string" && metadata.company_id) {
-    return metadata.company_id;
-  }
-  if (typeof cavadalabs === "object" && cavadalabs !== null) {
-    const companyId = cavadalabs.cavadalabs_company_id || cavadalabs.company_id;
-    return typeof companyId === "string" && companyId ? companyId : null;
-  }
-  if (typeof spendLogsMetadata === "object" && spendLogsMetadata !== null) {
-    const companyId = spendLogsMetadata.cavadalabs_company_id || spendLogsMetadata.company_id;
-    return typeof companyId === "string" && companyId ? companyId : null;
-  }
+
   return null;
 };
 
+export const getKeyCavadaLabsCompanyId = (key: Partial<KeyResponse>): string | null => {
+  const metadata = asMetadataObject(key.metadata) ?? {};
+  const cavadalabs = asMetadataObject(metadata.cavadalabs);
+  const spendLogsMetadata = asMetadataObject(metadata.spend_logs_metadata);
+  if (typeof key.cavadalabs_company_id === "string" && key.cavadalabs_company_id) {
+    return key.cavadalabs_company_id;
+  }
+  return (
+    getFirstStringField(metadata, ["cavadalabs_company_id", "company_id"]) ??
+    getFirstStringField(cavadalabs, ["cavadalabs_company_id", "company_id"]) ??
+    getFirstStringField(spendLogsMetadata, ["cavadalabs_company_id", "company_id"])
+  );
+};
+
 export const getKeyCavadaLabsProjectId = (key: Partial<KeyResponse>): string | null => {
-  const metadata = typeof key.metadata === "object" && key.metadata !== null ? key.metadata : {};
-  const cavadalabs = metadata.cavadalabs;
-  const spendLogsMetadata = metadata.spend_logs_metadata;
+  const metadata = asMetadataObject(key.metadata) ?? {};
+  const cavadalabs = asMetadataObject(metadata.cavadalabs);
+  const spendLogsMetadata = asMetadataObject(metadata.spend_logs_metadata);
   if (typeof key.cavadalabs_project_id === "string" && key.cavadalabs_project_id) {
     return key.cavadalabs_project_id;
   }
-  if (typeof metadata.cavadalabs_project_id === "string" && metadata.cavadalabs_project_id) {
-    return metadata.cavadalabs_project_id;
-  }
-  if (typeof metadata.project_id === "string" && metadata.project_id) {
-    return metadata.project_id;
-  }
-  if (typeof cavadalabs === "object" && cavadalabs !== null) {
-    const projectId = cavadalabs.cavadalabs_project_id || cavadalabs.project_id;
-    return typeof projectId === "string" && projectId ? projectId : null;
-  }
-  if (typeof spendLogsMetadata === "object" && spendLogsMetadata !== null) {
-    const projectId = spendLogsMetadata.cavadalabs_project_id || spendLogsMetadata.project_id;
-    return typeof projectId === "string" && projectId ? projectId : null;
-  }
-  return null;
+  return (
+    getFirstStringField(metadata, ["cavadalabs_project_id", "project_id"]) ??
+    getFirstStringField(cavadalabs, ["cavadalabs_project_id", "project_id"]) ??
+    getFirstStringField(spendLogsMetadata, ["cavadalabs_project_id", "project_id"])
+  );
 };
 
 export const getCavadaLabsCompanyDisplayName = (company: CavadaLabsCompanyOption): string => {
