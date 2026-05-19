@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from typing import Any, Iterable, Optional
 
 from fastapi import HTTPException, status
@@ -76,7 +77,7 @@ async def apply_cavadalabs_project_model_fallback(
             )
         if requested_model is not None and not policies:
             return None
-        available_models = _available_model_names_from_router(
+        available_models = await _available_model_names_from_router(
             llm_router=llm_router,
             team_id=_clean_string(getattr(user_api_key_dict, "team_id", None)),
         )
@@ -106,7 +107,7 @@ async def apply_cavadalabs_project_model_fallback(
     return resolution.model
 
 
-def _available_model_names_from_router(
+async def _available_model_names_from_router(
     *, llm_router: Any, team_id: Optional[str]
 ) -> set[str]:
     if llm_router is None:
@@ -123,7 +124,58 @@ def _available_model_names_from_router(
         getattr(llm_router, "deployment_names", set()) or set(),
     )
     _extend_strings(model_names, _call_router_model_ids(llm_router=llm_router))
-    return model_names
+    if not getattr(llm_router, "enable_health_check_routing", False):
+        return model_names
+
+    unhealthy_deployment_ids = await _router_unhealthy_deployment_ids(llm_router)
+    if not unhealthy_deployment_ids:
+        return model_names
+
+    deployments = list(_call_router_model_list(llm_router=llm_router, team_id=team_id))
+    if not deployments:
+        return model_names
+
+    health_filtered_model_names = _healthy_model_names_from_deployments(
+        deployments=deployments,
+        unhealthy_deployment_ids=unhealthy_deployment_ids,
+    )
+    if health_filtered_model_names:
+        return health_filtered_model_names
+    return set()
+
+
+async def _router_unhealthy_deployment_ids(llm_router: Any) -> set[str]:
+    health_state_cache = getattr(llm_router, "health_state_cache", None)
+    if health_state_cache is None:
+        return set()
+    getter = getattr(health_state_cache, "async_get_unhealthy_deployment_ids", None)
+    if not callable(getter):
+        return set()
+    unhealthy_ids = getter(parent_otel_span=None)
+    if inspect.isawaitable(unhealthy_ids):
+        unhealthy_ids = await unhealthy_ids
+    return {deployment_id for deployment_id in unhealthy_ids if deployment_id}
+
+
+def _healthy_model_names_from_deployments(
+    *,
+    deployments: Iterable[dict],
+    unhealthy_deployment_ids: set[str],
+) -> set[str]:
+    healthy_model_names: set[str] = set()
+    for deployment in deployments:
+        if not isinstance(deployment, dict):
+            continue
+        model_info = deployment.get("model_info") or {}
+        deployment_id = _clean_string(model_info.get("id"))
+        if deployment_id is not None and deployment_id in unhealthy_deployment_ids:
+            continue
+        _extend_strings(healthy_model_names, [deployment.get("model_name")])
+        litellm_params = deployment.get("litellm_params") or {}
+        if isinstance(litellm_params, dict):
+            _extend_strings(healthy_model_names, [litellm_params.get("model")])
+        _extend_strings(healthy_model_names, [deployment_id])
+    return healthy_model_names
 
 
 def _call_router_model_names(
@@ -143,6 +195,18 @@ def _call_router_model_ids(*, llm_router: Any) -> Iterable[str]:
     if not callable(get_model_ids):
         return []
     return get_model_ids()
+
+
+def _call_router_model_list(
+    *, llm_router: Any, team_id: Optional[str]
+) -> Iterable[dict]:
+    get_model_list = getattr(llm_router, "get_model_list", None)
+    if not callable(get_model_list):
+        return getattr(llm_router, "model_list", []) or []
+    try:
+        return get_model_list(team_id=team_id) or []
+    except TypeError:
+        return get_model_list() or []
 
 
 def _extend_strings(target: set[str], values: Iterable[Any]) -> None:

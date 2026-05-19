@@ -6,6 +6,9 @@ model_list:
       api_key: sk-no-key
       input_cost_per_token: 0.000001
       output_cost_per_token: 0.000003
+    model_info:
+      health_check_timeout: 5
+      health_check_max_tokens: 5
 
   - model_name: ministral-3-14b-vision-local
     litellm_params:
@@ -14,6 +17,9 @@ model_list:
       api_key: sk-no-key
       input_cost_per_token: 0.000001
       output_cost_per_token: 0.000003
+    model_info:
+      health_check_timeout: 5
+      health_check_max_tokens: 5
 
   - model_name: whisper-small
     litellm_params:
@@ -22,9 +28,16 @@ model_list:
       api_key: sk-no-key
     model_info:
       mode: audio_transcription
+      health_check_timeout: 5
 
 general_settings:
   master_key: sk-1234
+  background_health_checks: True
+  health_check_interval: 30
+  health_check_concurrency: 3
+  enable_health_check_routing: True
+  health_check_staleness_threshold: 90
+  health_check_ignore_transient_errors: True
 
 litellm_settings:
   drop_params: True

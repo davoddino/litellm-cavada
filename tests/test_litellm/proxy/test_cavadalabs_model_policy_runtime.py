@@ -62,9 +62,7 @@ def _prisma_client(rows, *, key_rows=None):
 
     db = MagicMock()
     db.cavadalabs_projectmodelpolicytable = MagicMock()
-    db.cavadalabs_projectmodelpolicytable.find_many = AsyncMock(
-        side_effect=_find_many
-    )
+    db.cavadalabs_projectmodelpolicytable.find_many = AsyncMock(side_effect=_find_many)
     return SimpleNamespace(db=db)
 
 
@@ -77,6 +75,31 @@ class _RouterStub:
 
     def get_model_ids(self):
         return ["model-id-1"]
+
+
+class _HealthAwareRouterStub(_RouterStub):
+    enable_health_check_routing = True
+
+    def __init__(self, unhealthy_deployment_ids: set[str]):
+        self.health_state_cache = SimpleNamespace(
+            async_get_unhealthy_deployment_ids=AsyncMock(
+                return_value=unhealthy_deployment_ids
+            )
+        )
+
+    def get_model_list(self, team_id=None):
+        return [
+            {
+                "model_name": "model-a",
+                "litellm_params": {"model": "openai/model-a"},
+                "model_info": {"id": "deployment-a"},
+            },
+            {
+                "model_name": "model-b",
+                "litellm_params": {"model": "openai/model-b"},
+                "model_info": {"id": "deployment-b"},
+            },
+        ]
 
 
 def test_should_resolve_first_available_policy_by_priority():
@@ -146,7 +169,9 @@ async def test_should_apply_default_cavadalabs_project_model_fallback_from_key_c
     assert data["model"] == "model-b"
     assert data["fallbacks"] == ["model-a"]
     assert data["metadata"]["cavadalabs_model_bucket"] == "default"
-    find_calls = prisma_client.db.cavadalabs_projectmodelpolicytable.find_many.await_args_list
+    find_calls = (
+        prisma_client.db.cavadalabs_projectmodelpolicytable.find_many.await_args_list
+    )
     assert find_calls[0].kwargs["where"]["key_id"] is not None
     assert find_calls[1].kwargs == {
         "where": {
@@ -199,7 +224,9 @@ async def test_should_apply_named_model_bucket_from_key_context():
     assert data["model"] == "model-a"
     assert data["fallbacks"] == ["model-b"]
     assert data["metadata"]["cavadalabs"]["routing"]["model_bucket"] == "medium"
-    find_calls = prisma_client.db.cavadalabs_projectmodelpolicytable.find_many.await_args_list
+    find_calls = (
+        prisma_client.db.cavadalabs_projectmodelpolicytable.find_many.await_args_list
+    )
     assert find_calls[0].kwargs["where"]["key_id"] is not None
     assert find_calls[1].kwargs == {
         "where": {
@@ -211,6 +238,47 @@ async def test_should_apply_named_model_bucket_from_key_context():
         },
         "order": {"priority": "asc"},
     }
+
+
+@pytest.mark.asyncio
+async def test_should_skip_health_check_unhealthy_primary_policy():
+    data = {"messages": [{"role": "user", "content": "ciao"}], "model": "medium"}
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="sk-test",
+        user_id="user-1",
+        cavadalabs_project_id="project-1",
+    )
+    prisma_client = _prisma_client(
+        [
+            _policy_row(
+                policy_id="policy-1",
+                model_alias="model-a",
+                priority=1,
+                model_bucket="medium",
+            ),
+            _policy_row(
+                policy_id="policy-2",
+                model_alias="model-b",
+                priority=2,
+                model_bucket="medium",
+            ),
+        ]
+    )
+    router = _HealthAwareRouterStub(unhealthy_deployment_ids={"deployment-a"})
+
+    resolved_model = await apply_cavadalabs_project_model_fallback(
+        data=data,
+        route_type="acompletion",
+        user_api_key_dict=user_api_key_dict,
+        llm_router=router,
+        prisma_client=prisma_client,
+    )
+
+    assert resolved_model == "model-b"
+    assert data["model"] == "model-b"
+    assert "fallbacks" not in data
+    assert data["metadata"]["cavadalabs"]["routing"]["selected_policy_id"] == "policy-2"
+    router.health_state_cache.async_get_unhealthy_deployment_ids.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -251,7 +319,9 @@ async def test_should_prefer_key_scoped_model_bucket_over_project_default():
 
     assert resolved_model == "model-b"
     assert data["metadata"]["cavadalabs"]["routing"]["key_id"] is not None
-    find_calls = prisma_client.db.cavadalabs_projectmodelpolicytable.find_many.await_args_list
+    find_calls = (
+        prisma_client.db.cavadalabs_projectmodelpolicytable.find_many.await_args_list
+    )
     assert len(find_calls) == 1
     assert find_calls[0].kwargs["where"]["key_id"] is not None
 
@@ -285,7 +355,10 @@ async def test_should_fall_back_to_project_model_bucket_when_key_has_no_policy()
     )
 
     assert resolved_model == "model-a"
-    assert data["metadata"]["cavadalabs"]["routing"]["selected_policy_id"] == "project-policy"
+    assert (
+        data["metadata"]["cavadalabs"]["routing"]["selected_policy_id"]
+        == "project-policy"
+    )
     assert data["metadata"]["cavadalabs"]["routing"]["key_id"] is None
 
 
@@ -320,7 +393,9 @@ async def test_should_apply_bucket_routing_for_embedding_endpoint():
     assert resolved_model == "model-a"
     assert data["model"] == "model-a"
     assert data["metadata"]["cavadalabs"]["routing"]["endpoint_type"] == "embedding"
-    find_calls = prisma_client.db.cavadalabs_projectmodelpolicytable.find_many.await_args_list
+    find_calls = (
+        prisma_client.db.cavadalabs_projectmodelpolicytable.find_many.await_args_list
+    )
     assert find_calls[1].kwargs["where"]["endpoint_type"] == "embedding"
     assert find_calls[1].kwargs["where"]["model_bucket"] == "small"
 
@@ -344,7 +419,10 @@ async def test_should_leave_real_model_when_no_matching_bucket_exists():
     )
 
     assert resolved_model is None
-    assert data == {"messages": [{"role": "user", "content": "ciao"}], "model": "model-a"}
+    assert data == {
+        "messages": [{"role": "user", "content": "ciao"}],
+        "model": "model-a",
+    }
 
 
 @pytest.mark.asyncio
