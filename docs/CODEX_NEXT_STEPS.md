@@ -118,6 +118,15 @@ Supported policy endpoint values are `chat_completion`, `text_completion`,
 existing LiteLLM chat, text-completion, embedding, and transcription proxy
 routes; browser chatbot messages use the `chat_completion` endpoint.
 
+Key-level bucket priorities can be changed after creation by opening the Server
+API key detail, editing `Model routing priorities`, changing `priority`, and
+saving. Existing policy rows are updated in place via `/cavadalabs/model-policies/{policy_id}`.
+
+The local server config includes these chat models for bucket tests:
+
+- `Qwen3.6-35B-A3B`
+- `ministral-3-14b-vision-local`
+
 ## Guardrail Input Hygiene
 
 Guardrails run before the model call and inspect the raw user input, including

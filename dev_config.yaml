@@ -7,6 +7,14 @@ model_list:
       input_cost_per_token: 0.000001
       output_cost_per_token: 0.000003
 
+  - model_name: ministral-3-14b-vision-local
+    litellm_params:
+      model: openai/ministral-3-14b-vision-local
+      api_base: http://192.168.0.20:8001/v1
+      api_key: sk-no-key
+      input_cost_per_token: 0.000001
+      output_cost_per_token: 0.000003
+
   - model_name: whisper-small
     litellm_params:
       model: openai/whisper-small
