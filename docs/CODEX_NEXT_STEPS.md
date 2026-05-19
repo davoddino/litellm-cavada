@@ -114,12 +114,14 @@ fallbacks into the existing request path. The same concrete model may appear in
 more than one bucket by creating separate policies for each bucket.
 
 For fast fallback, `dev_config.yaml` enables LiteLLM background health checks
-every 30 seconds plus health-check-driven routing. CavadaLabs bucket resolution
-uses the router health state when it is available: a model whose deployment is
-currently marked unhealthy is skipped before the request is sent, so the next
-healthy priority is selected instead of waiting for a request timeout. Health
-state is treated as fresh for 90 seconds; if no health state has been produced
-yet, routing falls back to the configured-model check.
+every 30 seconds plus health-check-driven routing. The local deployments set
+`model_info.health_check_url`, so the background check uses a plain HTTP health
+endpoint instead of sending a completion/transcription request to the model.
+CavadaLabs bucket resolution uses the router health state when it is available:
+a model whose deployment is currently marked unhealthy is skipped before the
+request is sent, so the next healthy priority is selected instead of waiting for
+a request timeout. Health state is treated as fresh for 90 seconds; if no health
+state has been produced yet, routing falls back to the configured-model check.
 
 Supported policy endpoint values are `chat_completion`, `text_completion`,
 `transcription`, and `embedding`. Runtime bucket routing is wired for the

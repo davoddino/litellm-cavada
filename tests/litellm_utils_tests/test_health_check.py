@@ -538,6 +538,55 @@ async def test_perform_health_check_with_health_check_model():
 
 
 @pytest.mark.asyncio
+async def test_perform_health_check_uses_http_health_url_without_model_call():
+    from litellm.proxy.health_check import _perform_health_check
+
+    model_list = [
+        {
+            "model_name": "local-qwen",
+            "litellm_params": {
+                "model": "openai/qwen",
+                "api_base": "http://localhost:8001/v1",
+                "api_key": "fake-key",
+            },
+            "model_info": {
+                "id": "deployment-qwen",
+                "health_check_url": "http://localhost:8001/health",
+                "health_check_timeout": 1,
+            },
+        }
+    ]
+
+    with (
+        patch("litellm.ahealth_check", new_callable=AsyncMock) as mock_llm_health,
+        patch(
+            "litellm.proxy.health_check._run_http_health_check",
+            AsyncMock(
+                return_value={
+                    "health_check_url": "http://localhost:8001/health",
+                    "health_check_status": 200,
+                }
+            ),
+        ) as mock_http_health,
+    ):
+        healthy_endpoints, unhealthy_endpoints, _ = await _perform_health_check(
+            model_list
+        )
+
+    mock_llm_health.assert_not_awaited()
+    mock_http_health.assert_awaited_once_with(
+        url="http://localhost:8001/health",
+        timeout=1,
+        expected_statuses=None,
+    )
+    assert len(healthy_endpoints) == 1
+    assert len(unhealthy_endpoints) == 0
+    assert healthy_endpoints[0]["model"] == "openai/qwen"
+    assert healthy_endpoints[0]["health_check_status"] == 200
+    assert healthy_endpoints[0]["model_id"] == "deployment-qwen"
+
+
+@pytest.mark.asyncio
 async def test_health_check_bad_model():
     from litellm.proxy.health_check import _perform_health_check
     import time

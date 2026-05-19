@@ -7,6 +7,7 @@ model_list:
       input_cost_per_token: 0.000001
       output_cost_per_token: 0.000003
     model_info:
+      health_check_url: http://192.168.0.20:8001/health
       health_check_timeout: 5
       health_check_max_tokens: 5
 
@@ -18,6 +19,7 @@ model_list:
       input_cost_per_token: 0.000001
       output_cost_per_token: 0.000003
     model_info:
+      health_check_url: http://192.168.0.20:8001/health
       health_check_timeout: 5
       health_check_max_tokens: 5
 
@@ -28,6 +30,7 @@ model_list:
       api_key: sk-no-key
     model_info:
       mode: audio_transcription
+      health_check_url: http://192.168.0.20:8000/health
       health_check_timeout: 5
 
 general_settings:

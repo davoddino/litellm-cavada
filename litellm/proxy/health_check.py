@@ -6,7 +6,7 @@ import random
 import sys
 import threading
 import time
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 import litellm
 
@@ -123,8 +123,16 @@ async def _run_model_health_check(model: dict):
     litellm_params = model["litellm_params"]
     model_info = model.get("model_info", {})
     mode = model_info.get("mode", None)
-    litellm_params = _update_litellm_params_for_health_check(model_info, litellm_params)
     timeout = model_info.get("health_check_timeout") or HEALTH_CHECK_TIMEOUT_SECONDS
+    health_check_url = model_info.get("health_check_url")
+    if isinstance(health_check_url, str) and health_check_url.strip():
+        return await _run_http_health_check(
+            url=health_check_url.strip(),
+            timeout=timeout,
+            expected_statuses=model_info.get("health_check_status_codes"),
+        )
+
+    litellm_params = _update_litellm_params_for_health_check(model_info, litellm_params)
 
     return await run_with_timeout(
         litellm.ahealth_check(
@@ -135,6 +143,45 @@ async def _run_model_health_check(model: dict):
         ),
         timeout,
     )
+
+
+async def _run_http_health_check(
+    *,
+    url: str,
+    timeout: float,
+    expected_statuses: Optional[Sequence[int]] = None,
+):
+    import aiohttp
+
+    expected_status_set = (
+        {int(status_code) for status_code in expected_statuses}
+        if expected_statuses
+        else None
+    )
+    try:
+        client_timeout = aiohttp.ClientTimeout(total=timeout)
+        async with aiohttp.ClientSession(timeout=client_timeout) as session:
+            async with session.get(url) as response:
+                if expected_status_set is not None:
+                    is_healthy = response.status in expected_status_set
+                else:
+                    is_healthy = 200 <= response.status < 400
+                payload = {
+                    "health_check_url": url,
+                    "health_check_status": response.status,
+                }
+                if is_healthy:
+                    return payload
+                return {
+                    **payload,
+                    "error": f"HTTP health check failed with status {response.status}",
+                }
+    except Exception as exc:
+        return {
+            "health_check_url": url,
+            "error": f"HTTP health check failed: {str(exc)}",
+            "exception": exc,
+        }
 
 
 async def _run_health_checks_with_bounded_concurrency(
