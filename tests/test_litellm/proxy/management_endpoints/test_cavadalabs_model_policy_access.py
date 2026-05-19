@@ -78,6 +78,7 @@ def _policy(**kwargs):
         policy_id=kwargs.pop("policy_id", "policy-1"),
         company_id=kwargs.pop("company_id", "company-1"),
         project_id=kwargs.pop("project_id", "project-1"),
+        key_id=kwargs.pop("key_id", None),
         endpoint_type=kwargs.pop("endpoint_type", "chat_completion"),
         model_bucket=kwargs.pop("model_bucket", "default"),
         model_alias=kwargs.pop("model_alias", "openai/gpt-4.1"),
@@ -111,6 +112,7 @@ def _db(
     company_member_role: str | None = None,
     project_member_role: str | None = None,
     allowed_project_id: str = "project-1",
+    key_row=None,
 ):
     db = MagicMock()
 
@@ -167,6 +169,8 @@ def _db(
     db.litellm_teamtable.find_unique = AsyncMock(return_value=None)
     db.litellm_usertable = MagicMock()
     db.litellm_usertable.find_unique = AsyncMock(return_value=None)
+    db.litellm_verificationtoken = MagicMock()
+    db.litellm_verificationtoken.find_unique = AsyncMock(return_value=key_row)
     db.cavadalabs_projectmodelpolicytable = MagicMock()
     db.cavadalabs_projectmodelpolicytable.find_unique = AsyncMock(
         return_value=_policy()
@@ -257,6 +261,7 @@ async def test_should_allow_project_viewer_to_list_but_not_create_model_policy(
     find_args = db.cavadalabs_projectmodelpolicytable.find_many.await_args.kwargs
     assert find_args["where"]["endpoint_type"] == "chat_completion"
     assert find_args["where"]["model_bucket"] == "medium"
+    assert find_args["where"]["key_id"] is None
 
     with pytest.raises(HTTPException) as exc_info:
         await model_policy_endpoints.create_model_policy(
@@ -266,6 +271,131 @@ async def test_should_allow_project_viewer_to_list_but_not_create_model_policy(
         )
 
     assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_should_allow_project_admin_to_create_key_scoped_model_policy(
+    monkeypatch,
+):
+    db = _db(
+        project_member_role="project_admin",
+        key_row=SimpleNamespace(
+            token="sk-key-hash",
+            team_id="team-1",
+            metadata={
+                "cavadalabs": {
+                    "company_id": "company-1",
+                    "project_id": "project-1",
+                }
+            },
+        ),
+    )
+    _patch_prisma(monkeypatch, db)
+
+    data = _create_request()
+    data.key_id = "sk-key-hash"
+    response = await model_policy_endpoints.create_model_policy(
+        data=data,
+        http_request=MagicMock(),
+        user_api_key_dict=_internal_user(),
+    )
+
+    assert response.policy_id == "policy-created"
+    db.litellm_verificationtoken.find_unique.assert_awaited_once_with(
+        where={"token": "sk-key-hash"}
+    )
+    create_data = db.cavadalabs_projectmodelpolicytable.create.await_args.kwargs["data"]
+    assert create_data["key_id"] == "sk-key-hash"
+
+
+@pytest.mark.asyncio
+async def test_should_reject_key_scoped_model_policy_for_other_project(monkeypatch):
+    db = _db(
+        project_member_role="project_admin",
+        key_row=SimpleNamespace(
+            token="sk-other-key",
+            team_id="team-2",
+            metadata={
+                "cavadalabs": {
+                    "company_id": "company-2",
+                    "project_id": "project-2",
+                }
+            },
+        ),
+    )
+    _patch_prisma(monkeypatch, db)
+
+    data = _create_request()
+    data.key_id = "sk-other-key"
+    with pytest.raises(HTTPException) as exc_info:
+        await model_policy_endpoints.create_model_policy(
+            data=data,
+            http_request=MagicMock(),
+            user_api_key_dict=_internal_user(),
+        )
+
+    assert exc_info.value.status_code == 409
+    db.cavadalabs_projectmodelpolicytable.create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_should_filter_model_policy_list_by_key_id(monkeypatch):
+    db = _db(
+        project_member_role="viewer",
+        key_row=SimpleNamespace(
+            token="sk-key-hash",
+            team_id="team-1",
+            metadata={
+                "cavadalabs": {
+                    "company_id": "company-1",
+                    "project_id": "project-1",
+                }
+            },
+        ),
+    )
+    _patch_prisma(monkeypatch, db)
+
+    await model_policy_endpoints.list_model_policies(
+        http_request=MagicMock(),
+        project_id="project-1",
+        key_id="sk-key-hash",
+        enabled=True,
+        endpoint_type=CavadaLabsModelPolicyEndpointType.CHAT_COMPLETION,
+        model_bucket="medium",
+        user_api_key_dict=_internal_user(),
+    )
+
+    find_args = db.cavadalabs_projectmodelpolicytable.find_many.await_args.kwargs
+    assert find_args["where"]["key_id"] == "sk-key-hash"
+
+
+@pytest.mark.asyncio
+async def test_should_reject_model_policy_update_to_other_project_key(monkeypatch):
+    db = _db(
+        company_member_role="company_admin",
+        key_row=SimpleNamespace(
+            token="sk-other-key",
+            team_id="team-2",
+            metadata={
+                "cavadalabs": {
+                    "company_id": "company-2",
+                    "project_id": "project-2",
+                }
+            },
+        ),
+    )
+    _patch_prisma(monkeypatch, db)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await model_policy_endpoints.update_model_policy(
+            policy_id="policy-1",
+            data=CavadaLabsProjectModelPolicyUpdateRequest(key_id="sk-other-key"),
+            http_request=MagicMock(),
+            user_api_key_dict=_internal_user(),
+        )
+
+    assert exc_info.value.status_code == 409
+    db.cavadalabs_projectmodelpolicytable.update.assert_not_awaited()
 
 
 @pytest.mark.asyncio

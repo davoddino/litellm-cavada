@@ -17,6 +17,8 @@ from litellm.proxy.cavadalabs.model_policy_store import (
 _ROUTE_ENDPOINT_TYPES = {
     "acompletion": "chat_completion",
     "atext_completion": "text_completion",
+    "aembedding": "embedding",
+    "atranscription": "transcription",
 }
 _DEFAULT_MODEL_BUCKET = "default"
 
@@ -54,13 +56,24 @@ async def apply_cavadalabs_project_model_fallback(
 
     requested_model = _clean_string(data.get("model"))
     model_bucket = _normalize_model_bucket(requested_model or _DEFAULT_MODEL_BUCKET)
+    key_id = _clean_string(getattr(user_api_key_dict, "token", None)) or _clean_string(
+        getattr(user_api_key_dict, "api_key", None)
+    )
     store = CavadaLabsProjectModelPolicyStore(prisma_client.db)
     try:
         policies = await store.list_enabled_project_policies(
             project_id=project_id,
             endpoint_type=endpoint_type,
             model_bucket=model_bucket,
+            key_id=key_id,
         )
+        if key_id is not None and not policies:
+            policies = await store.list_enabled_project_policies(
+                project_id=project_id,
+                endpoint_type=endpoint_type,
+                model_bucket=model_bucket,
+                key_id=None,
+            )
         if requested_model is not None and not policies:
             return None
         available_models = _available_model_names_from_router(
@@ -166,6 +179,7 @@ def _write_routing_metadata(
     cavadalabs_metadata["routing"] = {
         "endpoint_type": resolution.endpoint_type,
         "model_bucket": resolution.model_bucket,
+        "key_id": getattr(resolution.policy, "key_id", None),
         "selected_policy_id": resolution.policy.policy_id,
         "selected_model_alias": resolution.model,
         "fallback_models": list(resolution.fallback_models),

@@ -5,7 +5,7 @@ import { renderWithProviders } from "../../../tests/test-utils";
 import { KeyResponse } from "../key_team_helpers/key_list";
 import { KeyEditView } from "./key_edit_view";
 
-const { cavadalabsKeyContextOptions, mockNotificationsManager } = vi.hoisted(() => ({
+const { cavadalabsKeyContextOptions, mockCavadaLabsApi, mockNotificationsManager } = vi.hoisted(() => ({
   cavadalabsKeyContextOptions: {
     companies: [
       { company_id: "company-1", legal_name: "Acme Srl", litellm_organization_id: "org-1", status: "active" },
@@ -40,11 +40,26 @@ const { cavadalabsKeyContextOptions, mockNotificationsManager } = vi.hoisted(() 
     info: vi.fn(),
     fromBackend: vi.fn(),
   },
+  mockCavadaLabsApi: {
+    listCavadaLabsResource: vi.fn(),
+    createCavadaLabsResource: vi.fn(),
+    patchCavadaLabsResource: vi.fn(),
+  },
 }));
 
 vi.mock("../molecules/notifications_manager", () => ({
   default: mockNotificationsManager,
 }));
+
+vi.mock("../cavadalabs/api", async () => {
+  const actual = await vi.importActual("../cavadalabs/api");
+  return {
+    ...actual,
+    listCavadaLabsResource: mockCavadaLabsApi.listCavadaLabsResource,
+    createCavadaLabsResource: mockCavadaLabsApi.createCavadaLabsResource,
+    patchCavadaLabsResource: mockCavadaLabsApi.patchCavadaLabsResource,
+  };
+});
 
 vi.mock("../networking", async () => {
   const actual = await vi.importActual("../networking");
@@ -351,6 +366,9 @@ describe("KeyEditView", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCavadaLabsApi.listCavadaLabsResource.mockResolvedValue({ model_policies: [] });
+    mockCavadaLabsApi.createCavadaLabsResource.mockResolvedValue({});
+    mockCavadaLabsApi.patchCavadaLabsResource.mockResolvedValue({});
     cavadalabsKeyContextOptions.companies = [
       { company_id: "company-1", legal_name: "Acme Srl", litellm_organization_id: "org-1", status: "active" },
       { company_id: "company-2", legal_name: "Globex Srl", litellm_organization_id: "org-2", status: "active" },
@@ -523,6 +541,65 @@ describe("KeyEditView", () => {
       expect(callArgs.team_id).toBeUndefined();
       expect(callArgs.project_id).toBeUndefined();
     });
+  });
+
+  it("should save key-scoped model routing priorities with Company and Project context", async () => {
+    mockCavadaLabsApi.listCavadaLabsResource.mockResolvedValue({
+      model_policies: [
+        {
+          policy_id: "policy-1",
+          key_id: "test-token-123",
+          project_id: "project-1",
+          endpoint_type: "chat_completion",
+          model_bucket: "medium",
+          model_alias: "team-model-1",
+          provider: "openai",
+          priority: 1,
+          enabled: true,
+          fallback_enabled: true,
+        },
+      ],
+    });
+    const onSubmitMock = vi.fn().mockResolvedValue(undefined);
+    renderWithProviders(
+      <KeyEditView
+        keyData={MOCK_KEY_DATA}
+        onCancel={() => {}}
+        onSubmit={onSubmitMock}
+        accessToken={"test-token"}
+        userID={"test-user"}
+        userRole={"admin"}
+        premiumUser={false}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Model routing priorities")).toBeInTheDocument();
+      expect(screen.getByText("team-model-1")).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => {
+      expect(onSubmitMock).toHaveBeenCalled();
+      expect(mockCavadaLabsApi.patchCavadaLabsResource).toHaveBeenCalledWith(
+        "test-token",
+        "/cavadalabs/model-policies/policy-1",
+        expect.objectContaining({
+          key_id: "test-token-123",
+          endpoint_type: "chat_completion",
+          model_bucket: "medium",
+          model_alias: "team-model-1",
+          provider: "openai",
+          priority: 1,
+          enabled: true,
+          fallback_enabled: true,
+        }),
+      );
+    });
+    const submittedValues = onSubmitMock.mock.calls[0][0];
+    expect(submittedValues.models).toEqual(expect.arrayContaining(["medium", "team-model-1"]));
+    expect(submittedValues.organization_id).toBeUndefined();
   });
 
   it("should disable models field when management routes are selected", async () => {

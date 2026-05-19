@@ -9,6 +9,7 @@ class CavadaLabsModelPolicyCandidate:
     policy_id: str
     company_id: str
     project_id: str
+    key_id: Optional[str]
     model_alias: str
     provider: str
     priority: int
@@ -109,6 +110,7 @@ def resolve_project_model_priority(
                 {
                     "policy_id": policy.policy_id,
                     "project_id": policy.project_id,
+                    "key_id": policy.key_id,
                     "endpoint_type": policy.endpoint_type,
                     "model_bucket": policy.model_bucket,
                     "model_alias": policy.model_alias,

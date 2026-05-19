@@ -1195,6 +1195,7 @@ class CavadaLabsWebTokenListResponse(CavadaLabsBaseModel):
 
 class CavadaLabsProjectModelPolicyCreateRequest(CavadaLabsBaseModel):
     project_id: str = Field(min_length=1)
+    key_id: Optional[str] = Field(default=None, min_length=1, max_length=256)
     endpoint_type: CavadaLabsModelPolicyEndpointType = (
         CavadaLabsModelPolicyEndpointType.CHAT_COMPLETION
     )
@@ -1234,6 +1235,7 @@ class CavadaLabsProjectModelPolicyCreateRequest(CavadaLabsBaseModel):
 
 
 class CavadaLabsProjectModelPolicyUpdateRequest(CavadaLabsBaseModel):
+    key_id: Optional[str] = Field(default=None, min_length=1, max_length=256)
     endpoint_type: Optional[CavadaLabsModelPolicyEndpointType] = None
     model_bucket: Optional[str] = Field(default=None, min_length=1, max_length=128)
     model_alias: Optional[str] = Field(default=None, min_length=1, max_length=256)

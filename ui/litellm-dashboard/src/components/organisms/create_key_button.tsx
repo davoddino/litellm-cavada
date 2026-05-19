@@ -24,6 +24,14 @@ import RateLimitTypeFormItem from "../common_components/RateLimitTypeFormItem";
 import RouterSettingsAccordion, { RouterSettingsAccordionValue } from "../common_components/RouterSettingsAccordion";
 import { CreateUserButton } from "../CreateUserButton";
 import {
+  collectKeyModelRoutingModels,
+  getKeyModelRoutingKeyId,
+  KeyModelRoutingDraft,
+  KeyModelRoutingEditor,
+  mergeKeyModelRoutingModels,
+  syncKeyModelRoutingPolicies,
+} from "../cavadalabs/KeyModelRoutingEditor";
+import {
   deriveSingleCavadaLabsKeyContextSelection,
   filterManageableCavadaLabsCompanies,
   filterManageableCavadaLabsProjects,
@@ -213,6 +221,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
   const [rotationInterval, setRotationInterval] = useState<string>("30d");
   const [routerSettings, setRouterSettings] = useState<RouterSettingsAccordionValue | null>(null);
   const [budgetLimits, setBudgetLimits] = useState<BudgetWindowEntry[]>([]);
+  const [keyModelRoutingPolicies, setKeyModelRoutingPolicies] = useState<KeyModelRoutingDraft[]>([]);
   const [routerSettingsKey, setRouterSettingsKey] = useState<number>(0);
   const [agentsList, setAgentsList] = useState<{ agent_id: string; agent_name: string }[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
@@ -231,6 +240,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
     setSelectedCompanyId(null);
     setSelectedProjectId(null);
     setBudgetLimits([]);
+    setKeyModelRoutingPolicies([]);
   };
 
   const handleCancel = () => {
@@ -250,6 +260,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
     setSelectedCompanyId(null);
     setSelectedProjectId(null);
     setBudgetLimits([]);
+    setKeyModelRoutingPolicies([]);
   };
 
   useEffect(() => {
@@ -562,6 +573,10 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
       formValues.cavadalabs_project_id = derivedCavadaLabsContext.projectId || undefined;
       const cavadalabsCompanyId = derivedCavadaLabsContext.companyId;
       const cavadalabsProjectId = derivedCavadaLabsContext.projectId;
+      const routingModels = collectKeyModelRoutingModels(keyModelRoutingPolicies);
+      if (routingModels.length > 0) {
+        formValues.models = mergeKeyModelRoutingModels(formValues.models, routingModels);
+      }
       if (hasCavadaLabsMissingSchema) {
         NotificationsManager.fromBackend("CavadaLabs key schema migration required before creating keys");
         return;
@@ -605,6 +620,12 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
       } else {
         response = await keyCreateCall(accessToken, userID, formValues);
       }
+      await syncKeyModelRoutingPolicies({
+        accessToken,
+        projectId: cavadalabsProjectId,
+        keyId: getKeyModelRoutingKeyId(response),
+        policies: keyModelRoutingPolicies,
+      });
 
       console.log("key create Response:", response);
 
@@ -621,6 +642,7 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
       NotificationsManager.success("Virtual Key Created");
       form.resetFields();
       setBudgetLimits([]);
+      setKeyModelRoutingPolicies([]);
       localStorage.removeItem("userData" + userID);
     } catch (error) {
       console.log("error in create key:", error);
@@ -1037,6 +1059,19 @@ const CreateKey: React.FC<CreateKeyProps> = ({ team, teams, data, addKey, autoOp
               >
                 <TextInput placeholder="" />
               </Form.Item>
+
+              {shouldUseCavadaLabsKeyContext && (
+                <div className="mt-4">
+                  <KeyModelRoutingEditor
+                    accessToken={accessToken}
+                    projectId={selectedProjectId}
+                    availableModels={modelsToPick}
+                    value={keyModelRoutingPolicies}
+                    onChange={setKeyModelRoutingPolicies}
+                    disabled={keyType === "management" || keyType === "read_only" || !selectedProjectId}
+                  />
+                </div>
+              )}
 
               <Form.Item
                 label={

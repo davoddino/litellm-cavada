@@ -54,6 +54,7 @@ async def create_model_policy(
 async def list_model_policies(
     http_request: Request,
     project_id: str = Query(...),
+    key_id: Optional[str] = Query(default=None, min_length=1),
     enabled: Optional[bool] = None,
     endpoint_type: Optional[CavadaLabsModelPolicyEndpointType] = None,
     model_bucket: Optional[str] = Query(default=None, min_length=1),
@@ -69,7 +70,10 @@ async def list_model_policies(
         project_id=project_id,
         enabled=enabled,
         endpoint_type=endpoint_type.value if endpoint_type is not None else None,
-        model_bucket=model_bucket.strip().lower() if model_bucket else None,
+        model_bucket=model_bucket.strip().lower()
+        if isinstance(model_bucket, str) and model_bucket
+        else None,
+        key_id=key_id.strip() if isinstance(key_id, str) and key_id else None,
     )
     return CavadaLabsProjectModelPolicyListResponse(
         model_policies=model_policies, count=len(model_policies)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any, List, Optional
 
 from litellm.proxy.cavadalabs.model_policy_resolution import (
     CavadaLabsModelPolicyCandidate,
@@ -20,16 +20,22 @@ class CavadaLabsProjectModelPolicyStore:
         project_id: str,
         endpoint_type: str = "chat_completion",
         model_bucket: str = "default",
+        key_id: Optional[str] = None,
     ) -> List[CavadaLabsModelPolicyCandidate]:
         delegate = self._delegate()
+        where: dict[str, Any] = {
+            "project_id": project_id,
+            "endpoint_type": endpoint_type,
+            "model_bucket": model_bucket,
+            "enabled": True,
+        }
+        if key_id is not None:
+            where["key_id"] = key_id
+        else:
+            where["key_id"] = None
         try:
             rows = await delegate.find_many(
-                where={
-                    "project_id": project_id,
-                    "endpoint_type": endpoint_type,
-                    "model_bucket": model_bucket,
-                    "enabled": True,
-                },
+                where=where,
                 order={"priority": "asc"},
             )
         except Exception as exc:
@@ -50,6 +56,7 @@ def _row_to_candidate(row: Any) -> CavadaLabsModelPolicyCandidate:
         policy_id=str(_row_value(row, "policy_id")),
         company_id=str(_row_value(row, "company_id")),
         project_id=str(_row_value(row, "project_id")),
+        key_id=_optional_string(_row_value(row, "key_id")),
         model_alias=str(_row_value(row, "model_alias")),
         provider=str(_row_value(row, "provider")),
         priority=int(_row_value(row, "priority") or 0),
@@ -64,6 +71,10 @@ def _row_value(row: Any, field_name: str, default: Any = None) -> Any:
     if isinstance(row, dict):
         return row.get(field_name, default)
     return getattr(row, field_name, default)
+
+
+def _optional_string(value: Any) -> Optional[str]:
+    return value if isinstance(value, str) and value else None
 
 
 def _looks_like_missing_schema_exception(exc: Exception) -> bool:

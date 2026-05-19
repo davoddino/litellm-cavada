@@ -11,6 +11,7 @@ const {
   mockKeyCreateCall,
   mockModelAvailableCall,
   mockNotificationsManager,
+  mockSyncKeyModelRoutingPolicies,
 } = vi.hoisted(() => {
   const formStateRef = { current: {} as Record<string, any> };
   const mockKeyCreateCall = vi.fn().mockResolvedValue({
@@ -18,6 +19,7 @@ const {
     soft_budget: null,
   });
   const mockModelAvailableCall = vi.fn().mockResolvedValue({ data: [{ id: "gpt-4" }] });
+  const mockSyncKeyModelRoutingPolicies = vi.fn().mockResolvedValue(undefined);
   const mockNotificationsManager = {
     success: vi.fn(),
     fromBackend: vi.fn(),
@@ -47,6 +49,7 @@ const {
     mockKeyCreateCall,
     mockModelAvailableCall,
     mockNotificationsManager,
+    mockSyncKeyModelRoutingPolicies,
   };
 });
 
@@ -208,6 +211,9 @@ vi.mock("antd", () => {
 
   const Button = ({ children, htmlType, ...props }: { children?: any; htmlType?: string; type?: string }) =>
     React.createElement("button", { ...props, type: htmlType ?? props.type }, children);
+  const Card = ({ children, title }: { children?: any; title?: any }) => React.createElement("section", null, title, children);
+  const InputNumber = (props: any) => React.createElement("input", { ...props, type: "number" });
+  const Space = ({ children }: { children?: any }) => React.createElement("div", null, children);
 
   const Typography = ({ children, ...props }: { children?: any }) => React.createElement("div", props, children);
   Typography.Text = ({ children, ...props }: { children?: any }) => React.createElement("span", props, children);
@@ -217,8 +223,10 @@ vi.mock("antd", () => {
   return {
     Alert,
     Button,
+    Card,
     Form,
     Input,
+    InputNumber,
     message: {
       success: vi.fn(),
       error: vi.fn(),
@@ -228,6 +236,7 @@ vi.mock("antd", () => {
     Modal,
     Radio,
     Select,
+    Space,
     Switch,
     Tag,
     Tooltip,
@@ -257,6 +266,35 @@ vi.mock("../networking", () => ({
 
 vi.mock("../molecules/notifications_manager", () => ({
   default: mockNotificationsManager,
+}));
+
+vi.mock("../cavadalabs/KeyModelRoutingEditor", () => ({
+  collectKeyModelRoutingModels: (policies: any[]) =>
+    policies.flatMap((policy) => (policy.enabled === false ? [] : [policy.model_bucket, policy.model_alias])),
+  getKeyModelRoutingKeyId: (keyData: any) => keyData?.token_id ?? keyData?.token ?? null,
+  KeyModelRoutingEditor: ({ onChange }: { onChange: (value: any[]) => void }) => (
+    <button
+      type="button"
+      onClick={() =>
+        onChange([
+          {
+            endpoint_type: "chat_completion",
+            model_bucket: "medium",
+            model_alias: "gpt-4",
+            provider: "openai",
+            priority: 1,
+            enabled: true,
+            fallback_enabled: true,
+          },
+        ])
+      }
+    >
+      Configure model routing
+    </button>
+  ),
+  mergeKeyModelRoutingModels: (models: any, routingModels: string[]) =>
+    Array.from(new Set([...(Array.isArray(models) ? models : []), ...routingModels])),
+  syncKeyModelRoutingPolicies: mockSyncKeyModelRoutingPolicies,
 }));
 
 vi.mock("../agent_management/AgentSelector", () => ({ default: () => null }));
@@ -443,6 +481,7 @@ describe("CreateKey", () => {
     formStateRef.current = {};
     mockKeyCreateCall.mockResolvedValue({
       key: "test-api-key",
+      token_id: "test-token-id",
       soft_budget: null,
     });
     mockModelAvailableCall.mockResolvedValue({ data: [{ id: "gpt-4" }] });
@@ -768,6 +807,48 @@ describe("CreateKey", () => {
         expect(formValues).not.toHaveProperty("team_id");
         expect(formValues).not.toHaveProperty("project_id");
       });
+    });
+
+    it("should create key-scoped model routing priorities after key creation", async () => {
+      renderWithProviders(<CreateKey {...defaultProps} />);
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create new key/i }));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText("Configure model routing")).toBeInTheDocument();
+      });
+
+      act(() => {
+        formMock.setFieldValue("cavadalabs_company_id", "company-1");
+        formMock.setFieldValue("cavadalabs_project_id", "project-1");
+        formMock.setFieldValue("key_alias", "Bucket key");
+        fireEvent.click(screen.getByText("Configure model routing"));
+      });
+
+      act(() => {
+        fireEvent.click(screen.getByRole("button", { name: /create key/i }));
+      });
+
+      await waitFor(() => {
+        expect(mockKeyCreateCall).toHaveBeenCalled();
+        expect(mockSyncKeyModelRoutingPolicies).toHaveBeenCalledWith({
+          accessToken: "test-token",
+          projectId: "project-1",
+          keyId: "test-token-id",
+          policies: [
+            expect.objectContaining({
+              model_bucket: "medium",
+              model_alias: "gpt-4",
+              priority: 1,
+            }),
+          ],
+        });
+      });
+      const formValues = mockKeyCreateCall.mock.calls[0][2];
+      expect(formValues.models).toEqual(expect.arrayContaining(["medium", "gpt-4"]));
+      expect(formValues).not.toHaveProperty("organization_id");
     });
 
     it("should autoderive the sole manageable Company and Project before creating a key", async () => {

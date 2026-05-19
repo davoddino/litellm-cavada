@@ -378,6 +378,7 @@ model CavadaLabs_ProjectModelPolicyTable {
   policy_id                  String   @id @default(uuid())
   company_id                 String
   project_id                 String
+  key_id                     String?
   endpoint_type              String   @default("chat_completion")
   model_bucket               String   @default("default")
   model_alias                String
@@ -410,7 +411,7 @@ model CavadaLabs_ProjectModelPolicyTable {
   company                    CavadaLabs_CompanyTable @relation(fields: [company_id], references: [company_id])
   project                    CavadaLabs_ProjectTable @relation(fields: [project_id], references: [project_id])
 
-  @@unique([project_id, endpoint_type, model_bucket, priority], map: "CavadaLabs_ModelPolicy_project_endpoint_bucket_priority_key")
+  @@index([project_id, key_id, endpoint_type, model_bucket, enabled, priority], map: "CavadaLabs_ModelPolicy_project_key_endpoint_bucket_enabled_idx")
   @@index([company_id, project_id, endpoint_type, model_bucket, enabled, priority], map: "CavadaLabs_ModelPolicy_co_proj_endpoint_bucket_enabled_idx")
   @@index([provider, model_alias])
 }

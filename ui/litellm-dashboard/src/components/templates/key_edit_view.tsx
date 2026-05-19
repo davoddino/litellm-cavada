@@ -12,6 +12,14 @@ import KeyLifecycleSettings from "../common_components/KeyLifecycleSettings";
 import PassThroughRoutesSelector from "../common_components/PassThroughRoutesSelector";
 import RateLimitTypeFormItem from "../common_components/RateLimitTypeFormItem";
 import {
+  collectKeyModelRoutingModels,
+  getKeyModelRoutingKeyId,
+  KeyModelRoutingDraft,
+  KeyModelRoutingEditor,
+  mergeKeyModelRoutingModels,
+  syncKeyModelRoutingPolicies,
+} from "../cavadalabs/KeyModelRoutingEditor";
+import {
   deriveSingleCavadaLabsKeyContextSelection,
   filterManageableCavadaLabsCompanies,
   filterManageableCavadaLabsProjects,
@@ -90,6 +98,24 @@ const getKeyTypeFromRoutes = (allowedRoutes: string[] | null | undefined): strin
   return "default";
 };
 
+const parseAllowedRoutesValue = (allowedRoutesValue: unknown): string[] => {
+  if (Array.isArray(allowedRoutesValue)) {
+    return allowedRoutesValue.filter((route): route is string => typeof route === "string" && route.trim().length > 0);
+  }
+  if (typeof allowedRoutesValue === "string" && allowedRoutesValue.trim() !== "") {
+    return allowedRoutesValue
+      .split(",")
+      .map((route: string) => route.trim())
+      .filter((route: string) => route.length > 0);
+  }
+  return [];
+};
+
+const routesDisableModelSelection = (allowedRoutesValue: unknown): boolean => {
+  const allowedRoutes = parseAllowedRoutesValue(allowedRoutesValue);
+  return allowedRoutes.includes("management_routes") || allowedRoutes.includes("info_routes");
+};
+
 export function KeyEditView({
   keyData,
   onCancel,
@@ -120,6 +146,7 @@ export function KeyEditView({
   const [budgetLimits, setBudgetLimits] = useState<BudgetWindowEntry[]>(
     Array.isArray(keyData.budget_limits) ? keyData.budget_limits : [],
   );
+  const [keyModelRoutingPolicies, setKeyModelRoutingPolicies] = useState<KeyModelRoutingDraft[]>([]);
   const {
     companies: cavadalabsCompanies,
     projects: cavadalabsProjects,
@@ -372,6 +399,10 @@ export function KeyEditView({
       values.cavadalabs_project_id = derivedCavadaLabsContext.projectId || undefined;
       const submittedCompanyId = derivedCavadaLabsContext.companyId;
       const submittedProjectId = derivedCavadaLabsContext.projectId;
+      const routingModels = collectKeyModelRoutingModels(keyModelRoutingPolicies);
+      if (routingModels.length > 0) {
+        values.models = mergeKeyModelRoutingModels(values.models, routingModels);
+      }
       if (hasCavadaLabsMissingSchema) {
         NotificationsManager.fromBackend("CavadaLabs key schema migration required before saving keys");
         return;
@@ -396,6 +427,12 @@ export function KeyEditView({
       stripLiteLLMCompatibilityFieldsForCavadaLabsKey(values);
 
       await onSubmit(values);
+      await syncKeyModelRoutingPolicies({
+        accessToken,
+        projectId: submittedProjectId,
+        keyId: getKeyModelRoutingKeyId(keyData),
+        policies: keyModelRoutingPolicies,
+      });
     } finally {
       setIsKeySaving(false);
     }
@@ -455,15 +492,7 @@ export function KeyEditView({
         >
           {({ getFieldValue, setFieldValue }) => {
             const allowedRoutesValue = getFieldValue("allowed_routes") || "";
-            // Convert string to array for checking
-            const allowedRoutes =
-              typeof allowedRoutesValue === "string" && allowedRoutesValue.trim() !== ""
-                ? allowedRoutesValue
-                    .split(",")
-                    .map((r: string) => r.trim())
-                    .filter((r: string) => r.length > 0)
-                : [];
-            const isDisabled = allowedRoutes.includes("management_routes") || allowedRoutes.includes("info_routes");
+            const isDisabled = routesDisableModelSelection(allowedRoutesValue);
             const models = getFieldValue("models") || [];
 
             return (
@@ -495,6 +524,25 @@ export function KeyEditView({
         </Form.Item>
       </Form.Item>
 
+      {shouldUseCavadaLabsKeyContext && (
+        <Form.Item
+          noStyle
+          shouldUpdate={(prevValues, currentValues) => prevValues.allowed_routes !== currentValues.allowed_routes}
+        >
+          {({ getFieldValue }) => (
+            <KeyModelRoutingEditor
+              accessToken={accessToken}
+              projectId={selectedProjectId}
+              keyId={getKeyModelRoutingKeyId(keyData)}
+              availableModels={availableModels}
+              value={keyModelRoutingPolicies}
+              onChange={setKeyModelRoutingPolicies}
+              disabled={!selectedProjectId || routesDisableModelSelection(getFieldValue("allowed_routes"))}
+            />
+          )}
+        </Form.Item>
+      )}
+
       <Form.Item label="Key Type">
         <Form.Item
           noStyle
@@ -502,14 +550,7 @@ export function KeyEditView({
         >
           {({ getFieldValue, setFieldValue }) => {
             const allowedRoutesValue = getFieldValue("allowed_routes") || "";
-            // Convert string to array for getKeyTypeFromRoutes
-            const allowedRoutes =
-              typeof allowedRoutesValue === "string" && allowedRoutesValue.trim() !== ""
-                ? allowedRoutesValue
-                    .split(",")
-                    .map((r: string) => r.trim())
-                    .filter((r: string) => r.length > 0)
-                : [];
+            const allowedRoutes = parseAllowedRoutesValue(allowedRoutesValue);
             const keyTypeValue = getKeyTypeFromRoutes(allowedRoutes);
 
             return (

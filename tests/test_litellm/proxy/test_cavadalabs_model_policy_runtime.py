@@ -27,6 +27,7 @@ def _policy(**kwargs) -> CavadaLabsModelPolicyCandidate:
         policy_id=kwargs.pop("policy_id", "policy-1"),
         company_id=kwargs.pop("company_id", "company-1"),
         project_id=kwargs.pop("project_id", "project-1"),
+        key_id=kwargs.pop("key_id", None),
         model_alias=kwargs.pop("model_alias", "model-a"),
         provider=kwargs.pop("provider", "openai"),
         priority=kwargs.pop("priority", 1),
@@ -42,6 +43,7 @@ def _policy_row(**kwargs):
         policy_id=kwargs.pop("policy_id", "policy-1"),
         company_id=kwargs.pop("company_id", "company-1"),
         project_id=kwargs.pop("project_id", "project-1"),
+        key_id=kwargs.pop("key_id", None),
         endpoint_type=kwargs.pop("endpoint_type", "chat_completion"),
         model_bucket=kwargs.pop("model_bucket", "default"),
         model_alias=kwargs.pop("model_alias", "model-a"),
@@ -52,10 +54,17 @@ def _policy_row(**kwargs):
     )
 
 
-def _prisma_client(rows):
+def _prisma_client(rows, *, key_rows=None):
+    async def _find_many(*, where, order):
+        if where.get("key_id") is not None:
+            return key_rows or []
+        return rows
+
     db = MagicMock()
     db.cavadalabs_projectmodelpolicytable = MagicMock()
-    db.cavadalabs_projectmodelpolicytable.find_many = AsyncMock(return_value=rows)
+    db.cavadalabs_projectmodelpolicytable.find_many = AsyncMock(
+        side_effect=_find_many
+    )
     return SimpleNamespace(db=db)
 
 
@@ -137,15 +146,18 @@ async def test_should_apply_default_cavadalabs_project_model_fallback_from_key_c
     assert data["model"] == "model-b"
     assert data["fallbacks"] == ["model-a"]
     assert data["metadata"]["cavadalabs_model_bucket"] == "default"
-    prisma_client.db.cavadalabs_projectmodelpolicytable.find_many.assert_awaited_once_with(
-        where={
+    find_calls = prisma_client.db.cavadalabs_projectmodelpolicytable.find_many.await_args_list
+    assert find_calls[0].kwargs["where"]["key_id"] is not None
+    assert find_calls[1].kwargs == {
+        "where": {
             "project_id": "project-1",
             "endpoint_type": "chat_completion",
             "model_bucket": "default",
             "enabled": True,
+            "key_id": None,
         },
-        order={"priority": "asc"},
-    )
+        "order": {"priority": "asc"},
+    }
 
 
 @pytest.mark.asyncio
@@ -187,15 +199,130 @@ async def test_should_apply_named_model_bucket_from_key_context():
     assert data["model"] == "model-a"
     assert data["fallbacks"] == ["model-b"]
     assert data["metadata"]["cavadalabs"]["routing"]["model_bucket"] == "medium"
-    prisma_client.db.cavadalabs_projectmodelpolicytable.find_many.assert_awaited_once_with(
-        where={
+    find_calls = prisma_client.db.cavadalabs_projectmodelpolicytable.find_many.await_args_list
+    assert find_calls[0].kwargs["where"]["key_id"] is not None
+    assert find_calls[1].kwargs == {
+        "where": {
             "project_id": "project-1",
             "endpoint_type": "chat_completion",
             "model_bucket": "medium",
             "enabled": True,
+            "key_id": None,
         },
-        order={"priority": "asc"},
+        "order": {"priority": "asc"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_should_prefer_key_scoped_model_bucket_over_project_default():
+    data = {"messages": [{"role": "user", "content": "ciao"}], "model": "medium"}
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="sk-test",
+        user_id="user-1",
+        cavadalabs_project_id="project-1",
     )
+    prisma_client = _prisma_client(
+        [
+            _policy_row(
+                policy_id="project-policy",
+                model_alias="model-a",
+                priority=1,
+                model_bucket="medium",
+            )
+        ],
+        key_rows=[
+            _policy_row(
+                policy_id="key-policy",
+                key_id="sk-test",
+                model_alias="model-b",
+                priority=1,
+                model_bucket="medium",
+            )
+        ],
+    )
+
+    resolved_model = await apply_cavadalabs_project_model_fallback(
+        data=data,
+        route_type="acompletion",
+        user_api_key_dict=user_api_key_dict,
+        llm_router=_RouterStub(),
+        prisma_client=prisma_client,
+    )
+
+    assert resolved_model == "model-b"
+    assert data["metadata"]["cavadalabs"]["routing"]["key_id"] is not None
+    find_calls = prisma_client.db.cavadalabs_projectmodelpolicytable.find_many.await_args_list
+    assert len(find_calls) == 1
+    assert find_calls[0].kwargs["where"]["key_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_should_fall_back_to_project_model_bucket_when_key_has_no_policy():
+    data = {"messages": [{"role": "user", "content": "ciao"}], "model": "advanced"}
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="sk-test",
+        user_id="user-1",
+        cavadalabs_project_id="project-1",
+    )
+    prisma_client = _prisma_client(
+        [
+            _policy_row(
+                policy_id="project-policy",
+                model_alias="model-a",
+                priority=1,
+                model_bucket="advanced",
+            )
+        ],
+        key_rows=[],
+    )
+
+    resolved_model = await apply_cavadalabs_project_model_fallback(
+        data=data,
+        route_type="acompletion",
+        user_api_key_dict=user_api_key_dict,
+        llm_router=_RouterStub(),
+        prisma_client=prisma_client,
+    )
+
+    assert resolved_model == "model-a"
+    assert data["metadata"]["cavadalabs"]["routing"]["selected_policy_id"] == "project-policy"
+    assert data["metadata"]["cavadalabs"]["routing"]["key_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_should_apply_bucket_routing_for_embedding_endpoint():
+    data = {"input": "ciao", "model": "small"}
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="sk-test",
+        user_id="user-1",
+        cavadalabs_project_id="project-1",
+    )
+    prisma_client = _prisma_client(
+        [
+            _policy_row(
+                policy_id="embedding-policy",
+                endpoint_type="embedding",
+                model_bucket="small",
+                model_alias="model-a",
+            )
+        ],
+        key_rows=[],
+    )
+
+    resolved_model = await apply_cavadalabs_project_model_fallback(
+        data=data,
+        route_type="aembedding",
+        user_api_key_dict=user_api_key_dict,
+        llm_router=_RouterStub(),
+        prisma_client=prisma_client,
+    )
+
+    assert resolved_model == "model-a"
+    assert data["model"] == "model-a"
+    assert data["metadata"]["cavadalabs"]["routing"]["endpoint_type"] == "embedding"
+    find_calls = prisma_client.db.cavadalabs_projectmodelpolicytable.find_many.await_args_list
+    assert find_calls[1].kwargs["where"]["endpoint_type"] == "embedding"
+    assert find_calls[1].kwargs["where"]["model_bucket"] == "small"
 
 
 @pytest.mark.asyncio
