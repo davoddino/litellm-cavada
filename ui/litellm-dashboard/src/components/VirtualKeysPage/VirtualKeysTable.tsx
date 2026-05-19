@@ -88,13 +88,9 @@ export function VirtualKeysTable({
       projects: cavadalabsContextOptions.projects,
     });
   }, [cavadalabsContextOptions, initialCavadaLabsProductContext]);
-  const hasDefaultCavadaLabsKeyScope = Boolean(
-    defaultCavadaLabsKeyScope.companyId && defaultCavadaLabsKeyScope.projectId,
-  );
   const keyListEnabled =
     !accessToken ||
-    (initialCavadaLabsProductContext.contextKnown &&
-      (!initialCavadaLabsProductContext.isCavadaLabsProductContext || hasDefaultCavadaLabsKeyScope));
+    (initialCavadaLabsProductContext.contextKnown && !initialCavadaLabsProductContext.isLoading);
   const [selectedKey, setSelectedKey] = useState<KeyResponse | null>(null);
   const [sorting, setSorting] = React.useState<SortingState>(() => {
     if (currentSort) {

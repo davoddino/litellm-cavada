@@ -15,6 +15,7 @@ from litellm.proxy.management_endpoints.cavadalabs_dispatcher_utils import (
 )
 from litellm.proxy.management_helpers.utils import management_endpoint_wrapper
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
+    CavadaLabsModelPolicyEndpointType,
     CavadaLabsProjectModelPolicyCreateRequest,
     CavadaLabsProjectModelPolicyListResponse,
     CavadaLabsProjectModelPolicyResponse,
@@ -54,6 +55,8 @@ async def list_model_policies(
     http_request: Request,
     project_id: str = Query(...),
     enabled: Optional[bool] = None,
+    endpoint_type: Optional[CavadaLabsModelPolicyEndpointType] = None,
+    model_bucket: Optional[str] = Query(default=None, min_length=1),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ) -> CavadaLabsProjectModelPolicyListResponse:
     service = dispatcher_service()
@@ -65,6 +68,8 @@ async def list_model_policies(
     model_policies = await service.list_project_model_policies(
         project_id=project_id,
         enabled=enabled,
+        endpoint_type=endpoint_type.value if endpoint_type is not None else None,
+        model_bucket=model_bucket.strip().lower() if model_bucket else None,
     )
     return CavadaLabsProjectModelPolicyListResponse(
         model_policies=model_policies, count=len(model_policies)

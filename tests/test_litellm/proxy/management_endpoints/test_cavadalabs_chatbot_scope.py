@@ -20,6 +20,7 @@ from litellm.proxy.cavadalabs.chatbot_scope import (
     require_web_token_project_access,
 )
 from litellm.proxy.cavadalabs.dispatcher_shared import CavadaLabsRuntimeContext
+from litellm.proxy.cavadalabs.dispatcher_runtime import CavadaLabsRuntimeOperations
 from litellm.proxy.cavadalabs.model_policy_proxy import (
     apply_cavadalabs_project_model_fallback,
 )
@@ -153,6 +154,8 @@ def _policy_row(**kwargs):
         policy_id=kwargs.pop("policy_id", "policy-1"),
         company_id=kwargs.pop("company_id", "company-1"),
         project_id=kwargs.pop("project_id", "project-1"),
+        endpoint_type=kwargs.pop("endpoint_type", "chat_completion"),
+        model_bucket=kwargs.pop("model_bucket", "default"),
         model_alias=kwargs.pop("model_alias", "model-a"),
         provider=kwargs.pop("provider", "openai"),
         deployment_id=kwargs.pop("deployment_id", None),
@@ -413,6 +416,34 @@ async def test_should_validate_chatbot_project_references():
 
 
 @pytest.mark.asyncio
+async def test_should_reject_chatbot_policy_with_wrong_model_bucket():
+    db = _db(
+        cavadalabs_projectmodelpolicytable=_UniqueDelegate(
+            "policy_id",
+            {
+                "policy-default": _policy_row(
+                    policy_id="policy-default",
+                    model_bucket="default",
+                )
+            },
+        )
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await validate_chatbot_project_references(
+            db,
+            company_id="company-1",
+            project_id="project-1",
+            model_policy_id="policy-default",
+            expected_policy_endpoint_type="chat_completion",
+            expected_policy_model_bucket="medium",
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "model bucket" in exc_info.value.detail["error"]
+
+
+@pytest.mark.asyncio
 async def test_should_reject_cross_project_rag_reference():
     db = _db(
         cavadalabs_ragcollectiontable=_UniqueDelegate(
@@ -451,6 +482,33 @@ async def test_should_report_missing_schema_for_chatbot_references():
     assert exc_info.value.detail["schema_status"] == "missing_schema"
     assert exc_info.value.detail["missing_schema"] == ["CavadaLabs_RAGCollectionTable"]
     assert "prisma migrate deploy" in exc_info.value.detail["migration_command"]
+
+
+def test_should_resolve_runtime_model_bucket_by_request_then_token_then_chatbot():
+    assert (
+        CavadaLabsRuntimeOperations._chatbot_model_bucket(
+            requested_model_bucket=" Medium ",
+            web_token_metadata={"cavadalabs": {"model_bucket": "fast"}},
+            chatbot_metadata={"default_model_bucket": "default"},
+        )
+        == "medium"
+    )
+    assert (
+        CavadaLabsRuntimeOperations._chatbot_model_bucket(
+            requested_model_bucket=None,
+            web_token_metadata={"cavadalabs": {"model_bucket": "fast"}},
+            chatbot_metadata={"default_model_bucket": "default"},
+        )
+        == "fast"
+    )
+    assert (
+        CavadaLabsRuntimeOperations._chatbot_model_bucket(
+            requested_model_bucket=None,
+            web_token_metadata={},
+            chatbot_metadata={"default_model_bucket": "default"},
+        )
+        == "default"
+    )
 
 
 class _RouterStub:

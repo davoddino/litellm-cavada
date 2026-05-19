@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 from fastapi import HTTPException, status
 
 from litellm.proxy.cavadalabs.usage_query_filters import (
+    json_path_string_equals,
     metadata_scope_filters,
     spend_log_repair_where,
 )
@@ -207,7 +208,9 @@ def _usage_ledger_schema_probe_where() -> Dict[str, Any]:
                     {
                         "metadata": {
                             "path": ["model_group"],
-                            "equals": "__cavadalabs_schema_probe__",
+                            "equals": json_path_string_equals(
+                                "__cavadalabs_schema_probe__"
+                            ),
                         }
                     },
                 ]

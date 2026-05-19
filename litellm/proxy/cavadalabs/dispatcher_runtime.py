@@ -28,6 +28,20 @@ if TYPE_CHECKING:
     from litellm.proxy.cavadalabs.rag_runtime import CavadaLabsRAGContext
 
 
+def _metadata_string(metadata: Any, key: str) -> Optional[str]:
+    if not isinstance(metadata, dict):
+        return None
+    value = metadata.get(key)
+    if isinstance(value, str) and value.strip():
+        return value
+    cavadalabs_metadata = metadata.get("cavadalabs")
+    if isinstance(cavadalabs_metadata, dict):
+        value = cavadalabs_metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
 class CavadaLabsRuntimeOperations(
     CavadaLabsChatbotOperations,
     CavadaLabsModelPolicyOperations,
@@ -37,6 +51,7 @@ class CavadaLabsRuntimeOperations(
         token: str,
         route: str,
         origin: Optional[str],
+        model_bucket: Optional[str] = None,
     ) -> CavadaLabsRuntimeContext:
         validation_result = await self.validate_web_token(
             token=token,
@@ -82,9 +97,16 @@ class CavadaLabsRuntimeOperations(
                 detail={"error": "Chatbot is not published"},
             )
 
+        resolved_model_bucket = self._chatbot_model_bucket(
+            requested_model_bucket=model_bucket,
+            chatbot_metadata=chatbot.metadata,
+            web_token_metadata=web_token.metadata,
+        )
         primary_policy, fallback_policies = await self.resolve_model_policy_for_chatbot(
             chatbot=chatbot,
             project=project,
+            endpoint_type="chat_completion",
+            model_bucket=resolved_model_bucket,
         )
         return CavadaLabsRuntimeContext(
             company=company,
@@ -94,6 +116,23 @@ class CavadaLabsRuntimeOperations(
             primary_policy=primary_policy,
             fallback_policies=fallback_policies,
         )
+
+    @staticmethod
+    def _chatbot_model_bucket(
+        *,
+        requested_model_bucket: Optional[str],
+        chatbot_metadata: Any,
+        web_token_metadata: Any,
+    ) -> str:
+        for value in (
+            requested_model_bucket,
+            _metadata_string(web_token_metadata, "model_bucket"),
+            _metadata_string(chatbot_metadata, "default_model_bucket"),
+            _metadata_string(chatbot_metadata, "model_bucket"),
+        ):
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+        return "default"
 
     async def enforce_runtime_limits(
         self,
@@ -260,7 +299,7 @@ class CavadaLabsRuntimeOperations(
         payload = request_data.model_dump(
             mode="python",
             exclude_none=True,
-            exclude={"client_request_id", "metadata", "session_id"},
+            exclude={"client_request_id", "metadata", "session_id", "model_bucket"},
         )
         payload["model"] = primary_policy.model_alias
         messages = [
@@ -320,6 +359,8 @@ class CavadaLabsRuntimeOperations(
             "cavadalabs_metadata_source": "chatbot_runtime",
             "cavadalabs_policy_id": primary_policy.policy_id,
             "cavadalabs_provider": primary_policy.provider,
+            "cavadalabs_endpoint_type": primary_policy.endpoint_type,
+            "cavadalabs_model_bucket": primary_policy.model_bucket,
             "cavadalabs": {
                 "company_id": context.company.company_id,
                 "project_id": context.project.project_id,
@@ -330,6 +371,8 @@ class CavadaLabsRuntimeOperations(
                 "fallback_policy_ids": [
                     policy.policy_id for policy in context.fallback_policies
                 ],
+                "endpoint_type": primary_policy.endpoint_type,
+                "model_bucket": primary_policy.model_bucket,
                 "model_alias": primary_policy.model_alias,
                 "deployment_id": primary_policy.deployment_id,
                 "provider": primary_policy.provider,

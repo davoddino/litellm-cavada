@@ -39,6 +39,28 @@ from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
 )
 
 
+def _metadata_string(metadata: Any, key: str) -> Optional[str]:
+    if not isinstance(metadata, dict):
+        return None
+    value = metadata.get(key)
+    if isinstance(value, str) and value.strip():
+        return value
+    cavadalabs_metadata = metadata.get("cavadalabs")
+    if isinstance(cavadalabs_metadata, dict):
+        value = cavadalabs_metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _chatbot_default_model_bucket(metadata: Any) -> str:
+    for key in ("default_model_bucket", "model_bucket"):
+        value = _metadata_string(metadata, key)
+        if value is not None:
+            return value.strip().lower()
+    return "default"
+
+
 class CavadaLabsChatbotOperations(CavadaLabsProjectOperations):
     async def create_chatbot(
         self,
@@ -59,6 +81,8 @@ class CavadaLabsChatbotOperations(CavadaLabsProjectOperations):
             company_id=data.company_id,
             project_id=data.project_id,
             model_policy_id=data.model_policy_id,
+            expected_policy_endpoint_type="chat_completion",
+            expected_policy_model_bucket=_chatbot_default_model_bucket(data.metadata),
             assigned_rag_collection_ids=data.assigned_rag_collections,
             assigned_guardrail_policy=data.assigned_guardrail_policy,
         )
@@ -155,12 +179,22 @@ class CavadaLabsChatbotOperations(CavadaLabsProjectOperations):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={"error": "published chatbots require a system_prompt"},
             )
+        effective_model_policy_id = (
+            update_data["model_policy_id"]
+            if "model_policy_id" in update_data
+            else before.model_policy_id
+        )
+        effective_metadata = update_data.get("metadata", before.metadata)
         await validate_chatbot_project_references(
             self.db,
             company_id=before.company_id,
             project_id=before.project_id,
             chatbot_id=before.chatbot_id,
-            model_policy_id=update_data.get("model_policy_id"),
+            model_policy_id=effective_model_policy_id,
+            expected_policy_endpoint_type="chat_completion",
+            expected_policy_model_bucket=_chatbot_default_model_bucket(
+                effective_metadata
+            ),
             assigned_rag_collection_ids=update_data.get("assigned_rag_collections"),
             assigned_guardrail_policy=update_data.get("assigned_guardrail_policy"),
         )

@@ -337,7 +337,7 @@ it("should wait for CavadaLabs context before listing keys", () => {
   expect(options).not.toHaveProperty("teamID");
 });
 
-it("should not issue an unscoped key list when CavadaLabs scope is ambiguous", () => {
+it("should list keys when CavadaLabs scope is ambiguous so users can filter explicitly", () => {
   cavadalabsKeyContextOptions.companies = [{ company_id: "company-1", legal_name: "Acme Srl", status: "active" }];
   cavadalabsKeyContextOptions.projects = [
     { project_id: "project-1", company_id: "company-1", name: "Support", status: "production" },
@@ -354,7 +354,7 @@ it("should not issue an unscoped key list when CavadaLabs scope is ambiguous", (
     expect.objectContaining({
       cavadalabsCompanyID: undefined,
       cavadalabsProjectID: undefined,
-      enabled: false,
+      enabled: true,
     }),
   );
   const options = mockUseKeys.mock.calls[0][2];

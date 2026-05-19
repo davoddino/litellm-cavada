@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 _API_KEY_HASH_METADATA_KEYS = ("user_api_key_hash", "api_key_hash", "user_api_key")
 _METADATA_PREFIXES = ((), ("cavadalabs",), ("spend_logs_metadata",))
+
+
+def json_path_string_equals(value: str) -> str:
+    return json.dumps(value)
 
 
 def metadata_scope_filters(logical_field: str, value: str) -> List[Dict[str, Any]]:
@@ -26,7 +31,7 @@ def metadata_scope_filters(logical_field: str, value: str) -> List[Dict[str, Any
                 {
                     "metadata": {
                         "path": [*prefix, alias],
-                        "equals": value,
+                        "equals": json_path_string_equals(value),
                     }
                 }
             )
@@ -67,7 +72,7 @@ def api_key_hash_scope_filters(
                     {
                         "metadata": {
                             "path": [*prefix, metadata_key],
-                            "equals": api_key_hash,
+                            "equals": json_path_string_equals(api_key_hash),
                         }
                     }
                 )

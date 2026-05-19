@@ -7,9 +7,10 @@ import { Suspense } from "react";
 interface CavadaLabsRouteProps {
   initialResource?: "companies" | "projects";
   initialTab?: "overview" | "tenants" | "runtime" | "knowledge" | "safety" | "billing" | "compliance";
+  focusedResource?: "companies" | "projects";
 }
 
-const CavadaLabsRoute = ({ initialResource, initialTab }: CavadaLabsRouteProps) => {
+const CavadaLabsRoute = ({ initialResource, initialTab, focusedResource }: CavadaLabsRouteProps) => {
   const { accessToken, userRole } = useAuthorized();
   return (
     <Suspense fallback={null}>
@@ -18,6 +19,7 @@ const CavadaLabsRoute = ({ initialResource, initialTab }: CavadaLabsRouteProps) 
         userRole={userRole}
         initialResource={initialResource}
         initialTab={initialTab}
+        focusedResource={focusedResource}
       />
     </Suspense>
   );

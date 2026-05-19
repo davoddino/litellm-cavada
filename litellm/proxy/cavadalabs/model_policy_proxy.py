@@ -14,7 +14,11 @@ from litellm.proxy.cavadalabs.model_policy_store import (
     CavadaLabsProjectModelPolicyStore,
 )
 
-_COMPLETION_ROUTE_TYPES = {"acompletion", "atext_completion"}
+_ROUTE_ENDPOINT_TYPES = {
+    "acompletion": "chat_completion",
+    "atext_completion": "text_completion",
+}
+_DEFAULT_MODEL_BUCKET = "default"
 
 
 async def apply_cavadalabs_project_model_fallback(
@@ -25,9 +29,8 @@ async def apply_cavadalabs_project_model_fallback(
     llm_router: Any,
     prisma_client: Optional[Any] = None,
 ) -> Optional[str]:
-    if route_type not in _COMPLETION_ROUTE_TYPES or not _is_missing_model(
-        data.get("model")
-    ):
+    endpoint_type = _ROUTE_ENDPOINT_TYPES.get(route_type)
+    if endpoint_type is None:
         return None
 
     project_id = _clean_string(
@@ -49,17 +52,27 @@ async def apply_cavadalabs_project_model_fallback(
             },
         )
 
-    available_models = _available_model_names_from_router(
-        llm_router=llm_router,
-        team_id=_clean_string(getattr(user_api_key_dict, "team_id", None)),
-    )
+    requested_model = _clean_string(data.get("model"))
+    model_bucket = _normalize_model_bucket(requested_model or _DEFAULT_MODEL_BUCKET)
     store = CavadaLabsProjectModelPolicyStore(prisma_client.db)
     try:
-        policies = await store.list_enabled_project_policies(project_id=project_id)
+        policies = await store.list_enabled_project_policies(
+            project_id=project_id,
+            endpoint_type=endpoint_type,
+            model_bucket=model_bucket,
+        )
+        if requested_model is not None and not policies:
+            return None
+        available_models = _available_model_names_from_router(
+            llm_router=llm_router,
+            team_id=_clean_string(getattr(user_api_key_dict, "team_id", None)),
+        )
         resolution = resolve_project_model_priority(
             project_id=project_id,
             policies=policies,
             available_model_names=available_models,
+            endpoint_type=endpoint_type,
+            model_bucket=model_bucket,
         )
     except CavadaLabsModelPolicySchemaError as exc:
         raise HTTPException(
@@ -73,6 +86,10 @@ async def apply_cavadalabs_project_model_fallback(
         ) from exc
 
     data["model"] = resolution.model
+    data.pop("fallbacks", None)
+    if resolution.fallback_models:
+        data["fallbacks"] = list(resolution.fallback_models)
+    _write_routing_metadata(data, resolution)
     return resolution.model
 
 
@@ -128,3 +145,31 @@ def _is_missing_model(value: Any) -> bool:
 
 def _clean_string(value: Any) -> Optional[str]:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _normalize_model_bucket(value: str) -> str:
+    return value.strip().lower() or _DEFAULT_MODEL_BUCKET
+
+
+def _write_routing_metadata(
+    data: dict,
+    resolution: Any,
+) -> None:
+    metadata = data.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        data["metadata"] = metadata
+    cavadalabs_metadata = metadata.get("cavadalabs")
+    if not isinstance(cavadalabs_metadata, dict):
+        cavadalabs_metadata = {}
+        metadata["cavadalabs"] = cavadalabs_metadata
+    cavadalabs_metadata["routing"] = {
+        "endpoint_type": resolution.endpoint_type,
+        "model_bucket": resolution.model_bucket,
+        "selected_policy_id": resolution.policy.policy_id,
+        "selected_model_alias": resolution.model,
+        "fallback_models": list(resolution.fallback_models),
+    }
+    metadata["cavadalabs_endpoint_type"] = resolution.endpoint_type
+    metadata["cavadalabs_model_bucket"] = resolution.model_bucket
+    metadata["cavadalabs_policy_id"] = resolution.policy.policy_id

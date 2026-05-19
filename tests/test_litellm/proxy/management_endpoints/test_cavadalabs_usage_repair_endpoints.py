@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -362,13 +363,13 @@ def test_spend_log_repair_where_matches_api_key_hash_in_metadata_paths():
     assert {
         "metadata": {
             "path": ["user_api_key_hash"],
-            "equals": "hashed-key",
+            "equals": json.dumps("hashed-key"),
         }
     } in api_key_condition["OR"]
     assert {
         "metadata": {
             "path": ["spend_logs_metadata", "api_key_hash"],
-            "equals": "hashed-key",
+            "equals": json.dumps("hashed-key"),
         }
     } in api_key_condition["OR"]
 
@@ -1962,7 +1963,7 @@ async def test_usage_repair_backfills_spend_log_matching_key_hash_in_metadata_on
     assert {
         "metadata": {
             "path": ["spend_logs_metadata", "user_api_key_hash"],
-            "equals": "hashed-key",
+            "equals": json.dumps("hashed-key"),
         }
     } in key_hash_condition["OR"]
     ledger_row = db.cavadalabs_requestledgertable.create_many.call_args.kwargs["data"][

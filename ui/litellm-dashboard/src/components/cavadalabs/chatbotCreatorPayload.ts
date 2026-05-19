@@ -12,6 +12,7 @@ export interface CavadaLabsChatbotCreatorValues {
   default_language?: string;
   prompt_version?: number;
   model_policy_id?: string;
+  model_bucket?: string;
   system_prompt?: string;
   assigned_rag_collections?: string[];
   allowed_domains?: string[];
@@ -41,6 +42,7 @@ export const initialChatbotCreatorValues = (
     status: "draft",
     default_language: DEFAULT_CHATBOT_LANGUAGE,
     prompt_version: 1,
+    model_bucket: "default",
     server_key_mode: "create",
     issue_web_token: false,
     expires_in_seconds: DEFAULT_WEB_TOKEN_TTL_SECONDS,
@@ -66,6 +68,20 @@ const putIfPresent = (payload: CavadaLabsRecord, key: string, value: unknown): v
   payload[key] = value;
 };
 
+export const cleanModelBucket = (value?: string): string => {
+  const cleaned = value?.trim().toLowerCase();
+  return cleaned || "default";
+};
+
+const uniqueNonEmptyStrings = (values: Array<string | undefined>): string[] =>
+  Array.from(
+    new Set(
+      values
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+
 export const projectsForCompany = (
   context: Pick<CavadaLabsRuntimeContext, "projects">,
   companyId?: string,
@@ -79,7 +95,9 @@ export const modelPolicyOptions = (policies: CavadaLabsRecord[]): CavadaLabsSele
     .filter((policy) => policy.policy_id)
     .map((policy) => ({
       value: String(policy.policy_id),
-      label: policy.model_alias ? `${policy.model_alias} (${policy.policy_id})` : String(policy.policy_id),
+      label: policy.model_alias
+        ? `${policy.model_alias} [${policy.endpoint_type ?? "chat_completion"}/${policy.model_bucket ?? "default"}] (${policy.policy_id})`
+        : String(policy.policy_id),
     }));
 
 export const serverKeyOptions = (keys: CavadaLabsRecord[]): CavadaLabsSelectOption[] =>
@@ -110,6 +128,12 @@ export const buildChatbotCreatePayload = (values: CavadaLabsChatbotCreatorValues
   putIfPresent(payload, "model_policy_id", values.model_policy_id?.trim());
   putIfPresent(payload, "fallback_message", values.fallback_message?.trim());
   putIfPresent(payload, "assigned_guardrail_policy", values.assigned_guardrail_policy?.trim());
+  putIfPresent(payload, "metadata", {
+    default_model_bucket: cleanModelBucket(values.model_bucket),
+    cavadalabs: {
+      model_bucket: cleanModelBucket(values.model_bucket),
+    },
+  });
   return payload;
 };
 
@@ -133,6 +157,7 @@ export const buildChatbotKeyMetadata = (
 ): CavadaLabsRecord => {
   const companyId = values.company_id;
   const projectId = values.project_id;
+  const modelBucket = cleanModelBucket(values.model_bucket);
   const metadata = metadataToRecord(existingMetadata);
   const cavadalabs = metadataToRecord(metadata.cavadalabs);
   const spendLogsMetadata = metadataToRecord(metadata.spend_logs_metadata);
@@ -142,17 +167,20 @@ export const buildChatbotKeyMetadata = (
     cavadalabs_company_id: companyId,
     cavadalabs_project_id: projectId,
     cavadalabs_chatbot_id: chatbotId,
+    cavadalabs_model_bucket: modelBucket,
     cavadalabs: {
       ...cavadalabs,
       company_id: companyId,
       project_id: projectId,
       chatbot_id: chatbotId,
+      model_bucket: modelBucket,
     },
     spend_logs_metadata: {
       ...spendLogsMetadata,
       cavadalabs_company_id: companyId,
       cavadalabs_project_id: projectId,
       cavadalabs_chatbot_id: chatbotId,
+      cavadalabs_model_bucket: modelBucket,
     },
   };
 };
@@ -164,15 +192,18 @@ export const buildChatbotWebTokenMetadata = (
   cavadalabs_company_id: values.company_id,
   cavadalabs_project_id: values.project_id,
   cavadalabs_chatbot_id: chatbotId,
+  cavadalabs_model_bucket: cleanModelBucket(values.model_bucket),
   cavadalabs: {
     company_id: values.company_id,
     project_id: values.project_id,
     chatbot_id: chatbotId,
+    model_bucket: cleanModelBucket(values.model_bucket),
   },
   spend_logs_metadata: {
     cavadalabs_company_id: values.company_id,
     cavadalabs_project_id: values.project_id,
     cavadalabs_chatbot_id: chatbotId,
+    cavadalabs_model_bucket: cleanModelBucket(values.model_bucket),
   },
 });
 
@@ -182,10 +213,14 @@ export const buildChatbotServerKeyCreatePayload = (
   selectedPolicy?: CavadaLabsRecord,
 ): CavadaLabsRecord | null => {
   if ((values.server_key_mode ?? "create") !== "create") return null;
+  const modelBucket = cleanModelBucket(values.model_bucket);
 
   const payload: CavadaLabsRecord = {
     key_alias: values.server_key_alias?.trim() || `${values.name?.trim() || "Chatbot"} server key`,
-    models: selectedPolicy?.model_alias ? [String(selectedPolicy.model_alias)] : [],
+    models: uniqueNonEmptyStrings([
+      modelBucket,
+      selectedPolicy?.model_alias ? String(selectedPolicy.model_alias) : undefined,
+    ]),
     cavadalabs_company_id: values.company_id,
     cavadalabs_project_id: values.project_id,
     metadata: buildChatbotKeyMetadata(values, chatbotId),

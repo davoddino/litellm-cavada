@@ -42,6 +42,7 @@ describe("chatbotCreatorPayload", () => {
       default_language: "it",
       prompt_version: 2,
       model_policy_id: "policy-1",
+      model_bucket: "Medium ",
       system_prompt: "Be concise",
       assigned_rag_collections: ["collection-1", " "],
       allowed_domains: ["example.com"],
@@ -60,6 +61,12 @@ describe("chatbotCreatorPayload", () => {
       assigned_rag_collections: ["collection-1"],
       allowed_domains: ["example.com"],
       fallback_message: "Try again later",
+      metadata: {
+        default_model_bucket: "medium",
+        cavadalabs: {
+          model_bucket: "medium",
+        },
+      },
     });
     expect(payload).not.toHaveProperty("organization_id");
     expect(payload).not.toHaveProperty("team_id");
@@ -71,6 +78,7 @@ describe("chatbotCreatorPayload", () => {
         company_id: "company-1",
         project_id: "project-1",
         name: "Support Bot",
+        model_bucket: "medium",
         server_key_mode: "create",
         server_key_alias: "Support Bot Key",
       },
@@ -81,7 +89,7 @@ describe("chatbotCreatorPayload", () => {
     expect(payload).toEqual(
       expect.objectContaining({
         key_alias: "Support Bot Key",
-        models: ["openai/gpt-4.1"],
+        models: ["medium", "openai/gpt-4.1"],
         cavadalabs_company_id: "company-1",
         cavadalabs_project_id: "project-1",
       }),
@@ -91,15 +99,18 @@ describe("chatbotCreatorPayload", () => {
         cavadalabs_company_id: "company-1",
         cavadalabs_project_id: "project-1",
         cavadalabs_chatbot_id: "chatbot-1",
+        cavadalabs_model_bucket: "medium",
         cavadalabs: expect.objectContaining({
           company_id: "company-1",
           project_id: "project-1",
           chatbot_id: "chatbot-1",
+          model_bucket: "medium",
         }),
         spend_logs_metadata: expect.objectContaining({
           cavadalabs_company_id: "company-1",
           cavadalabs_project_id: "project-1",
           cavadalabs_chatbot_id: "chatbot-1",
+          cavadalabs_model_bucket: "medium",
         }),
       }),
     );
@@ -112,6 +123,7 @@ describe("chatbotCreatorPayload", () => {
       {
         company_id: "company-1",
         project_id: "project-1",
+        model_bucket: "medium",
         server_key_mode: "existing",
         existing_server_key: "hashed-key",
       },
@@ -136,9 +148,11 @@ describe("chatbotCreatorPayload", () => {
       expect.objectContaining({
         owner: "support",
         cavadalabs_chatbot_id: "chatbot-1",
+        cavadalabs_model_bucket: "medium",
         spend_logs_metadata: expect.objectContaining({
           legacy: "kept",
           cavadalabs_chatbot_id: "chatbot-1",
+          cavadalabs_model_bucket: "medium",
         }),
       }),
     );
@@ -155,6 +169,7 @@ describe("chatbotCreatorPayload", () => {
       {
         company_id: "company-1",
         project_id: "project-1",
+        model_bucket: "medium",
         issue_web_token: true,
         web_token_name: " Embed token ",
         allowed_domains: ["example.com"],
@@ -177,15 +192,18 @@ describe("chatbotCreatorPayload", () => {
         cavadalabs_company_id: "company-1",
         cavadalabs_project_id: "project-1",
         cavadalabs_chatbot_id: "chatbot-1",
+        cavadalabs_model_bucket: "medium",
         cavadalabs: expect.objectContaining({
           company_id: "company-1",
           project_id: "project-1",
           chatbot_id: "chatbot-1",
+          model_bucket: "medium",
         }),
         spend_logs_metadata: expect.objectContaining({
           cavadalabs_company_id: "company-1",
           cavadalabs_project_id: "project-1",
           cavadalabs_chatbot_id: "chatbot-1",
+          cavadalabs_model_bucket: "medium",
         }),
       }),
     });
@@ -200,9 +218,22 @@ describe("chatbotCreatorPayload", () => {
       company_id: "company-1",
       project_id: "project-1",
       chatbot_id: "chatbot-1",
+      model_bucket: "default",
     });
-    expect(modelPolicyOptions([{ policy_id: "policy-1", model_alias: "openai/gpt-4.1" }])).toEqual([
-      { value: "policy-1", label: "openai/gpt-4.1 (policy-1)" },
+    expect(
+      modelPolicyOptions([
+        {
+          policy_id: "policy-1",
+          model_alias: "openai/gpt-4.1",
+          endpoint_type: "chat_completion",
+          model_bucket: "medium",
+        },
+      ]),
+    ).toEqual([
+      {
+        value: "policy-1",
+        label: "openai/gpt-4.1 [chat_completion/medium] (policy-1)",
+      },
     ]);
   });
 
@@ -212,10 +243,12 @@ describe("chatbotCreatorPayload", () => {
         cavadalabs_company_id: "company-1",
         cavadalabs_project_id: "project-1",
         cavadalabs_chatbot_id: "chatbot-1",
+        cavadalabs_model_bucket: "default",
         spend_logs_metadata: expect.objectContaining({
           cavadalabs_company_id: "company-1",
           cavadalabs_project_id: "project-1",
           cavadalabs_chatbot_id: "chatbot-1",
+          cavadalabs_model_bucket: "default",
         }),
       }),
     );

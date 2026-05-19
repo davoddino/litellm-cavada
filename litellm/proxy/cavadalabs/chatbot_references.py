@@ -19,6 +19,8 @@ async def validate_chatbot_project_references(
     project_id: str,
     chatbot_id: Optional[str] = None,
     model_policy_id: Optional[str] = None,
+    expected_policy_endpoint_type: Optional[str] = None,
+    expected_policy_model_bucket: Optional[str] = None,
     assigned_rag_collection_ids: Optional[Sequence[str]] = None,
     assigned_guardrail_policy: Optional[str] = None,
 ) -> None:
@@ -28,6 +30,8 @@ async def validate_chatbot_project_references(
             company_id=company_id,
             project_id=project_id,
             policy_id=model_policy_id,
+            expected_endpoint_type=expected_policy_endpoint_type,
+            expected_model_bucket=expected_policy_model_bucket,
         )
 
     for collection_id in assigned_rag_collection_ids or []:
@@ -54,6 +58,8 @@ async def _validate_model_policy(
     company_id: str,
     project_id: str,
     policy_id: str,
+    expected_endpoint_type: Optional[str],
+    expected_model_bucket: Optional[str],
 ) -> None:
     policy = await get_required_response(
         db,
@@ -71,6 +77,30 @@ async def _validate_model_policy(
         company_id=company_id,
         project_id=project_id,
     )
+    if (
+        expected_endpoint_type is not None
+        and policy.endpoint_type != expected_endpoint_type
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "Project model policy does not match the selected endpoint",
+                "policy_id": policy_id,
+                "endpoint_type": expected_endpoint_type,
+            },
+        )
+    if (
+        expected_model_bucket is not None
+        and policy.model_bucket != expected_model_bucket
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "error": "Project model policy does not match the selected model bucket",
+                "policy_id": policy_id,
+                "model_bucket": expected_model_bucket,
+            },
+        )
 
 
 async def _validate_rag_collection(

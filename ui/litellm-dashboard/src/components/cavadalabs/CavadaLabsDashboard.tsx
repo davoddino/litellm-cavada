@@ -21,6 +21,7 @@ interface CavadaLabsDashboardProps {
   userRole?: string | null;
   initialResource?: string;
   initialTab?: string;
+  focusedResource?: "companies" | "projects";
 }
 
 const emptyContext: CavadaLabsRuntimeContext = {
@@ -106,7 +107,12 @@ const PanelStack = ({
   </Space>
 );
 
-const CavadaLabsDashboard: React.FC<CavadaLabsDashboardProps> = ({ accessToken, initialResource, initialTab }) => {
+const CavadaLabsDashboard: React.FC<CavadaLabsDashboardProps> = ({
+  accessToken,
+  initialResource,
+  initialTab,
+  focusedResource,
+}) => {
   const searchParams = useSearchParams();
   const [context, setContext] = useState<CavadaLabsRuntimeContext>(emptyContext);
   const [referenceLoading, setReferenceLoading] = useState(false);
@@ -218,6 +224,7 @@ const CavadaLabsDashboard: React.FC<CavadaLabsDashboardProps> = ({ accessToken, 
   }, [loadOverview, refreshNonce]);
 
   const configs = useMemo(() => buildCavadaLabsResourceConfigs(context), [context]);
+  const focusedConfig = focusedResource ? configs[focusedResource] : null;
   const initialDetailsByResource = useMemo(
     () => ({
       companies: searchParams.get("company_id"),
@@ -253,6 +260,32 @@ const CavadaLabsDashboard: React.FC<CavadaLabsDashboardProps> = ({ accessToken, 
     return (
       <div className="m-8 p-2">
         <Alert type="warning" showIcon message="Missing access token" />
+      </div>
+    );
+  }
+
+  if (focusedConfig) {
+    return (
+      <div className="w-full mx-auto flex-auto overflow-y-auto m-8 p-2">
+        <div className="mb-5 flex flex-col gap-2 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <Title level={3} className="!mb-1">
+              {focusedConfig.title}
+            </Title>
+            {focusedConfig.description ? <Text type="secondary">{focusedConfig.description}</Text> : null}
+          </div>
+          {referenceLoading ? <Spin /> : null}
+        </div>
+
+        {referenceError ? <Alert type="error" showIcon className="mb-4" message={referenceError} /> : null}
+
+        <PanelStack
+          configs={[focusedConfig]}
+          accessToken={accessToken}
+          context={context}
+          onMutated={refreshAll}
+          initialDetailsByResource={initialDetailsByResource}
+        />
       </div>
     );
   }

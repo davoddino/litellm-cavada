@@ -39,6 +39,8 @@ class CavadaLabsModelPolicyOperations(CavadaLabsProjectOperations):
         self,
         chatbot: CavadaLabsChatbotResponse,
         project: CavadaLabsProjectResponse,
+        endpoint_type: str = "chat_completion",
+        model_bucket: str = "default",
     ) -> Tuple[
         CavadaLabsProjectModelPolicyResponse,
         List[CavadaLabsProjectModelPolicyResponse],
@@ -46,6 +48,8 @@ class CavadaLabsModelPolicyOperations(CavadaLabsProjectOperations):
         policies = await self.list_project_model_policies(
             project_id=project.project_id,
             enabled=True,
+            endpoint_type=endpoint_type,
+            model_bucket=model_bucket,
         )
         policies_by_id = {policy.policy_id: policy for policy in policies}
 
@@ -66,6 +70,16 @@ class CavadaLabsModelPolicyOperations(CavadaLabsProjectOperations):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail={"error": "Chatbot model_policy_id is disabled"},
+                )
+            if (
+                primary_policy.endpoint_type != endpoint_type
+                or primary_policy.model_bucket != model_bucket
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "Chatbot model_policy_id does not match the requested endpoint or model bucket"
+                    },
                 )
             ordered_policies = [
                 policy
@@ -114,7 +128,7 @@ class CavadaLabsModelPolicyOperations(CavadaLabsProjectOperations):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail={
-                        "error": "A model policy already uses this project priority"
+                        "error": "A model policy already uses this Project endpoint, bucket, and priority"
                     },
                 )
             raise
@@ -135,13 +149,23 @@ class CavadaLabsModelPolicyOperations(CavadaLabsProjectOperations):
         self,
         project_id: str,
         enabled: Optional[bool] = None,
+        endpoint_type: Optional[str] = None,
+        model_bucket: Optional[str] = None,
     ) -> List[CavadaLabsProjectModelPolicyResponse]:
         where: Dict[str, Any] = {"project_id": project_id}
         if enabled is not None:
             where["enabled"] = enabled
+        if endpoint_type is not None:
+            where["endpoint_type"] = endpoint_type
+        if model_bucket is not None:
+            where["model_bucket"] = model_bucket
         rows = await self.db.cavadalabs_projectmodelpolicytable.find_many(
             where=where,
-            order={"priority": "asc"},
+            order=[
+                {"endpoint_type": "asc"},
+                {"model_bucket": "asc"},
+                {"priority": "asc"},
+            ],
         )
         return [
             _parse_response(row, CavadaLabsProjectModelPolicyResponse) for row in rows
@@ -180,7 +204,7 @@ class CavadaLabsModelPolicyOperations(CavadaLabsProjectOperations):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail={
-                        "error": "A model policy already uses this project priority"
+                        "error": "A model policy already uses this Project endpoint, bucket, and priority"
                     },
                 )
             raise

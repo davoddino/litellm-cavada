@@ -31,6 +31,9 @@ def _policy(**kwargs) -> CavadaLabsModelPolicyCandidate:
         provider=kwargs.pop("provider", "openai"),
         priority=kwargs.pop("priority", 1),
         enabled=kwargs.pop("enabled", True),
+        endpoint_type=kwargs.pop("endpoint_type", "chat_completion"),
+        model_bucket=kwargs.pop("model_bucket", "default"),
+        fallback_enabled=kwargs.pop("fallback_enabled", True),
     )
 
 
@@ -39,10 +42,13 @@ def _policy_row(**kwargs):
         policy_id=kwargs.pop("policy_id", "policy-1"),
         company_id=kwargs.pop("company_id", "company-1"),
         project_id=kwargs.pop("project_id", "project-1"),
+        endpoint_type=kwargs.pop("endpoint_type", "chat_completion"),
+        model_bucket=kwargs.pop("model_bucket", "default"),
         model_alias=kwargs.pop("model_alias", "model-a"),
         provider=kwargs.pop("provider", "openai"),
         priority=kwargs.pop("priority", 1),
         enabled=kwargs.pop("enabled", True),
+        fallback_enabled=kwargs.pop("fallback_enabled", True),
     )
 
 
@@ -77,6 +83,7 @@ def test_should_resolve_first_available_policy_by_priority():
 
     assert result.model == "model-b"
     assert result.policy.policy_id == "policy-2"
+    assert result.fallback_models == ("model-a",)
     assert result.skipped_policies[0]["reason"] == "model_not_configured"
 
 
@@ -101,7 +108,7 @@ def test_should_return_clear_error_when_no_project_policy_is_available():
 
 
 @pytest.mark.asyncio
-async def test_should_apply_cavadalabs_project_model_fallback_from_key_context():
+async def test_should_apply_default_cavadalabs_project_model_fallback_from_key_context():
     data = {"messages": [{"role": "user", "content": "ciao"}], "model": None}
     user_api_key_dict = UserAPIKeyAuth(
         api_key="sk-test",
@@ -114,6 +121,7 @@ async def test_should_apply_cavadalabs_project_model_fallback_from_key_context()
         [
             _policy_row(policy_id="policy-1", model_alias="missing-model", priority=1),
             _policy_row(policy_id="policy-2", model_alias="model-b", priority=2),
+            _policy_row(policy_id="policy-3", model_alias="model-a", priority=3),
         ]
     )
 
@@ -127,10 +135,89 @@ async def test_should_apply_cavadalabs_project_model_fallback_from_key_context()
 
     assert resolved_model == "model-b"
     assert data["model"] == "model-b"
+    assert data["fallbacks"] == ["model-a"]
+    assert data["metadata"]["cavadalabs_model_bucket"] == "default"
     prisma_client.db.cavadalabs_projectmodelpolicytable.find_many.assert_awaited_once_with(
-        where={"project_id": "project-1", "enabled": True},
+        where={
+            "project_id": "project-1",
+            "endpoint_type": "chat_completion",
+            "model_bucket": "default",
+            "enabled": True,
+        },
         order={"priority": "asc"},
     )
+
+
+@pytest.mark.asyncio
+async def test_should_apply_named_model_bucket_from_key_context():
+    data = {"messages": [{"role": "user", "content": "ciao"}], "model": "medium"}
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="sk-test",
+        user_id="user-1",
+        cavadalabs_company_id="company-1",
+        cavadalabs_project_id="project-1",
+        team_id="team-1",
+    )
+    prisma_client = _prisma_client(
+        [
+            _policy_row(
+                policy_id="policy-1",
+                model_alias="model-a",
+                priority=1,
+                model_bucket="medium",
+            ),
+            _policy_row(
+                policy_id="policy-2",
+                model_alias="model-b",
+                priority=2,
+                model_bucket="medium",
+            ),
+        ]
+    )
+
+    resolved_model = await apply_cavadalabs_project_model_fallback(
+        data=data,
+        route_type="acompletion",
+        user_api_key_dict=user_api_key_dict,
+        llm_router=_RouterStub(),
+        prisma_client=prisma_client,
+    )
+
+    assert resolved_model == "model-a"
+    assert data["model"] == "model-a"
+    assert data["fallbacks"] == ["model-b"]
+    assert data["metadata"]["cavadalabs"]["routing"]["model_bucket"] == "medium"
+    prisma_client.db.cavadalabs_projectmodelpolicytable.find_many.assert_awaited_once_with(
+        where={
+            "project_id": "project-1",
+            "endpoint_type": "chat_completion",
+            "model_bucket": "medium",
+            "enabled": True,
+        },
+        order={"priority": "asc"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_should_leave_real_model_when_no_matching_bucket_exists():
+    data = {"messages": [{"role": "user", "content": "ciao"}], "model": "model-a"}
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="sk-test",
+        user_id="user-1",
+        cavadalabs_project_id="project-1",
+    )
+    prisma_client = _prisma_client([])
+
+    resolved_model = await apply_cavadalabs_project_model_fallback(
+        data=data,
+        route_type="acompletion",
+        user_api_key_dict=user_api_key_dict,
+        llm_router=_RouterStub(),
+        prisma_client=prisma_client,
+    )
+
+    assert resolved_model is None
+    assert data == {"messages": [{"role": "user", "content": "ciao"}], "model": "model-a"}
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ from litellm.proxy.cavadalabs.key_context_metadata import (
 from litellm.proxy.cavadalabs.key_context_schema import (
     _raise_if_cavadalabs_key_context_schema_exception,
 )
+from litellm.proxy.cavadalabs.usage_query_filters import json_path_string_equals
 
 
 def _cavadalabs_key_metadata_filter(
@@ -34,7 +35,7 @@ def _cavadalabs_key_metadata_filter(
             {
                 "metadata": {
                     "path": [*prefix, alias],
-                    "equals": value,
+                    "equals": json_path_string_equals(value),
                 }
             }
             for prefix in metadata_prefixes

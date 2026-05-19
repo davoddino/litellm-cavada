@@ -8,6 +8,7 @@ import {
   buildChatbotServerKeyCreatePayload,
   buildChatbotServerKeyUpdatePayload,
   buildChatbotWebTokenPayload,
+  cleanModelBucket,
   extractCreatedChatbotId,
   initialChatbotCreatorValues,
   modelPolicyOptions,
@@ -43,6 +44,7 @@ const CavadaLabsChatbotCreator: React.FC<CavadaLabsChatbotCreatorProps> = ({ acc
 
   const selectedCompanyId = Form.useWatch("company_id", form);
   const selectedProjectId = Form.useWatch("project_id", form);
+  const selectedModelBucket = Form.useWatch("model_bucket", form);
   const selectedStatus = Form.useWatch("status", form);
   const serverKeyMode = Form.useWatch("server_key_mode", form);
   const issueWebToken = Form.useWatch("issue_web_token", form);
@@ -58,6 +60,10 @@ const CavadaLabsChatbotCreator: React.FC<CavadaLabsChatbotCreatorProps> = ({ acc
   );
   const policyOptions = useMemo(() => modelPolicyOptions(policies), [policies]);
   const keyOptions = useMemo(() => serverKeyOptions(keys), [keys]);
+  const normalizedModelBucket = useMemo(
+    () => cleanModelBucket(selectedModelBucket),
+    [selectedModelBucket],
+  );
   const canCreate = companyOptions.length > 0 && context.projects.length > 0;
 
   const openCreator = () => {
@@ -77,6 +83,12 @@ const CavadaLabsChatbotCreator: React.FC<CavadaLabsChatbotCreatorProps> = ({ acc
   };
 
   useEffect(() => {
+    if (open) {
+      form.setFieldsValue({ model_policy_id: undefined });
+    }
+  }, [form, open, selectedProjectId, normalizedModelBucket]);
+
+  useEffect(() => {
     if (!open || !accessToken || !selectedProjectId) {
       setPolicies([]);
       return;
@@ -86,6 +98,8 @@ const CavadaLabsChatbotCreator: React.FC<CavadaLabsChatbotCreatorProps> = ({ acc
     setPolicyLoading(true);
     listCavadaLabsResource<CavadaLabsRecord>(accessToken, "/cavadalabs/model-policies", {
       project_id: selectedProjectId,
+      endpoint_type: "chat_completion",
+      model_bucket: normalizedModelBucket,
     })
       .then((response) => {
         if (ignore) return;
@@ -103,7 +117,7 @@ const CavadaLabsChatbotCreator: React.FC<CavadaLabsChatbotCreatorProps> = ({ acc
     return () => {
       ignore = true;
     };
-  }, [accessToken, open, selectedProjectId]);
+  }, [accessToken, normalizedModelBucket, open, selectedProjectId]);
 
   useEffect(() => {
     if (!open || !accessToken || !selectedCompanyId || !selectedProjectId) {
@@ -180,7 +194,7 @@ const CavadaLabsChatbotCreator: React.FC<CavadaLabsChatbotCreatorProps> = ({ acc
     } finally {
       setSubmitting(false);
     }
-  }, [accessToken, form, onCreated]);
+  }, [accessToken, form, keys, onCreated, policies]);
 
   return (
     <section className="rounded-md border border-gray-200 bg-white p-4">

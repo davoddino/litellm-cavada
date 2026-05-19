@@ -76,6 +76,13 @@ const CavadaLabsChatbotCreatorForm: React.FC<CavadaLabsChatbotCreatorFormProps> 
           options={policyOptions}
         />
       </Form.Item>
+      <Form.Item
+        name="model_bucket"
+        label="Model bucket"
+        rules={[{ required: true, message: "Model bucket is required" }]}
+      >
+        <Input aria-label="Model bucket" />
+      </Form.Item>
       <Form.Item name="assigned_rag_collections" label="RAG collections">
         <Select
           aria-label="RAG collections"

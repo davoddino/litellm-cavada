@@ -11,6 +11,7 @@ from litellm.proxy.management_endpoints import (
     cavadalabs_model_policy_endpoints as model_policy_endpoints,
 )
 from litellm.types.proxy.management_endpoints.cavadalabs_dispatcher import (
+    CavadaLabsModelPolicyEndpointType,
     CavadaLabsProjectModelPolicyCreateRequest,
     CavadaLabsProjectModelPolicyUpdateRequest,
 )
@@ -77,6 +78,8 @@ def _policy(**kwargs):
         policy_id=kwargs.pop("policy_id", "policy-1"),
         company_id=kwargs.pop("company_id", "company-1"),
         project_id=kwargs.pop("project_id", "project-1"),
+        endpoint_type=kwargs.pop("endpoint_type", "chat_completion"),
+        model_bucket=kwargs.pop("model_bucket", "default"),
         model_alias=kwargs.pop("model_alias", "openai/gpt-4.1"),
         provider=kwargs.pop("provider", "openai"),
         deployment_id=kwargs.pop("deployment_id", None),
@@ -189,6 +192,8 @@ def _patch_prisma(monkeypatch, db) -> None:
 def _create_request() -> CavadaLabsProjectModelPolicyCreateRequest:
     return CavadaLabsProjectModelPolicyCreateRequest(
         project_id="project-1",
+        endpoint_type="chat_completion",
+        model_bucket="medium",
         model_alias="openai/gpt-4.1",
         provider="openai",
         priority=1,
@@ -208,6 +213,9 @@ async def test_should_allow_project_admin_to_create_model_policy(monkeypatch):
 
     assert response.policy_id == "policy-created"
     db.cavadalabs_projectmodelpolicytable.create.assert_awaited_once()
+    create_data = db.cavadalabs_projectmodelpolicytable.create.await_args.kwargs["data"]
+    assert create_data["endpoint_type"] == "chat_completion"
+    assert create_data["model_bucket"] == "medium"
 
 
 @pytest.mark.asyncio
@@ -239,11 +247,16 @@ async def test_should_allow_project_viewer_to_list_but_not_create_model_policy(
         http_request=MagicMock(),
         project_id="project-1",
         enabled=True,
+        endpoint_type=CavadaLabsModelPolicyEndpointType.CHAT_COMPLETION,
+        model_bucket="medium",
         user_api_key_dict=_internal_user(),
     )
 
     assert listed.count == 1
     db.cavadalabs_projectmodelpolicytable.find_many.assert_awaited_once()
+    find_args = db.cavadalabs_projectmodelpolicytable.find_many.await_args.kwargs
+    assert find_args["where"]["endpoint_type"] == "chat_completion"
+    assert find_args["where"]["model_bucket"] == "medium"
 
     with pytest.raises(HTTPException) as exc_info:
         await model_policy_endpoints.create_model_policy(

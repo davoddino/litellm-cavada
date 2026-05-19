@@ -43,6 +43,7 @@ const jsonFormats = enumOptions(["json", "csv", "xlsx", "pdf"]);
 const scopeOptions = enumOptions(["company", "project", "chatbot"]);
 const ragScopeOptions = enumOptions(["company", "project"]);
 const reasoningOptions = enumOptions(["none", "minimal", "low", "medium", "high"]);
+const modelEndpointOptions = enumOptions(["chat_completion", "text_completion", "transcription", "embedding"]);
 
 const jsonField = (
   name: string,
@@ -421,6 +422,21 @@ export const buildCavadaLabsResourceConfigs = (
       createFields: [
         projectField(projectOptions),
         {
+          name: "endpoint_type",
+          label: "Endpoint",
+          type: "select",
+          required: true,
+          options: modelEndpointOptions,
+          defaultValue: "chat_completion",
+        },
+        {
+          name: "model_bucket",
+          label: "Bucket",
+          type: "text",
+          required: true,
+          defaultValue: "default",
+        },
+        {
           name: "model_alias",
           label: "Model alias",
           type: "text",
@@ -459,6 +475,8 @@ export const buildCavadaLabsResourceConfigs = (
       columns: [
         { key: "model_alias", title: "Model", type: "text", width: 220 },
         { key: "policy_id", title: "Policy ID", type: "id", width: 220 },
+        { key: "endpoint_type", title: "Endpoint", type: "status", width: 150 },
+        { key: "model_bucket", title: "Bucket", type: "text", width: 120 },
         { key: "provider", title: "Provider", type: "status", width: 120 },
         { key: "priority", title: "Priority", type: "number", width: 90 },
         { key: "enabled", title: "Enabled", type: "boolean", width: 100 },

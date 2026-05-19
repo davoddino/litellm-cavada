@@ -90,6 +90,13 @@ class CavadaLabsReasoningMode(str, enum.Enum):
     HIGH = "high"
 
 
+class CavadaLabsModelPolicyEndpointType(str, enum.Enum):
+    CHAT_COMPLETION = "chat_completion"
+    TEXT_COMPLETION = "text_completion"
+    TRANSCRIPTION = "transcription"
+    EMBEDDING = "embedding"
+
+
 class CavadaLabsBillingReportFormat(str, enum.Enum):
     JSON = "json"
     CSV = "csv"
@@ -252,6 +259,15 @@ def _dedupe_clean(values: Optional[List[str]], *, lower: bool = False) -> List[s
             continue
         cleaned.append(value)
         seen.add(value)
+    return cleaned
+
+
+def _clean_model_bucket(value: str) -> str:
+    cleaned = value.strip().lower()
+    if not cleaned:
+        raise ValueError("model_bucket cannot be empty")
+    if any(character.isspace() for character in cleaned):
+        raise ValueError("model_bucket cannot contain whitespace")
     return cleaned
 
 
@@ -1179,6 +1195,10 @@ class CavadaLabsWebTokenListResponse(CavadaLabsBaseModel):
 
 class CavadaLabsProjectModelPolicyCreateRequest(CavadaLabsBaseModel):
     project_id: str = Field(min_length=1)
+    endpoint_type: CavadaLabsModelPolicyEndpointType = (
+        CavadaLabsModelPolicyEndpointType.CHAT_COMPLETION
+    )
+    model_bucket: str = Field(default="default", min_length=1, max_length=128)
     model_alias: str = Field(min_length=1, max_length=256)
     provider: str = Field(min_length=1, max_length=128)
     deployment_id: Optional[str] = Field(default=None, max_length=256)
@@ -1207,8 +1227,15 @@ class CavadaLabsProjectModelPolicyCreateRequest(CavadaLabsBaseModel):
     def clean_required_capabilities(cls, values: List[str]) -> List[str]:
         return _dedupe_clean(values, lower=True)
 
+    @field_validator("model_bucket")
+    @classmethod
+    def clean_model_bucket(cls, value: str) -> str:
+        return _clean_model_bucket(value)
+
 
 class CavadaLabsProjectModelPolicyUpdateRequest(CavadaLabsBaseModel):
+    endpoint_type: Optional[CavadaLabsModelPolicyEndpointType] = None
+    model_bucket: Optional[str] = Field(default=None, min_length=1, max_length=128)
     model_alias: Optional[str] = Field(default=None, min_length=1, max_length=256)
     provider: Optional[str] = Field(default=None, min_length=1, max_length=128)
     deployment_id: Optional[str] = Field(default=None, max_length=256)
@@ -1240,6 +1267,13 @@ class CavadaLabsProjectModelPolicyUpdateRequest(CavadaLabsBaseModel):
         if values is None:
             return None
         return _dedupe_clean(values, lower=True)
+
+    @field_validator("model_bucket")
+    @classmethod
+    def clean_model_bucket(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return _clean_model_bucket(value)
 
 
 class CavadaLabsProjectModelPolicyResponse(CavadaLabsProjectModelPolicyCreateRequest):
@@ -1841,6 +1875,7 @@ class CavadaLabsChatCompletionRequest(CavadaLabsBaseModel):
     response_format: Optional[Dict[str, Any]] = None
     seed: Optional[int] = None
     user: Optional[str] = Field(default=None, max_length=256)
+    model_bucket: Optional[str] = Field(default=None, min_length=1, max_length=128)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("messages")
@@ -1866,3 +1901,10 @@ class CavadaLabsChatCompletionRequest(CavadaLabsBaseModel):
         if any(key == "cavadalabs" or key.startswith("cavadalabs_") for key in value):
             raise ValueError("metadata contains reserved CavadaLabs keys")
         return value
+
+    @field_validator("model_bucket")
+    @classmethod
+    def clean_model_bucket(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return _clean_model_bucket(value)

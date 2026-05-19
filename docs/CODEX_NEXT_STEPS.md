@@ -30,7 +30,36 @@ The Chatbot Creator must support this end-to-end path:
 
 ## Minimum Next Tranche
 
-The next useful tranche is the smallest production-ready creator path that can create a usable website chatbot:
+The active tranche is model-bucket routing inside the existing CavadaLabs model
+policy path. A product request may use a generic bucket such as `default`,
+`medium`, or `fast`; the runtime resolves that bucket to enabled
+`CavadaLabs_ProjectModelPolicyTable` rows for the selected Project and endpoint,
+then passes the selected concrete LiteLLM model plus ordered fallbacks into the
+existing LiteLLM router/request flow. This is not a separate router.
+
+Current deployment commands for this tranche:
+
+```bash
+export DATABASE_URL="postgresql://llmproxy:<password>@<host>:<port>/litellm"
+uv run prisma migrate deploy --schema litellm-proxy-extras/litellm_proxy_extras/schema.prisma
+uv run prisma generate --schema litellm-proxy-extras/litellm_proxy_extras/schema.prisma
+uv run litellm --config dev_config.yaml --port 4000
+```
+
+The migration
+`20260519100000_add_cavadalabs_model_policy_buckets` adds `endpoint_type` and
+`model_bucket` to Project model policies and replaces the old Project/priority
+unique index with Project/endpoint/bucket/priority. Existing rows backfill to
+`chat_completion/default`, preserving current behavior.
+
+Chatbot creation and updates validate that an explicitly selected
+`model_policy_id` belongs to the same Project, `chat_completion` endpoint, and
+configured model bucket stored in chatbot metadata. The Creator UI fetches model
+policies for the selected Project plus bucket, so stale policy selections do not
+survive Company/Project/bucket changes.
+
+The next useful tranche after model-bucket routing is the smallest
+production-ready creator path that can create a usable website chatbot:
 
 1. Audit backend contracts for Chatbot, WebToken, server API key, model policy, guardrails, and RAG references.
 2. Add a Creator UI flow instead of only generic CRUD panels.
@@ -56,4 +85,3 @@ Required checks for the tranche:
 - model_policy_id may be a free-text field instead of a real selected policy.
 - Web token creation may be disconnected from key creation and embed use.
 - Guardrails and RAG may have partial schema/runtime support; do not fake completion if wiring is incomplete.
-

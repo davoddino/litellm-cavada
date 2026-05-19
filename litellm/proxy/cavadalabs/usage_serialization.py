@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Union
 from fastapi import HTTPException, status
 
 from litellm.litellm_core_utils.safe_json_loads import safe_json_loads
+from litellm.proxy.cavadalabs.usage_query_filters import json_path_string_equals
 
 _SUCCESS_STATUSES = {"success", "succeeded", "completed", "ok"}
 
@@ -172,7 +173,7 @@ def _build_cavadalabs_ledger_where(
                     {
                         "metadata": {
                             "path": ["model_group"],
-                            "equals": cleaned_model,
+                            "equals": json_path_string_equals(cleaned_model),
                         }
                     },
                 ]

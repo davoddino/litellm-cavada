@@ -283,6 +283,7 @@ async def create_chatbot_message(
         token=token,
         route=_CHATBOT_MESSAGES_ROUTE,
         origin=origin,
+        model_bucket=request_data.model_bucket,
     )
     await service.enforce_runtime_limits(
         context=context,

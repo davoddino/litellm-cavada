@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders, screen, waitFor } from "../../../../tests/test-utils";
 import CavadaLabsCompaniesPage from "./companies/page";
 import CavadaLabsPage from "./page";
+import CavadaLabsProjectsPage from "./projects/page";
 
 const { mockUseSearchParams } = vi.hoisted(() => ({
   mockUseSearchParams: vi.fn(() => new URLSearchParams()),
@@ -304,7 +305,7 @@ describe("CavadaLabsPage", () => {
     });
   });
 
-  it("should open the tenants tab from the Companies route", async () => {
+  it("should render only Companies management from the Companies route", async () => {
     const mockFetch = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = new URL(String(input), "http://proxy.test");
       return Promise.resolve(jsonResponse(payloadForPath(url.pathname)));
@@ -313,9 +314,26 @@ describe("CavadaLabsPage", () => {
 
     renderWithProviders(<CavadaLabsCompaniesPage />);
 
-    const tenantsTab = await screen.findByRole("tab", { name: "Tenants" });
-    expect(tenantsTab).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("heading", { name: "Companies", level: 3 })).toBeInTheDocument();
     expect(await screen.findByText("New company")).toBeInTheDocument();
+    expect(await screen.findByText("Acme Srl")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Tenants" })).not.toBeInTheDocument();
+    expect(screen.queryByText("New project")).not.toBeInTheDocument();
+  });
+
+  it("should render only Projects management from the Projects route", async () => {
+    const mockFetch = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = new URL(String(input), "http://proxy.test");
+      return Promise.resolve(jsonResponse(payloadForPath(url.pathname)));
+    });
+    global.fetch = mockFetch as any;
+
+    renderWithProviders(<CavadaLabsProjectsPage />);
+
+    expect(await screen.findByRole("heading", { name: "Projects", level: 3 })).toBeInTheDocument();
     expect(await screen.findByText("New project")).toBeInTheDocument();
+    expect(await screen.findByText("Dispatch Project")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Tenants" })).not.toBeInTheDocument();
+    expect(screen.queryByText("New company")).not.toBeInTheDocument();
   });
 });

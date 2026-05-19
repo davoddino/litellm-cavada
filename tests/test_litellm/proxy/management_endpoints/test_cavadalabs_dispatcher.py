@@ -2201,13 +2201,13 @@ async def test_should_repair_company_daily_activity_from_explicit_spend_metadata
             {
                 "metadata": {
                     "path": ["cavadalabs_company_id"],
-                    "equals": "company-1",
+                    "equals": json.dumps("company-1"),
                 }
             },
             {
                 "metadata": {
                     "path": ["cavadalabs_project_id"],
-                    "equals": "project-1",
+                    "equals": json.dumps("project-1"),
                 }
             },
         ]
@@ -2217,13 +2217,13 @@ async def test_should_repair_company_daily_activity_from_explicit_spend_metadata
             {
                 "metadata": {
                     "path": ["spend_logs_metadata", "cavadalabs_company_id"],
-                    "equals": "company-1",
+                    "equals": json.dumps("company-1"),
                 }
             },
             {
                 "metadata": {
                     "path": ["spend_logs_metadata", "cavadalabs_project_id"],
-                    "equals": "project-1",
+                    "equals": json.dumps("project-1"),
                 }
             },
         ]
@@ -2664,13 +2664,16 @@ async def test_should_repair_project_daily_activity_from_explicit_spend_metadata
     )
 
     spend_where = prisma_client.db.litellm_spendlogs.find_many.call_args.kwargs["where"]
-    assert {"metadata": {"path": ["cavadalabs_project_id"], "equals": "project-1"}} in (
-        spend_where["AND"][0]["OR"]
-    )
+    assert {
+        "metadata": {
+            "path": ["cavadalabs_project_id"],
+            "equals": json.dumps("project-1"),
+        }
+    } in (spend_where["AND"][0]["OR"])
     assert {
         "metadata": {
             "path": ["spend_logs_metadata", "cavadalabs_project_id"],
-            "equals": "project-1",
+            "equals": json.dumps("project-1"),
         }
     } in spend_where["AND"][0]["OR"]
     prisma_client.db.cavadalabs_requestledgertable.create_many.assert_awaited_once()
@@ -2901,6 +2904,7 @@ async def test_should_diagnose_company_usage_backfill_when_spend_logs_exist():
     )
     prisma_client.db.litellm_spendlogs = MagicMock()
     prisma_client.db.litellm_spendlogs.count = AsyncMock(return_value=2)
+    prisma_client.db.litellm_spendlogs.find_many = AsyncMock(return_value=[])
 
     response = await get_cavadalabs_usage_diagnostics(
         prisma_client=prisma_client,
@@ -2958,13 +2962,13 @@ async def test_should_diagnose_company_usage_backfill_when_spend_logs_exist():
             {
                 "metadata": {
                     "path": ["cavadalabs_company_id"],
-                    "equals": "company-1",
+                    "equals": json.dumps("company-1"),
                 }
             },
             {
                 "metadata": {
                     "path": ["cavadalabs_project_id"],
-                    "equals": "project-1",
+                    "equals": json.dumps("project-1"),
                 }
             },
         ]
@@ -2975,7 +2979,7 @@ async def test_should_diagnose_company_usage_backfill_when_spend_logs_exist():
             {
                 "metadata": {
                     "path": ["cavadalabs_project_id"],
-                    "equals": "project-1",
+                    "equals": json.dumps("project-1"),
                 }
             },
         ]
@@ -3168,32 +3172,32 @@ async def test_should_diagnose_project_usage_missing_mapping_without_global_fall
         {
             "metadata": {
                 "path": ["cavadalabs_project_id"],
-                "equals": "project-1",
+                "equals": json.dumps("project-1"),
             }
         },
-        {"metadata": {"path": ["project_id"], "equals": "project-1"}},
+        {"metadata": {"path": ["project_id"], "equals": json.dumps("project-1")}},
         {
             "metadata": {
                 "path": ["cavadalabs", "cavadalabs_project_id"],
-                "equals": "project-1",
+                "equals": json.dumps("project-1"),
             }
         },
         {
             "metadata": {
                 "path": ["cavadalabs", "project_id"],
-                "equals": "project-1",
+                "equals": json.dumps("project-1"),
             }
         },
         {
             "metadata": {
                 "path": ["spend_logs_metadata", "cavadalabs_project_id"],
-                "equals": "project-1",
+                "equals": json.dumps("project-1"),
             }
         },
         {
             "metadata": {
                 "path": ["spend_logs_metadata", "project_id"],
-                "equals": "project-1",
+                "equals": json.dumps("project-1"),
             }
         },
     ]

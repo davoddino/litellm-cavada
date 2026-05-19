@@ -122,6 +122,14 @@ No CavadaLabs usage endpoint should expose Organization or Team as product
 filters. They are only compatibility inputs used to resolve old LiteLLM spend
 rows or keys into Company/Project.
 
+Company/Project filters over `LiteLLM_SpendLogs.metadata` and virtual-key
+metadata use the existing JSON/JSONB columns plus
+`LiteLLM_SpendLogs_metadata_gin_idx`. No additional migration is required for
+the runtime filter fix that makes selected Company/Project keys and usage
+visible: Prisma JSON-path string comparisons must pass JSON string literals
+(`"company_id"` / `"project_id"`) at the query boundary, while the database
+schema and indexes above remain unchanged.
+
 Monthly billing generation uses the same usage-schema preflight. If the
 `CavadaLabs_RequestLedgerTable` delegate or required Company/Project usage
 columns are missing, billing generation returns a structured 503 with

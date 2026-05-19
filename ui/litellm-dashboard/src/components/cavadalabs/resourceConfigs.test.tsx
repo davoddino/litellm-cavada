@@ -50,6 +50,14 @@ describe("buildCavadaLabsResourceConfigs", () => {
     expect(configs.modelPolicies.requiredFilters).toEqual(["project_id"]);
     expect(configs.modelPolicies.getInitialFilters?.(context)).toEqual({ project_id: "project-1" });
     expect(configs.modelPolicies.filters?.map((item) => item.name)).toContain("project_id");
+    expect(configs.modelPolicies.createFields?.map((item) => item.name)).toEqual(
+      expect.arrayContaining(["endpoint_type", "model_bucket"]),
+    );
+    expect(field(configs.modelPolicies.createFields, "endpoint_type").defaultValue).toBe("chat_completion");
+    expect(field(configs.modelPolicies.createFields, "model_bucket").defaultValue).toBe("default");
+    expect(configs.modelPolicies.columns.map((item) => item.key)).toEqual(
+      expect.arrayContaining(["endpoint_type", "model_bucket"]),
+    );
   });
 
   it("should configure editable and archivable companies and projects", () => {

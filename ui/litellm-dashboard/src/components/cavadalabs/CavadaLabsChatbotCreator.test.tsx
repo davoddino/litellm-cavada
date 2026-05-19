@@ -98,7 +98,9 @@ describe("CavadaLabsChatbotCreator", () => {
     });
 
     const policyCall = mockFetch.mock.calls.find((call) => String(call[0]).includes("/cavadalabs/model-policies"));
-    expect(policyCall?.[0]).toBe("http://proxy.test/cavadalabs/model-policies?project_id=project-1");
+    expect(policyCall?.[0]).toBe(
+      "http://proxy.test/cavadalabs/model-policies?project_id=project-1&endpoint_type=chat_completion&model_bucket=default",
+    );
     const keyListCall = mockFetch.mock.calls.find((call) => String(call[0]).includes("/key/list"));
     expect(String(keyListCall?.[0])).toContain("cavadalabs_company_id=company-1");
     expect(String(keyListCall?.[0])).toContain("cavadalabs_project_id=project-1");
@@ -122,6 +124,7 @@ describe("CavadaLabsChatbotCreator", () => {
     expect(keyBody).toEqual(
       expect.objectContaining({
         key_alias: "Support Bot server key",
+        models: ["default"],
         cavadalabs_company_id: "company-1",
         cavadalabs_project_id: "project-1",
       }),
@@ -129,10 +132,12 @@ describe("CavadaLabsChatbotCreator", () => {
     expect(keyBody.metadata).toEqual(
       expect.objectContaining({
         cavadalabs_chatbot_id: "chatbot-1",
+        cavadalabs_model_bucket: "default",
         spend_logs_metadata: expect.objectContaining({
           cavadalabs_company_id: "company-1",
           cavadalabs_project_id: "project-1",
           cavadalabs_chatbot_id: "chatbot-1",
+          cavadalabs_model_bucket: "default",
         }),
       }),
     );
