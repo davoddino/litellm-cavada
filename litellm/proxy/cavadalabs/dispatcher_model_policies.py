@@ -122,7 +122,7 @@ class CavadaLabsModelPolicyOperations(CavadaLabsProjectOperations):
         self._ensure_model_allowed(project, data.model_alias)
         create_data = serialize_prisma_json_fields(
             {
-                **data.model_dump(mode="python"),
+                **data.model_dump(mode="python", exclude_none=True),
                 "company_id": project.company_id,
                 "created_by": _actor_user_id(user_api_key_dict),
                 "updated_by": _actor_user_id(user_api_key_dict),

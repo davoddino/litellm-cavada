@@ -220,6 +220,8 @@ async def test_should_allow_project_admin_to_create_model_policy(monkeypatch):
     create_data = db.cavadalabs_projectmodelpolicytable.create.await_args.kwargs["data"]
     assert create_data["endpoint_type"] == "chat_completion"
     assert create_data["model_bucket"] == "medium"
+    assert create_data["company_id"] == "company-1"
+    assert "json_schema" not in create_data
 
 
 @pytest.mark.asyncio
@@ -306,6 +308,8 @@ async def test_should_allow_project_admin_to_create_key_scoped_model_policy(
     )
     create_data = db.cavadalabs_projectmodelpolicytable.create.await_args.kwargs["data"]
     assert create_data["key_id"] == "sk-key-hash"
+    assert create_data["company_id"] == "company-1"
+    assert "json_schema" not in create_data
 
 
 @pytest.mark.asyncio
